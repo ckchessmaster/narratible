@@ -1,17 +1,481 @@
-from fastapi import FastAPI
+import logging
+import shutil
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
-app = FastAPI(title="Echo-Scribe API")
+from .config import AppConfig, load_config, save_config
+from .projects import (
+    PROJECTS_DIR,
+    ProjectMetadata,
+    list_projects,
+    get_project,
+    create_project,
+    update_project,
+    delete_project,
+    load_chapters,
+    save_chapters,
+    auto_split_chapters,
+    _project_path,
+)
+from .parser import extract_text_from_pdf
+from .cleaner import regex_clean_text, llm_clean_text
+from .tts import synthesize_speech, get_available_voices
+from .epub import build_epub
+from .uploader import AudiobookshelfUploader
 
-# Setup CORS for frontend
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Echo-Scribe API", version="0.1.0")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict to frontend domain
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ── In-memory task status store ──────────────────────────────────────────────
+# Maps task_id -> {"status": "running"|"done"|"error", "message": str, "progress": 0-100}
+_tasks: dict[str, dict] = {}
+
+
+def _set_task(task_id: str, status: str, message: str = "", progress: int = 0):
+    _tasks[task_id] = {"status": status, "message": message, "progress": progress}
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
+
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/settings", response_model=AppConfig)
+async def get_settings():
+    return load_config()
+
+
+@app.put("/api/settings", response_model=AppConfig)
+async def update_settings(config: AppConfig):
+    save_config(config)
+    return config
+
+
+# ── Projects ──────────────────────────────────────────────────────────────────
+
+class CreateProjectRequest(BaseModel):
+    title: str
+    author: str = ""
+
+
+@app.get("/api/projects", response_model=list[ProjectMetadata])
+async def api_list_projects():
+    return list_projects()
+
+
+@app.post("/api/projects", response_model=ProjectMetadata, status_code=201)
+async def api_create_project(req: CreateProjectRequest):
+    return create_project(req.title, req.author)
+
+
+@app.get("/api/projects/{project_id}", response_model=ProjectMetadata)
+async def api_get_project(project_id: str):
+    try:
+        return get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.patch("/api/projects/{project_id}", response_model=ProjectMetadata)
+async def api_update_project(project_id: str, updates: dict):
+    try:
+        return update_project(project_id, updates)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/projects/{project_id}", status_code=204)
+async def api_delete_project(project_id: str):
+    try:
+        delete_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ── PDF Upload & Parsing ──────────────────────────────────────────────────────
+
+@app.post("/api/projects/{project_id}/upload-pdf")
+async def upload_pdf(project_id: str, file: UploadFile = File(...)):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+
+    dest = _project_path(project_id) / "book.pdf"
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return {"message": "PDF uploaded successfully.", "path": str(dest)}
+
+
+async def _run_parse(project_id: str, task_id: str, cleaner: str):
+    try:
+        _set_task(task_id, "running", "Extracting text from PDF…", 10)
+        pdf_path = _project_path(project_id) / "book.pdf"
+        if not pdf_path.exists():
+            raise FileNotFoundError("book.pdf not found. Upload a PDF first.")
+
+        raw_text = await extract_text_from_pdf(pdf_path)
+        raw_path = _project_path(project_id) / "raw_text.txt"
+        raw_path.write_text(raw_text, encoding="utf-8")
+        _set_task(task_id, "running", "Cleaning text…", 50)
+
+        if cleaner == "llm":
+            cfg = load_config()
+            provider = "gemini" if cfg.gemini_api_key else "openai"
+            cleaned = await llm_clean_text(raw_text, provider=provider)
+        else:
+            cleaned = regex_clean_text(raw_text)
+
+        cleaned_path = _project_path(project_id) / "cleaned_text.txt"
+        cleaned_path.write_text(cleaned, encoding="utf-8")
+        _set_task(task_id, "running", "Splitting into chapters…", 80)
+
+        chapters = auto_split_chapters(cleaned)
+        save_chapters(project_id, chapters)
+        _set_task(task_id, "done", f"Parsed {len(chapters)} chapter(s).", 100)
+    except Exception as e:
+        logger.exception("Parse task failed")
+        _set_task(task_id, "error", str(e), 0)
+
+
+@app.post("/api/projects/{project_id}/parse")
+async def parse_pdf(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    cleaner: str = "regex",
+):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    task_id = f"parse-{project_id}"
+    _set_task(task_id, "running", "Queued…", 0)
+    background_tasks.add_task(_run_parse, project_id, task_id, cleaner)
+    return {"task_id": task_id}
+
+
+# ── Chapters ──────────────────────────────────────────────────────────────────
+
+@app.get("/api/projects/{project_id}/chapters")
+async def api_get_chapters(project_id: str):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return load_chapters(project_id)
+
+
+@app.put("/api/projects/{project_id}/chapters")
+async def api_save_chapters(project_id: str, chapters: list[dict]):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    save_chapters(project_id, chapters)
+    return {"message": f"Saved {len(chapters)} chapter(s)."}
+
+
+# ── Cover Image Upload ────────────────────────────────────────────────────────
+
+@app.post("/api/projects/{project_id}/upload-cover")
+async def upload_cover(project_id: str, file: UploadFile = File(...)):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    suffix = Path(file.filename).suffix.lower() if file.filename else ".jpg"
+    if suffix not in (".jpg", ".jpeg", ".png"):
+        raise HTTPException(status_code=400, detail="Cover must be a JPG or PNG.")
+
+    dest = _project_path(project_id) / f"cover{suffix}"
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    update_project(project_id, {"cover_image": dest.name})
+    return {"message": "Cover uploaded.", "cover_image": dest.name}
+
+
+# ── TTS ───────────────────────────────────────────────────────────────────────
+
+@app.get("/api/tts/voices")
+async def api_get_voices(engine: str = "edge-tts"):
+    try:
+        voices = await get_available_voices(engine)
+        return {"voices": voices}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class PreviewRequest(BaseModel):
+    text: str
+    engine: str = "edge-tts"
+    voice: str = "en-US-AriaNeural"
+    speed: float = 1.0
+
+
+@app.post("/api/projects/{project_id}/tts/preview")
+async def tts_preview(project_id: str, req: PreviewRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    preview_path = _project_path(project_id) / "preview.mp3"
+    try:
+        voice_sample = _find_voice_sample(project_id) if req.engine == "f5-tts" else None
+        await synthesize_speech(
+            text=req.text[:500],
+            output_path=preview_path,
+            engine=req.engine,
+            voice=req.voice,
+            speed=req.speed,
+            voice_sample_path=voice_sample,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return FileResponse(preview_path, media_type="audio/mpeg", filename="preview.mp3")
+
+
+async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed: float):
+    try:
+        chapters = load_chapters(project_id)
+        if not chapters:
+            raise ValueError("No chapters found. Parse the PDF first.")
+
+        exports_dir = _project_path(project_id) / "exports"
+        exports_dir.mkdir(exist_ok=True)
+
+        for i, ch in enumerate(chapters):
+            progress = int((i / len(chapters)) * 90)
+            _set_task(task_id, "running", f"Synthesizing chapter {i + 1}/{len(chapters)}…", progress)
+            audio_path = exports_dir / f"chapter{i + 1:03d}.mp3"
+            voice_sample = _find_voice_sample(project_id) if engine == "f5-tts" else None
+            await synthesize_speech(
+                text=ch.get("text", ""),
+                output_path=audio_path,
+                engine=engine,
+                voice=voice,
+                speed=speed,
+                voice_sample_path=voice_sample,
+            )
+            chapters[i]["audio_path"] = str(audio_path)
+
+        save_chapters(project_id, chapters)
+        _set_task(task_id, "done", "Audio synthesis complete.", 100)
+    except Exception as e:
+        logger.exception("TTS task failed")
+        _set_task(task_id, "error", str(e), 0)
+
+
+@app.post("/api/projects/{project_id}/tts/synthesize")
+async def synthesize_book(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    engine: str = "edge-tts",
+    voice: str = "en-US-AriaNeural",
+    speed: float = 1.0,
+):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    task_id = f"tts-{project_id}"
+    _set_task(task_id, "running", "Queued…", 0)
+    background_tasks.add_task(_run_tts, project_id, task_id, engine, voice, speed)
+    return {"task_id": task_id}
+
+
+# ── Voice Sample Upload (for XTTS cloning) ────────────────────────────────────
+
+@app.post("/api/projects/{project_id}/voices/upload")
+async def upload_voice_sample(project_id: str, file: UploadFile = File(...)):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    suffix = Path(file.filename).suffix.lower() if file.filename else ".wav"
+    if suffix not in (".wav", ".mp3", ".flac"):
+        raise HTTPException(status_code=400, detail="Voice sample must be WAV, MP3, or FLAC.")
+
+    voices_dir = _project_path(project_id) / "voices"
+    voices_dir.mkdir(exist_ok=True)
+    dest = voices_dir / (file.filename or f"sample{suffix}")
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return {"message": "Voice sample uploaded.", "filename": dest.name}
+
+
+@app.get("/api/projects/{project_id}/voices")
+async def list_voice_samples(project_id: str):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    voices_dir = _project_path(project_id) / "voices"
+    if not voices_dir.exists():
+        return {"voices": []}
+    return {"voices": [f.name for f in voices_dir.iterdir() if f.is_file()]}
+
+
+# ── Export ────────────────────────────────────────────────────────────────────
+
+@app.post("/api/projects/{project_id}/export/epub")
+async def export_epub(project_id: str):
+    try:
+        meta = get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    chapters = load_chapters(project_id)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="No chapters to export. Parse the PDF first.")
+
+    exports_dir = _project_path(project_id) / "exports"
+    exports_dir.mkdir(exist_ok=True)
+    safe_title = "".join(c for c in meta.title if c.isalnum() or c in " _-").strip() or "book"
+    output_path = exports_dir / f"{safe_title}.epub"
+
+    cover_path = None
+    if meta.cover_image:
+        candidate = _project_path(project_id) / meta.cover_image
+        if candidate.exists():
+            cover_path = candidate
+
+    try:
+        build_epub(
+            output_path=output_path,
+            title=meta.title,
+            author=meta.author,
+            chapters=chapters,
+            cover_image_path=cover_path,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return FileResponse(output_path, media_type="application/epub+zip", filename=output_path.name)
+
+
+@app.get("/api/projects/{project_id}/exports")
+async def list_exports(project_id: str):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    exports_dir = _project_path(project_id) / "exports"
+    if not exports_dir.exists():
+        return {"files": []}
+    return {"files": [f.name for f in exports_dir.iterdir() if f.is_file()]}
+
+
+@app.get("/api/projects/{project_id}/exports/{filename}")
+async def download_export(project_id: str, filename: str):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    exports_dir = (_project_path(project_id) / "exports").resolve()
+    file_path = (exports_dir / filename).resolve()
+    if not str(file_path).startswith(str(exports_dir)):
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    return FileResponse(file_path, filename=filename)
+
+
+# ── Audiobookshelf ────────────────────────────────────────────────────────────
+
+class UploadToAbsRequest(BaseModel):
+    library_id: str
+    files: list[str]  # filenames from the exports directory
+
+
+@app.get("/api/audiobookshelf/libraries")
+async def abs_libraries():
+    cfg = load_config()
+    if not cfg.audiobookshelf_url or not cfg.audiobookshelf_token:
+        raise HTTPException(status_code=400, detail="Audiobookshelf URL and token are not configured.")
+    try:
+        uploader = AudiobookshelfUploader(cfg.audiobookshelf_url, cfg.audiobookshelf_token)
+        return {"libraries": uploader.get_libraries()}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/projects/{project_id}/upload-to-abs")
+async def upload_to_abs(project_id: str, req: UploadToAbsRequest):
+    try:
+        meta = get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    cfg = load_config()
+    if not cfg.audiobookshelf_url or not cfg.audiobookshelf_token:
+        raise HTTPException(status_code=400, detail="Audiobookshelf URL and token are not configured.")
+
+    exports_dir = (_project_path(project_id) / "exports").resolve()
+    file_paths = []
+    for fname in req.files:
+        candidate = (exports_dir / fname).resolve()
+        if not str(candidate).startswith(str(exports_dir)):
+            raise HTTPException(status_code=400, detail=f"Invalid filename: {fname}")
+        file_paths.append(candidate)
+
+    try:
+        uploader = AudiobookshelfUploader(cfg.audiobookshelf_url, cfg.audiobookshelf_token)
+        result = uploader.upload_files(req.library_id, meta.title, meta.author, file_paths)
+        return {"message": "Upload successful.", "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+# ── Task Status ───────────────────────────────────────────────────────────────
+
+@app.get("/api/tasks/{task_id}")
+async def get_task_status(task_id: str):
+    if task_id not in _tasks:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    return _tasks[task_id]
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _find_voice_sample(project_id: str) -> Path | None:
+    """Return the first voice sample found in the project's voices/ dir, or None."""
+    voices_dir = _project_path(project_id) / "voices"
+    if not voices_dir.exists():
+        return None
+    for ext in (".wav", ".mp3", ".flac"):
+        matches = list(voices_dir.glob(f"*{ext}"))
+        if matches:
+            return matches[0]
+    return None

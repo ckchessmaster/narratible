@@ -8,6 +8,79 @@ The project consists of two main components:
 - **Backend**: A Python FastAPI server that handles file processing, text extraction, LLM cleanup, TTS synthesis, and EPUB generation.
 - **Frontend**: A React + Vite web application that provides a wizard-driven user interface for uploading, editing, and exporting projects.
 
-## Setup Instructions
+---
 
-*(Detailed setup instructions will be populated as we build out the modules)*
+## Quick Start
+
+You need two terminals — one for the backend, one for the frontend.
+
+### 1. Backend
+
+```powershell
+cd backend
+.venv\Scripts\Activate.ps1     # activate the virtual environment
+python run.py                   # starts FastAPI on http://localhost:8000
+```
+
+> **First time only** — create the venv using the `echoscribe` conda env (Python 3.12):
+> ```powershell
+> conda run -n echoscribe python -m venv .venv
+> .venv\Scripts\pip install -r requirements.txt
+> .venv\Scripts\pip install kokoro f5-tts
+> .venv\Scripts\pip install torch --force-reinstall --index-url https://download.pytorch.org/whl/cu128
+> ```
+
+### 2. Frontend
+
+```powershell
+cd frontend
+npm install       # first time only
+npm run dev       # starts Vite dev server on http://localhost:5173
+```
+
+Then open **http://localhost:5173** in your browser.
+
+---
+
+## Docker
+
+### CPU-only (Edge-TTS works, no Kokoro/F5-TTS)
+```powershell
+docker compose up --build
+```
+Open **http://localhost**.
+
+### GPU (Kokoro + F5-TTS voice cloning enabled)
+Requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and Docker Desktop with GPU enabled.
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+> First GPU build is ~6 GB (PyTorch CUDA + kokoro + f5-tts). Subsequent builds use the cache.
+
+Project files persist in Docker named volumes (`projects_data`, `config_data`).  
+The API is also available directly at **http://localhost:8000/docs** (Swagger UI).
+
+---
+
+
+
+| Engine | Quality | Speed | Requires |
+|---|---|---|---|
+| Edge-TTS | Good | Instant | Internet |
+| Kokoro-82M | Great | Fast (GPU) | Local model (auto-downloaded) |
+| F5-TTS Clone | Excellent | Moderate (GPU) | Your `.wav` voice sample |
+
+### Voice Cloning with F5-TTS
+1. Record a clean 10–15 second `.wav` clip of the voice you want to clone
+2. In Step 3, upload it via **Voice Samples → Upload Sample**
+3. Select **F5-TTS Clone** as the engine
+4. The model weights (~800 MB) download automatically on first use
+
+### Optional: LLM Text Cleanup
+For better text extraction from complex PDFs, add an API key in **⚙ Settings**:
+- [Gemini API key](https://aistudio.google.com/app/apikey) (free tier available)
+- OpenAI API key (paid)
+
+### Optional: Audiobookshelf Upload
+Configure your server URL and API token in **⚙ Settings** to upload finished books directly.
+

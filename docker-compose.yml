@@ -1,0 +1,31 @@
+# Echo-Scribe — CPU-only compose (Edge-TTS works, Kokoro/F5-TTS disabled)
+# Usage: docker compose up --build
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      # INSTALL_ML_ENGINES defaults to false — kokoro/f5-tts not included
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - projects_data:/app/projects   # persists all project files
+      - config_data:/root             # persists ~/.echo_scribe_config.json
+    ports:
+      - "8000:8000"   # optional — for direct API access / Swagger UI
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  projects_data:
+  config_data:

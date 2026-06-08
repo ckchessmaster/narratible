@@ -1,59 +1,112 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
+import './App.css'
 import './index.css'
+import Step1Upload from './components/Step1Upload'
+import Step2Editor from './components/Step2Editor'
+import Step3TTS from './components/Step3TTS'
+import Step4Export from './components/Step4Export'
+import SettingsModal from './components/SettingsModal'
 
-function App() {
-  const [currentStep, setCurrentStep] = useState(1);
+const STEPS = [
+  { label: 'Upload' },
+  { label: 'Edit' },
+  { label: 'Voice' },
+  { label: 'Export' },
+]
+
+export default function App() {
+  const [step, setStep] = useState(1)
+  const [projectId, setProjectId] = useState(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const [toasts, setToasts] = useState([])
+
+  const toast = useCallback((message, type = 'info') => {
+    const id = Date.now()
+    setToasts(t => [...t, { id, message, type }])
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000)
+  }, [])
+
+  const next = () => setStep(s => Math.min(s + 1, 4))
+  const back = () => setStep(s => Math.max(s - 1, 1))
 
   return (
-    <div className="app-container">
+    <div className="app">
+      {/* Header */}
       <header className="header">
-        <h1>Echo-Scribe</h1>
-        <div className="wizard-steps">
-          Step {currentStep} of 4
+        <div className="header-brand">
+          <span className="header-logo">Echo-Scribe</span>
+          <span className="header-subtitle">PDF → Audiobook</span>
         </div>
+
+        <nav className="stepper">
+          {STEPS.map((s, i) => {
+            const n = i + 1
+            const isActive = step === n
+            const isDone = step > n
+            return (
+              <div key={n} className="step-item">
+                {i > 0 && <div className="step-connector" />}
+                <div className={`step-num ${isActive ? 'active' : isDone ? 'done' : ''}`}>
+                  {isDone ? '✓' : n}
+                </div>
+                <span className={`step-label ${isActive ? 'active' : ''}`}>{s.label}</span>
+              </div>
+            )
+          })}
+        </nav>
+
+        <button className="btn btn-ghost btn-sm" onClick={() => setShowSettings(true)}>
+          ⚙ Settings
+        </button>
       </header>
 
-      <main className="wizard-container glass-panel p-6">
-        {currentStep === 1 && (
-          <div className="step-content">
-            <h2>Step 1: Upload PDF</h2>
-            <p>Upload your PDF document to begin parsing.</p>
-            <button className="glass-button mt-4" onClick={() => setCurrentStep(2)}>Next Step</button>
-          </div>
+      {/* Main */}
+      <main className="main">
+        {step === 1 && (
+          <Step1Upload
+            projectId={projectId}
+            setProjectId={setProjectId}
+            onNext={next}
+            toast={toast}
+          />
         )}
-        {currentStep === 2 && (
-          <div className="step-content">
-            <h2>Step 2: Edit Chapters</h2>
-            <p>Review and edit the extracted text and chapters.</p>
-            <div className="flex gap-4 mt-4">
-              <button className="glass-button secondary" onClick={() => setCurrentStep(1)}>Back</button>
-              <button className="glass-button" onClick={() => setCurrentStep(3)}>Next Step</button>
-            </div>
-          </div>
+        {step === 2 && (
+          <Step2Editor
+            projectId={projectId}
+            onNext={next}
+            onBack={back}
+            toast={toast}
+          />
         )}
-        {currentStep === 3 && (
-          <div className="step-content">
-            <h2>Step 3: Configure TTS</h2>
-            <p>Select your voice and generation settings.</p>
-            <div className="flex gap-4 mt-4">
-              <button className="glass-button secondary" onClick={() => setCurrentStep(2)}>Back</button>
-              <button className="glass-button" onClick={() => setCurrentStep(4)}>Next Step</button>
-            </div>
-          </div>
+        {step === 3 && (
+          <Step3TTS
+            projectId={projectId}
+            onNext={next}
+            onBack={back}
+            toast={toast}
+          />
         )}
-        {currentStep === 4 && (
-          <div className="step-content">
-            <h2>Step 4: Export</h2>
-            <p>Generate your audiobook and EPUB files.</p>
-            <div className="flex gap-4 mt-4">
-              <button className="glass-button secondary" onClick={() => setCurrentStep(3)}>Back</button>
-              <button className="glass-button" onClick={() => alert('Exporting!')}>Export</button>
-            </div>
-          </div>
+        {step === 4 && (
+          <Step4Export
+            projectId={projectId}
+            onBack={back}
+            toast={toast}
+          />
         )}
       </main>
+
+      {/* Settings modal */}
+      {showSettings && (
+        <SettingsModal onClose={() => setShowSettings(false)} toast={toast} />
+      )}
+
+      {/* Toasts */}
+      <div className="toast-container">
+        {toasts.map(t => (
+          <div key={t.id} className={`toast toast-${t.type}`}>{t.message}</div>
+        ))}
+      </div>
     </div>
   )
 }
 
-export default App

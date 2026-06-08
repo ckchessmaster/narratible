@@ -1,13 +1,17 @@
+# Core (compatible with Python 3.14+)
 fastapi
 uvicorn
 PyMuPDF
 pdfplumber
 edge-tts
-kokoro
 soundfile
 numpy
 requests
-google-generativeai
+google-genai
 openai
 pydantic
 python-multipart
+
+# Optional — requires Python <=3.12 (install after recreating venv with py -3.12 -m venv .venv)
+# kokoro        # local fast TTS (Kokoro-82M); also needs: pip install torch --index-url https://download.pytorch.org/whl/cu121
+# f5-tts        # voice cloning (F5-TTS); also needs torch CUDA (already installed with kokoro setup)

@@ -1,0 +1,29 @@
+# Echo-Scribe — GPU compose override (Kokoro + F5-TTS voice cloning enabled)
+#
+# Requirements:
+#   - NVIDIA Container Toolkit installed on the host
+#   - Docker Desktop → Settings → Resources → GPU enabled  (Windows/WSL2)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# First build will be large (~6 GB) due to PyTorch CUDA + kokoro + f5-tts.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        INSTALL_ML_ENGINES: "true"
+        TORCH_INDEX_URL: "https://download.pytorch.org/whl/cu128"
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
