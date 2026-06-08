@@ -1,0 +1,22 @@
+# Node modules
+node_modules/
+dist/
+build/
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+env/
+.pytest_cache/
+
+# System
+.DS_Store
+Thumbs.db
+
+# App specific
+backend/projects/
+.echo_scribe_config.json
+/reports

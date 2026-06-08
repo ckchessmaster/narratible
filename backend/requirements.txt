@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+PyMuPDF
+pdfplumber
+edge-tts
+kokoro
+soundfile
+numpy
+requests
+google-generativeai
+openai
+pydantic
+python-multipart
