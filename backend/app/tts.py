@@ -87,16 +87,23 @@ async def synthesize_speech(
             _kokoro_pipeline = KPipeline(lang_code="a", device=device)
             _kokoro_pipeline._device = device  # tag for mismatch detection
 
-        generator = _kokoro_pipeline(
-            text, voice=voice, speed=speed, split_pattern=r"\n+"
-        )
-        segments = [audio for _, _, audio in generator]
-        
-        # Free VRAM immediately
-        _kokoro_pipeline = None
-        torch.cuda.empty_cache()
-        import gc
-        gc.collect()
+        import asyncio
+        loop = asyncio.get_event_loop()
+
+        def _infer_kokoro():
+            global _kokoro_pipeline
+            generator = _kokoro_pipeline(
+                text, voice=voice, speed=speed, split_pattern=r"\n+"
+            )
+            segs = [audio for _, _, audio in generator]
+            # Free VRAM immediately
+            _kokoro_pipeline = None
+            torch.cuda.empty_cache()
+            import gc
+            gc.collect()
+            return segs
+
+        segments = await loop.run_in_executor(None, _infer_kokoro)
 
         if not segments:
             raise ValueError("Kokoro produced no audio output.")

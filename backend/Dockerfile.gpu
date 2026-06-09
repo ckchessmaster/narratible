@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 \
         ffmpeg \
         curl \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 # Core app dependencies
@@ -24,9 +25,7 @@ RUN grep -v '^\s*#' requirements.txt | grep -v '^\s*$' \
 
 # Kokoro + F5-TTS voice engines
 # (Using pre-installed torch/torchaudio so we just add the models)
-# transformers < 4.49.0 is required because PyTorch 2.5.1 does not have float8_e8m0fnu,
-# which breaks transformers >= 4.49.0
-RUN pip install --no-cache-dir kokoro f5-tts "transformers<4.49.0"
+RUN pip install --no-cache-dir kokoro f5-tts git+https://github.com/huggingface/transformers.git
 
 COPY . .
 RUN mkdir -p projects

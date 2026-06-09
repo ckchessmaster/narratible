@@ -4,7 +4,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-async def extract_text_from_pdf(pdf_path: Path) -> str:
+def extract_text_from_pdf(pdf_path: Path) -> str:
     """
     Extract text from a given PDF file.
     """

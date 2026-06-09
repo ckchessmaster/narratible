@@ -11,6 +11,8 @@ class AppConfig(BaseModel):
     huggingface_token: str = ""
     embedded_llm_model: str = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
     use_4bit_quantization: bool = False
+    llm_chunk_size: int = 5000
+    multi_pass_cleaning: bool = False
     audiobookshelf_url: str = ""
     audiobookshelf_token: str = ""
     default_tts_engine: str = "edge-tts"

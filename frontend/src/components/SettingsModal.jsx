@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { getSettings, saveSettings, getLlmModels } from '../api'
 
 export default function SettingsModal({ onClose, toast }) {
@@ -6,6 +6,29 @@ export default function SettingsModal({ onClose, toast }) {
   const [saving, setSaving] = useState(false)
   const [llmModelsData, setLlmModelsData] = useState({ system_vram_mb: 0, families: [] })
   const [familyVariants, setFamilyVariants] = useState({})
+
+  // Global sticky VRAM calculations
+  const isQuantized = cfg?.use_4bit_quantization || false
+  const chunkSize = cfg?.llm_chunk_size || 5000
+  // Note: Tokens map roughly to 4 chars. A 24K char chunk is roughly ~6K tokens.
+  // 6K context in a typical transformer demands closer to ~1.2GB padding 
+  const contextVramCost = (chunkSize / 1000) * 50 // Assume ~50MB per 1k chars of context
+  
+  const selectedModelInfo = useMemo(() => {
+    if (!llmModelsData || !llmModelsData.families) return null;
+    for (const family of llmModelsData.families) {
+      const variant = family.variants.find(v => v.id === cfg?.embedded_llm_model);
+      if (variant) return variant;
+    }
+    return null;
+  }, [llmModelsData, cfg?.embedded_llm_model]);
+
+  const activeBaseVram = selectedModelInfo ? (selectedModelInfo.base_vram_mb || selectedModelInfo.min_vram_mb) : 0
+  const activeAdjVram = activeBaseVram ? (isQuantized ? activeBaseVram / 2 : activeBaseVram) + contextVramCost : 0
+  
+  const vramPercent = llmModelsData.system_vram_mb > 0 
+    ? Math.min(100, (activeAdjVram / llmModelsData.system_vram_mb) * 100) 
+    : 0
 
   useEffect(() => {
     Promise.all([getSettings(), getLlmModels()])
@@ -117,6 +140,27 @@ export default function SettingsModal({ onClose, toast }) {
                 </label>
               </div>
 
+              {llmModelsData.system_vram_mb > 0 && activeBaseVram > 0 && (
+                <div className="glass p-3 mb-4" style={{ position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-primary)', borderBottom: '1px solid var(--glass-border)' }}>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span style={{ fontWeight: 600 }}>Active VRAM Usage ({selectedModelInfo?.name})</span>
+                    <span>
+                      {(activeAdjVram / 1024).toFixed(1)}GB / {(llmModelsData.system_vram_mb / 1024).toFixed(1)}GB
+                      {isQuantized && <span style={{ color: 'var(--accent-primary)', marginLeft: 4 }}>(4-bit)</span>}
+                    </span>
+                  </div>
+                  <div className="progress-bar" style={{ height: 8 }}>
+                    <div 
+                      className="progress-bar-fill" 
+                      style={{ 
+                        width: `${vramPercent}%`,
+                        background: vramPercent > 100 ? 'var(--danger)' : (vramPercent > 80 ? 'orange' : 'var(--success)')
+                      }} 
+                    />
+                  </div>
+                </div>
+              )}
+
               {llmModelsData.families.length > 0 ? (
                 <div className="flex flex-col gap-4 mt-2">
                   {llmModelsData.families.map(family => {
@@ -127,24 +171,32 @@ export default function SettingsModal({ onClose, toast }) {
                     const activeVariant = family.variants.find(v => v.id === activeVariantId) || family.variants[0]
                     const isFamilySelected = family.variants.some(v => v.id === cfg?.embedded_llm_model)
 
-                    // Dynamic VRAM calculations based on Quantization toggle
+                    // Dynamic VRAM calculations based on Quantization & Chunk toggle
                     const isQuantized = cfg?.use_4bit_quantization || false
-                    const activeAdjVram = isQuantized ? activeVariant.min_vram_mb / 2 : activeVariant.min_vram_mb
+                    const chunkSize = cfg?.llm_chunk_size || 5000
+                    const contextVramCost = (chunkSize / 1000) * 50 // Assume ~50MB per 1k chars of context
+                    
+                    const activeBaseVram = activeVariant.base_vram_mb || activeVariant.min_vram_mb
+                    const activeAdjVram = (isQuantized ? activeBaseVram / 2 : activeBaseVram) + contextVramCost
+                    
                     const isActiveRecommended = llmModelsData.system_vram_mb > 0 
                       ? llmModelsData.system_vram_mb >= activeAdjVram 
                       : true
-
-                    const vramPercent = llmModelsData.system_vram_mb > 0 
-                      ? Math.min(100, (activeAdjVram / llmModelsData.system_vram_mb) * 100) 
-                      : 0
+                    
+                    const isGated = activeVariant.gated
+                    const hasToken = !!cfg?.huggingface_token
+                    const needsToken = isGated && !hasToken
+                    // Gated models require EULA agreement regardless of token presence.
+                    // We only "disable" selection if the token is completely missing.
+                    const isDisabled = !isActiveRecommended || needsToken
 
                     return (
                       <div
                         key={family.name}
-                        className={`glass p-4 flex flex-col gap-3 ${isActiveRecommended ? 'glass-hover' : ''}`}
+                        className={`glass p-4 flex flex-col gap-3 ${!isDisabled ? 'glass-hover' : ''}`}
                         style={{
                           borderRadius: 'var(--radius-sm)',
-                          opacity: isActiveRecommended ? 1 : 0.65,
+                          opacity: !isDisabled ? 1 : 0.65,
                           border: isFamilySelected ? '2px solid var(--accent-primary)' : ''
                         }}
                       >
@@ -154,8 +206,8 @@ export default function SettingsModal({ onClose, toast }) {
                             name="embedded_llm_model_family"
                             checked={isFamilySelected}
                             onChange={() => set('embedded_llm_model', activeVariantId)}
-                            disabled={!isActiveRecommended}
-                            style={{ marginTop: 4, cursor: isActiveRecommended ? 'pointer' : 'not-allowed' }}
+                            disabled={isDisabled}
+                            style={{ marginTop: 4, cursor: !isDisabled ? 'pointer' : 'not-allowed' }}
                           />
                           <div style={{ flex: 1 }}>
                             <div className="flex justify-between items-center mb-1">
@@ -193,25 +245,12 @@ export default function SettingsModal({ onClose, toast }) {
                                 )
                               })}
                             </div>
-                            
-                            {llmModelsData.system_vram_mb > 0 && (
-                              <div>
-                                <div className="flex justify-between text-xs text-muted mb-1">
-                                  <span>
-                                    VRAM Usage: {(activeAdjVram / 1024).toFixed(1)}GB
-                                    {isQuantized && <span style={{ color: 'var(--accent-primary)', marginLeft: 4 }}>(4-bit)</span>}
-                                  </span>
-                                  <span>Total: {(llmModelsData.system_vram_mb / 1024).toFixed(1)}GB</span>
-                                </div>
-                                <div className="progress-bar" style={{ height: 6 }}>
-                                  <div 
-                                    className="progress-bar-fill" 
-                                    style={{ 
-                                      width: `${vramPercent}%`,
-                                      background: !isActiveRecommended ? 'var(--danger)' : (vramPercent > 80 ? 'orange' : 'var(--success)')
-                                    }} 
-                                  />
-                                </div>
+
+                            {isGated && (
+                              <div className="mb-3 p-2 text-xs" style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: 6 }}>
+                                <span className="text-warning" style={{ fontWeight: 600 }}>⚠ Gated Model: </span> 
+                                {needsToken ? "Requires a HuggingFace Token above. " : ""}
+                                Make sure you have <a href={`https://huggingface.co/${activeVariant.id}`} target="_blank" rel="noreferrer" style={{color: 'var(--accent-primary)', textDecoration: 'underline'}}>accepted the license agreement here ↗</a> with your HuggingFace account before use.
                               </div>
                             )}
                           </div>
@@ -242,6 +281,40 @@ export default function SettingsModal({ onClose, toast }) {
                   </div>
                 </>
               )}
+            </div>
+
+            <div className="field mt-3">
+              <label>LLM Content Chunk Size: {(cfg.llm_chunk_size || 5000).toLocaleString()} characters</label>
+              <input
+                type="range"
+                min="1000"
+                max="32000"
+                step="1000"
+                value={cfg.llm_chunk_size || 5000}
+                onChange={e => set('llm_chunk_size', parseInt(e.target.value) || 5000)}
+              />
+              <div className="flex justify-between text-xs text-muted mt-1">
+                <span>1k (Fast, Tiny VRAM)</span>
+                <span>16k (Balanced)</span>
+                <span>32k (Slow, Heavy VRAM)</span>
+              </div>
+              <div className="text-xs text-muted mt-2">
+                How many characters of the book to pass to the LLM at a time. Larger contexts give the AI better understanding of sentence flows and margin layouts, but consume significantly more memory.
+              </div>
+            </div>
+
+            <div className="field mt-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={cfg.multi_pass_cleaning || false}
+                  onChange={e => set('multi_pass_cleaning', e.target.checked)}
+                />
+                <span style={{ fontWeight: 500 }}>Multi-Pass LLM Strategy (Slower, Higher Quality)</span>
+              </label>
+              <div className="text-xs text-muted mt-1" style={{ marginLeft: 24 }}>
+                Takes each chunk and runs it through the LLM multiple times with dedicated prompts (e.g. Pass 1: formatting/hyphenation, Pass 2: footnotes/margins). Excellent for small models with low reasoning capability, but doubles the processing time.
+              </div>
             </div>
 
             <div className="divider" />

@@ -91,7 +91,9 @@ class LLMVariant(BaseModel):
     id: str
     name: str
     min_vram_mb: int
+    base_vram_mb: int
     recommended: bool
+    gated: bool = False
 
 class LLMFamily(BaseModel):
     name: str
@@ -118,43 +120,43 @@ async def get_llm_models():
             "name": "Qwen 2.5",
             "description": "Very fast, highly capable models. Great for quick cleanup tasks on older systems. May struggle with extremely complex margins at smaller sizes.",
             "variants": [
-                ("Qwen/Qwen2.5-0.5B-Instruct", "0.5B", 2000),
-                ("Qwen/Qwen2.5-1.5B-Instruct", "1.5B", 4000),
-                ("Qwen/Qwen2.5-7B-Instruct", "7B", 14000),
+                ("Qwen/Qwen2.5-0.5B-Instruct", "0.5B", 2000, False),
+                ("Qwen/Qwen2.5-1.5B-Instruct", "1.5B", 4000, False),
+                ("Qwen/Qwen2.5-7B-Instruct", "7B", 14000, False),
             ]
         },
         {
             "name": "SmolLM2",
             "description": "HuggingFace's ultra-lightweight models. Good balance of speed and quality for constrained environments.",
             "variants": [
-                ("HuggingFaceTB/SmolLM2-360M-Instruct", "360M", 1500),
-                ("HuggingFaceTB/SmolLM2-1.7B-Instruct", "1.7B", 4000),
+                ("HuggingFaceTB/SmolLM2-360M-Instruct", "360M", 1500, False),
+                ("HuggingFaceTB/SmolLM2-1.7B-Instruct", "1.7B", 4000, False),
             ]
         },
         {
-            "name": "Gemma",
+            "name": "Gemma 4",
             "description": "Excellent reasoning and instruction following. Punches well above its weight class for its size.",
             "variants": [
-                ("google/gemma-2-2b-it", "Gemma 2 (2B)", 5500),
-                ("google/gemma-2-9b-it", "Gemma 2 (9B)", 18000),
-                ("google/gemma-4-9b-it", "Gemma 4 (9B)", 18000),
+                ("google/gemma-4-E4B-it", "E4B", 5500, True),
+                ("google/gemma-4-12B-it", "12B", 24000, True),
+                ("google/gemma-4-31B-it", "31B", 62000, True),
             ]
         },
         {
             "name": "Phi-3",
             "description": "Microsoft's high quality reasoning model. Best for structured formatting and handling margin notes gracefully.",
             "variants": [
-                ("microsoft/Phi-3-mini-4k-instruct", "Mini (3.8B)", 8000),
-                ("microsoft/Phi-3-small-8k-instruct", "Small (7B)", 15000),
+                ("microsoft/Phi-3-mini-4k-instruct", "Mini (3.8B)", 8000, False),
+                ("microsoft/Phi-3-small-8k-instruct", "Small (7B)", 15000, False),
             ]
         },
         {
-            "name": "Llama 3.2",
+            "name": "Llama 3",
             "description": "Production-grade performance and excellent instruction following. Meta's latest lightweight and medium-weight models.",
             "variants": [
-                ("meta-llama/Llama-3.2-1B-Instruct", "1B", 3500),
-                ("meta-llama/Llama-3.2-3B-Instruct", "3B", 7500),
-                ("meta-llama/Llama-3.2-8B-Instruct", "8B", 16000),
+                ("meta-llama/Llama-3.2-1B-Instruct", "3.2 (1B)", 3500, True),
+                ("meta-llama/Llama-3.2-3B-Instruct", "3.2 (3B)", 7500, True),
+                ("meta-llama/Meta-Llama-3.1-8B-Instruct", "3.1 (8B)", 16000, True),
             ]
         }
     ]
@@ -162,12 +164,14 @@ async def get_llm_models():
     families = []
     for f in families_data:
         variants = []
-        for v_id, v_name, v_min_vram in f["variants"]:
+        for v_id, v_name, v_min_vram, v_gated in f["variants"]:
             variants.append(LLMVariant(
                 id=v_id,
                 name=v_name,
                 min_vram_mb=v_min_vram,
-                recommended=vram_mb >= v_min_vram if vram_mb > 0 else True
+                base_vram_mb=v_min_vram,
+                recommended=vram_mb >= v_min_vram if vram_mb > 0 else True,
+                gated=v_gated
             ))
         families.append(LLMFamily(name=f["name"], description=f["description"], variants=variants))
     
@@ -233,14 +237,14 @@ async def upload_pdf(project_id: str, file: UploadFile = File(...)):
     return {"message": "PDF uploaded successfully.", "path": str(dest)}
 
 
-async def _run_parse(project_id: str, task_id: str, cleaner: str):
+def _run_parse(project_id: str, task_id: str, cleaner: str):
     try:
         _set_task(task_id, "running", "Extracting text from PDF…", 10)
         pdf_path = _project_path(project_id) / "book.pdf"
         if not pdf_path.exists():
             raise FileNotFoundError("book.pdf not found. Upload a PDF first.")
 
-        raw_text = await extract_text_from_pdf(pdf_path)
+        raw_text = extract_text_from_pdf(pdf_path)
         raw_path = _project_path(project_id) / "raw_text.txt"
         raw_path.write_text(raw_text, encoding="utf-8")
         _set_task(task_id, "running", "Cleaning text…", 50)
@@ -251,7 +255,13 @@ async def _run_parse(project_id: str, task_id: str, cleaner: str):
             else:
                 cfg = load_config()
                 provider = "gemini" if cfg.gemini_api_key else "openai"
-            cleaned = await llm_clean_text(raw_text, provider=provider)
+                
+            def _progress_cb(msg: str, pct: int):
+                # We map the 0-100 cleaner progress onto the 10-90 overarching file parsing slot
+                overall_prog = 10 + int(pct * 0.8)
+                _set_task(task_id, "running", msg, overall_prog)
+                
+            cleaned = llm_clean_text(raw_text, provider=provider, progress_callback=_progress_cb)
         else:
             cleaned = regex_clean_text(raw_text)
 

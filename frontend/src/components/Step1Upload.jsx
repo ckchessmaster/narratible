@@ -10,6 +10,7 @@ export default function Step1Upload({ setProjectId, onNext, toast }) {
   const [status, setStatus] = useState(null) // null | 'creating' | 'uploading' | 'parsing' | 'done'
   const [progress, setProgress] = useState(0)
   const [progressMsg, setProgressMsg] = useState('')
+  const [taskError, setTaskError] = useState(null)
   const inputRef = useRef()
 
   const handleDrop = (e) => {
@@ -31,6 +32,7 @@ export default function Step1Upload({ setProjectId, onNext, toast }) {
 
     try {
       setStatus('creating')
+      setTaskError(null)
       setProgress(5)
       setProgressMsg('Creating project…')
 
@@ -58,7 +60,11 @@ export default function Step1Upload({ setProjectId, onNext, toast }) {
       setTimeout(onNext, 600)
     } catch (e) {
       setStatus(null)
-      toast(e.message, 'error')
+      if (e.message.includes('Gated Model Access Denied') || e.message.includes('HuggingFace')) {
+        setTaskError(e.message)
+      } else {
+        toast(e.message, 'error')
+      }
     }
   }
 
@@ -163,6 +169,14 @@ export default function Step1Upload({ setProjectId, onNext, toast }) {
           <div className="progress-bar">
             <div className="progress-bar-fill" style={{ width: `${progress}%` }} />
           </div>
+        </div>
+      )}
+
+      {taskError && (
+        <div className="glass mt-4 p-4" style={{ borderColor: 'var(--danger)', backgroundColor: 'var(--danger-bg)' }}>
+          <div className="text-danger" style={{ fontWeight: 600 }}>Access Denied or Error</div>
+          <div className="text-sm mt-1 mb-2 text-secondary">{taskError}</div>
+          <button className="btn btn-ghost btn-sm" onClick={() => setTaskError(null)}>Dismiss</button>
         </div>
       )}
 
