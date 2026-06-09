@@ -19,10 +19,9 @@ from .projects import (
     delete_project,
     load_chapters,
     save_chapters,
-    auto_split_chapters,
     _project_path,
 )
-from .parser import extract_text_from_pdf
+from .parser import extract_structured_from_pdf
 from .cleaner import regex_clean_text, llm_clean_text
 from .tts import synthesize_speech, get_available_voices
 from .epub import build_epub
@@ -289,16 +288,22 @@ async def upload_pdf(project_id: str, file: UploadFile = File(...)):
 
 def _run_parse(project_id: str, task_id: str, cleaner: str):
     try:
-        _set_task(task_id, "running", "Extracting text from PDF…", 10)
+        _set_task(task_id, "running", "Extracting text and analyzing structure from PDF…", 10)
         pdf_path = _project_path(project_id) / "book.pdf"
         if not pdf_path.exists():
             raise FileNotFoundError("book.pdf not found. Upload a PDF first.")
 
-        raw_text = extract_text_from_pdf(pdf_path)
+        pdf_data = extract_structured_from_pdf(pdf_path)
+        raw_text = pdf_data["raw_text"]
+        raw_chapters = pdf_data["chapters"]
+        
         raw_path = _project_path(project_id) / "raw_text.txt"
         raw_path.write_text(raw_text, encoding="utf-8")
-        _set_task(task_id, "running", "Cleaning text…", 50)
+        _set_task(task_id, "running", "Cleaning text…", 30)
 
+        cleaned_chapters = []
+        full_cleaned_text = ""
+        
         if cleaner in ("llm", "embedded"):
             if cleaner == "embedded":
                 provider = "embedded"
@@ -306,20 +311,52 @@ def _run_parse(project_id: str, task_id: str, cleaner: str):
                 cfg = load_config()
                 provider = "gemini" if cfg.gemini_api_key else "openai"
                 
-            def _progress_cb(msg: str, pct: int):
-                overall_prog = 10 + int(pct * 0.8)
-                _set_task(task_id, "running", msg, overall_prog)
-
-            def _output_cb(chunk_text: str):
-                _set_task(task_id, "running", append_output=chunk_text + "\n\n")
-
             def _cancel_check():
                 t = _get_task(task_id)
                 return t and t.get("is_cancelled", False)
                 
-            cleaned = llm_clean_text(raw_text, provider=provider, progress_callback=_progress_cb, cancel_check=_cancel_check, output_callback=_output_cb)
+            for i, ch in enumerate(raw_chapters):
+                if _cancel_check():
+                    break
+                    
+                ch_title = ch["title"]
+                
+                def _progress_cb(msg: str, pct: int):
+                    # Localize progress over total chapters
+                    base_prog = 30 + int((i / len(raw_chapters)) * 50)
+                    overall_prog = base_prog + int((pct / 100) * (50 / len(raw_chapters)))
+                    _set_task(task_id, "running", f"Cleaning '{ch_title}' - {msg}", overall_prog)
+
+                def _output_cb(chunk_text: str):
+                    _set_task(task_id, "running", append_output=chunk_text + "\n\n")
+
+                cleaned_ch_text = llm_clean_text(
+                    ch["raw_text"], 
+                    provider=provider, 
+                    progress_callback=_progress_cb, 
+                    cancel_check=_cancel_check, 
+                    output_callback=_output_cb
+                )
+                
+                cleaned_chapters.append({
+                    "title": ch_title,
+                    "text": cleaned_ch_text,
+                    "audio_path": None,
+                    "confidence": ch.get("confidence", 1.0),
+                    "warnings": ch.get("warnings", [])
+                })
+                full_cleaned_text += cleaned_ch_text + "\n\n"
         else:
-            cleaned = regex_clean_text(raw_text)
+            for ch in raw_chapters:
+                cleaned_txt = regex_clean_text(ch["raw_text"])
+                cleaned_chapters.append({
+                    "title": ch["title"],
+                    "text": cleaned_txt,
+                    "audio_path": None,
+                    "confidence": ch.get("confidence", 1.0),
+                    "warnings": ch.get("warnings", [])
+                })
+                full_cleaned_text += cleaned_txt + "\n\n"
 
         t = _get_task(task_id)
         if t and t.get("is_cancelled"):
@@ -327,12 +364,14 @@ def _run_parse(project_id: str, task_id: str, cleaner: str):
             return
 
         cleaned_path = _project_path(project_id) / "cleaned_text.txt"
-        cleaned_path.write_text(cleaned, encoding="utf-8")
-        _set_task(task_id, "running", "Splitting into chapters…", 80)
+        cleaned_path.write_text(full_cleaned_text.strip(), encoding="utf-8")
+        
+        # We no longer need to auto-split because we split natively!
+        _set_task(task_id, "running", "Saving chapters…", 90)
 
-        chapters = auto_split_chapters(cleaned)
+        chapters = cleaned_chapters
         save_chapters(project_id, chapters)
-        _set_task(task_id, "done", f"Parsed {len(chapters)} chapter(s).", 100)
+        _set_task(task_id, "done", f"Parsed {len(chapters)} chapter(s) via {pdf_data.get('method', 'unknown')}.", 100)
     except Exception as e:
         logger.exception("Parse task failed")
         _set_task(task_id, "error", str(e), 0)

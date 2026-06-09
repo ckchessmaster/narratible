@@ -147,8 +147,11 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
               onClick={() => setSelectedIdx(i)}
             >
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="truncate text-sm" style={{ fontWeight: i === selectedIdx ? 600 : 400 }}>
+                <div className="truncate text-sm flex items-center gap-1" style={{ fontWeight: i === selectedIdx ? 600 : 400 }}>
                   {ch.title || `Chapter ${i + 1}`}
+                  {(ch.warnings?.length > 0 || (ch.confidence && ch.confidence < 0.9)) && (
+                    <span title="Verify boundaries" style={{ fontSize: 10 }}>⚠️</span>
+                  )}
                 </div>
                 <div className="text-xs text-muted">{ch.text?.length ?? 0} chars</div>
               </div>
@@ -180,6 +183,24 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
                   style={{ fontWeight: 600, fontSize: 15 }}
                 />
               </div>
+              {(ch.warnings?.length > 0 || (ch.confidence && ch.confidence < 0.9)) && (
+                <div style={{
+                  padding: '8px 12px',
+                  background: 'rgba(234, 179, 8, 0.1)',
+                  borderBottom: '1px solid rgba(234, 179, 8, 0.2)',
+                  color: 'rgb(202, 138, 4)',
+                  fontSize: 12,
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 8
+                }}>
+                  <span style={{ fontSize: 16 }}>⚠️</span>
+                  <div>
+                    <div style={{ fontWeight: 600 }}>Low Confidence Chapter Split</div>
+                    {ch.warnings?.map((w, i) => <div key={i}>{w}</div>)}
+                  </div>
+                </div>
+              )}
               <textarea
                 ref={textareaRef}
                 value={ch.text}
