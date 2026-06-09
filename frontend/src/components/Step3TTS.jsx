@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { getProject, getVoices, ttsPreview, synthesizeBook, pollTask,
+import { getVoices, ttsPreview,
          uploadVoiceSample, listVoiceSamples, updateProject } from '../api'
 
 const ENGINES = [
@@ -15,8 +15,6 @@ export default function Step3TTS({ projectId, onNext, onBack, toast }) {
   const [speed, setSpeed] = useState(1.0)
   const [previewText, setPreviewText] = useState('Welcome to Echo-Scribe. This is a preview of the selected voice.')
   const [previewing, setPreviewing] = useState(false)
-  const [synthesizing, setSynthesizing] = useState(false)
-  const [taskProgress, setTaskProgress] = useState(null)
   const [voiceSamples, setVoiceSamples] = useState([])
   const [loadingVoices, setLoadingVoices] = useState(false)
   const audioRef = useRef()
@@ -24,14 +22,20 @@ export default function Step3TTS({ projectId, onNext, onBack, toast }) {
 
   // Load voices when engine changes
   useEffect(() => {
-    setLoadingVoices(true)
+    let active = true
+    setTimeout(() => {
+      if (active) setLoadingVoices(true)
+    }, 0)
     getVoices(engine)
       .then(res => {
+        if (!active) return
         setVoices(res.voices)
         if (res.voices.length > 0) setVoice(res.voices[0].id)
       })
-      .catch(e => toast(e.message, 'error'))
-      .finally(() => setLoadingVoices(false))
+      .catch(e => { if (active) toast(e.message, 'error') })
+      .finally(() => { if (active) setLoadingVoices(false) })
+    return () => { active = false }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine])
 
   // Load voice samples
@@ -59,22 +63,6 @@ export default function Step3TTS({ projectId, onNext, onBack, toast }) {
     }
   }
 
-  const handleSynthesize = async () => {
-    setSynthesizing(true)
-    setTaskProgress({ status: 'running', message: 'Queued…', progress: 0 })
-    try {
-      // Save voice settings to project metadata first
-      await updateProject(projectId, { tts_engine: engine, tts_voice: voice, tts_speed: speed })
-      const { task_id } = await synthesizeBook(projectId, engine, voice, speed)
-      await pollTask(task_id, t => setTaskProgress(t))
-      toast('Synthesis complete!', 'success')
-    } catch (e) {
-      toast(e.message, 'error')
-    } finally {
-      setSynthesizing(false)
-    }
-  }
-
   const handleSampleUpload = async (e) => {
     const f = e.target.files[0]
     if (!f) return
@@ -83,6 +71,15 @@ export default function Step3TTS({ projectId, onNext, onBack, toast }) {
       const res = await listVoiceSamples(projectId)
       setVoiceSamples(res.voices)
       toast('Voice sample uploaded!', 'success')
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+  }
+
+  const handleNext = async () => {
+    try {
+      await updateProject(projectId, { tts_engine: engine, tts_voice: voice, tts_speed: speed })
+      onNext()
     } catch (e) {
       toast(e.message, 'error')
     }
@@ -208,45 +205,12 @@ export default function Step3TTS({ projectId, onNext, onBack, toast }) {
               </div>
             )}
           </div>
-
-          {/* Synthesis */}
-          <div className="section-title">Synthesis</div>
-          <div className="glass p-3" style={{ borderRadius: 'var(--radius-sm)' }}>
-            <div className="text-xs text-muted mb-3">
-              Generate audio for all chapters using the selected engine and voice.
-            </div>
-            <button
-              className="btn btn-primary w-full"
-              onClick={handleSynthesize}
-              disabled={synthesizing}
-            >
-              {synthesizing ? '⏳ Synthesizing…' : '🎙 Synthesize All Chapters'}
-            </button>
-
-            {taskProgress && (
-              <div className="mt-3">
-                <div className="flex justify-between text-xs text-secondary mb-1">
-                  <span>{taskProgress.message}</span>
-                  <span>{taskProgress.progress}%</span>
-                </div>
-                <div className="progress-bar">
-                  <div className="progress-bar-fill" style={{ width: `${taskProgress.progress}%` }} />
-                </div>
-                {taskProgress.status === 'done' && (
-                  <div className="badge badge-success mt-2">✓ Complete</div>
-                )}
-                {taskProgress.status === 'error' && (
-                  <div className="text-xs text-danger mt-2">{taskProgress.message}</div>
-                )}
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
       <div className="step-nav">
         <button className="btn btn-ghost" onClick={onBack}>← Back</button>
-        <button className="btn btn-primary btn-lg" onClick={onNext}>
+        <button className="btn btn-primary btn-lg" onClick={handleNext}>
           Continue to Export →
         </button>
       </div>

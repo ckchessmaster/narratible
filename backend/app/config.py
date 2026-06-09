@@ -8,6 +8,9 @@ CONFIG_FILE = Path.home() / ".echo_scribe_config.json"
 class AppConfig(BaseModel):
     gemini_api_key: str = ""
     openai_api_key: str = ""
+    huggingface_token: str = ""
+    embedded_llm_model: str = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+    use_4bit_quantization: bool = False
     audiobookshelf_url: str = ""
     audiobookshelf_token: str = ""
     default_tts_engine: str = "edge-tts"

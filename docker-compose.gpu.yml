@@ -5,21 +5,25 @@
 #   - Docker Desktop → Settings → Resources → GPU enabled  (Windows/WSL2)
 #
 # Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#   docker compose -f docker-compose.gpu.yml up --build
 #
-# First build will be large (~6 GB) due to PyTorch CUDA + kokoro + f5-tts.
+# First build is large (~6 GB) due to the nvidia/cuda base + PyTorch CUDA + kokoro + f5-tts.
 
 services:
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
-      args:
-        INSTALL_ML_ENGINES: "true"
-        TORCH_INDEX_URL: "https://download.pytorch.org/whl/cu128"
+      dockerfile: Dockerfile.gpu   # CUDA base image — has all NVIDIA runtime libs
+    restart: unless-stopped
     environment:
+      - PYTHONUNBUFFERED=1
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - projects_data:/app/projects   # persists all project files
+      - config_data:/root             # persists ~/.echo_scribe_config.json
+    ports:
+      - "8000:8000"   # optional — for direct API access / Swagger UI
     deploy:
       resources:
         reservations:
@@ -27,3 +31,17 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  projects_data:
+  config_data:

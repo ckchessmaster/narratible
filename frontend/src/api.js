@@ -22,6 +22,7 @@ async function request(method, path, body, isFormData = false) {
 // Settings
 export const getSettings = () => request('GET', '/settings')
 export const saveSettings = (cfg) => request('PUT', '/settings', cfg)
+export const getLlmModels = () => request('GET', '/llm/models')
 
 // Projects
 export const listProjects = () => request('GET', '/projects')
@@ -59,8 +60,8 @@ export const ttsPreview = (projectId, text, engine, voice, speed) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, engine, voice, speed }),
   })
-export const synthesizeBook = (projectId, engine, voice, speed) =>
-  request('POST', `/projects/${projectId}/tts/synthesize?engine=${engine}&voice=${voice}&speed=${speed}`)
+export const synthesizeBook = (projectId, engine, voice, speed, singleFile = false) =>
+  request('POST', `/projects/${projectId}/tts/synthesize?engine=${engine}&voice=${voice}&speed=${speed}&single_file=${singleFile}`)
 
 // Voice samples
 export const uploadVoiceSample = (projectId, file) => {

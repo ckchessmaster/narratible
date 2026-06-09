@@ -52,6 +52,15 @@ async def synthesize_speech(
 
     voice_sample_path: path to a .wav reference file, required for f5-tts.
     """
+    # Strip footnote markers like [^1] and the footnote definitions at the bottom
+    import re
+    # Remove inline footnote markers
+    cleaned_text = re.sub(r'\[\^\d+\]', '', text)
+    # Remove footnote definitions at the bottom (e.g. [^1]: ...)
+    cleaned_text = re.sub(r'(?m)^\[\^\d+\]:.*$', '', cleaned_text).strip()
+
+    text = cleaned_text
+
     logger.info(f"Synthesizing with {engine}, voice={voice}, speed={speed}")
 
     if engine == "edge-tts":
@@ -65,18 +74,30 @@ async def synthesize_speech(
             from kokoro import KPipeline
             import soundfile as sf
             import numpy as np
+            import torch
         except ImportError:
             raise ImportError(
                 "Kokoro is not installed. Run: pip install kokoro"
             )
 
-        if _kokoro_pipeline is None:
-            _kokoro_pipeline = KPipeline(lang_code="a")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Reinitialise if the cached pipeline is on the wrong device
+        if _kokoro_pipeline is None or getattr(_kokoro_pipeline, '_device', None) != device:
+            logger.info(f"Loading Kokoro pipeline on {device}")
+            _kokoro_pipeline = KPipeline(lang_code="a", device=device)
+            _kokoro_pipeline._device = device  # tag for mismatch detection
 
         generator = _kokoro_pipeline(
             text, voice=voice, speed=speed, split_pattern=r"\n+"
         )
         segments = [audio for _, _, audio in generator]
+        
+        # Free VRAM immediately
+        _kokoro_pipeline = None
+        torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+
         if not segments:
             raise ValueError("Kokoro produced no audio output.")
         final_audio = np.concatenate(segments)
@@ -116,10 +137,15 @@ async def _synthesize_f5tts(
             "F5-TTS requires a voice sample. Upload a .wav file in Step 3 first."
         )
 
-    if _f5tts_model is None:
-        logger.info("Loading F5-TTS model (first run — downloads ~800 MB)…")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"F5-TTS device: {device}")
+
+    # Reinitialise if the cached model is on the wrong device (e.g. first run was CPU)
+    cached_device = getattr(_f5tts_model, '_echo_device', None)
+    if _f5tts_model is None or cached_device != device:
+        logger.info(f"Loading F5-TTS model on {device} (first run downloads ~800 MB)…")
         _f5tts_model = F5TTS(device=device)
+        _f5tts_model._echo_device = device  # tag for mismatch detection
         logger.info(f"F5-TTS loaded on {device}")
 
     logger.info(f"F5-TTS cloning from {voice_sample_path}")
@@ -138,6 +164,15 @@ async def _synthesize_f5tts(
         return wav, sr
 
     wav, sr = await loop.run_in_executor(None, _infer)
+
+    # Free VRAM immediately
+    _f5tts_model = None
+    torch.cuda.empty_cache()
+    import gc
+    gc.collect()
+
+    sf.write(str(output_path), wav, sr)
+
     sf.write(str(output_path), wav, sr)
     logger.info(f"F5-TTS wrote {output_path}")
 

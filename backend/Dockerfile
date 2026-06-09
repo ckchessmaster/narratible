@@ -10,6 +10,7 @@ WORKDIR /app
 # libsndfile1  — required by soundfile (audio I/O)
 # libgomp1     — required by PyTorch (OpenMP)
 # ffmpeg       — required by f5-tts/librosa (audio decode/encode)
+# libnvrtc-12-8 — required by torchcodec/torchaudio CUDA kernels (GPU build only)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     libgomp1 \
@@ -21,9 +22,15 @@ COPY requirements.txt .
 RUN grep -v '^\s*#' requirements.txt | grep -v '^\s*$' | pip install --no-cache-dir -r /dev/stdin
 
 # Optional ML engines — skipped by default, included when INSTALL_ML_ENGINES=true
+# torch + torchaudio must be installed together from the same index BEFORE f5-tts,
+# otherwise f5-tts pulls a mismatched CPU torchaudio from PyPI.
+# torchcodec is uninstalled afterwards — it is a torchaudio transitive dep that
+# requires libnvrtc at import time, which is not available in python:3.12-slim.
+# f5-tts does not use torchcodec for inference (it uses librosa/soundfile).
 RUN if [ "${INSTALL_ML_ENGINES}" = "true" ]; then \
-    pip install --no-cache-dir torch --index-url ${TORCH_INDEX_URL} && \
-    pip install --no-cache-dir kokoro f5-tts; \
+    pip install --no-cache-dir torch torchaudio --index-url ${TORCH_INDEX_URL} && \
+    pip install --no-cache-dir kokoro f5-tts && \
+    pip uninstall -y torchcodec || true; \
     fi
 
 COPY . .

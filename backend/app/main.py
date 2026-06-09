@@ -56,6 +56,22 @@ async def health_check():
     return {"status": "ok"}
 
 
+@app.get("/api/system/info")
+async def system_info():
+    """Returns GPU/CUDA availability — useful for debugging device selection."""
+    info: dict = {"cuda_available": False, "gpu_name": None, "torch_version": None}
+    try:
+        import torch
+        info["torch_version"] = torch.__version__
+        info["cuda_available"] = torch.cuda.is_available()
+        if torch.cuda.is_available():
+            info["gpu_name"] = torch.cuda.get_device_name(0)
+            info["vram_total_mb"] = round(torch.cuda.get_device_properties(0).total_memory / 1024 ** 2)
+    except ImportError:
+        info["torch_version"] = "not installed"
+    return info
+
+
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/settings", response_model=AppConfig)
@@ -67,6 +83,95 @@ async def get_settings():
 async def update_settings(config: AppConfig):
     save_config(config)
     return config
+
+
+# ── LLM Models ────────────────────────────────────────────────────────────────
+
+class LLMVariant(BaseModel):
+    id: str
+    name: str
+    min_vram_mb: int
+    recommended: bool
+
+class LLMFamily(BaseModel):
+    name: str
+    description: str
+    variants: list[LLMVariant]
+
+class LLMModelsResponse(BaseModel):
+    system_vram_mb: int
+    families: list[LLMFamily]
+
+@app.get("/api/llm/models", response_model=LLMModelsResponse)
+async def get_llm_models():
+    """Returns local LLM recommendations based on available CUDA VRAM."""
+    vram_mb = 0
+    try:
+        import torch
+        if torch.cuda.is_available():
+            vram_mb = round(torch.cuda.get_device_properties(0).total_memory / 1024 ** 2)
+    except (ImportError, RuntimeError):
+        pass
+    
+    families_data = [
+        {
+            "name": "Qwen 2.5",
+            "description": "Very fast, highly capable models. Great for quick cleanup tasks on older systems. May struggle with extremely complex margins at smaller sizes.",
+            "variants": [
+                ("Qwen/Qwen2.5-0.5B-Instruct", "0.5B", 2000),
+                ("Qwen/Qwen2.5-1.5B-Instruct", "1.5B", 4000),
+                ("Qwen/Qwen2.5-7B-Instruct", "7B", 14000),
+            ]
+        },
+        {
+            "name": "SmolLM2",
+            "description": "HuggingFace's ultra-lightweight models. Good balance of speed and quality for constrained environments.",
+            "variants": [
+                ("HuggingFaceTB/SmolLM2-360M-Instruct", "360M", 1500),
+                ("HuggingFaceTB/SmolLM2-1.7B-Instruct", "1.7B", 4000),
+            ]
+        },
+        {
+            "name": "Gemma",
+            "description": "Excellent reasoning and instruction following. Punches well above its weight class for its size.",
+            "variants": [
+                ("google/gemma-2-2b-it", "Gemma 2 (2B)", 5500),
+                ("google/gemma-2-9b-it", "Gemma 2 (9B)", 18000),
+                ("google/gemma-4-9b-it", "Gemma 4 (9B)", 18000),
+            ]
+        },
+        {
+            "name": "Phi-3",
+            "description": "Microsoft's high quality reasoning model. Best for structured formatting and handling margin notes gracefully.",
+            "variants": [
+                ("microsoft/Phi-3-mini-4k-instruct", "Mini (3.8B)", 8000),
+                ("microsoft/Phi-3-small-8k-instruct", "Small (7B)", 15000),
+            ]
+        },
+        {
+            "name": "Llama 3.2",
+            "description": "Production-grade performance and excellent instruction following. Meta's latest lightweight and medium-weight models.",
+            "variants": [
+                ("meta-llama/Llama-3.2-1B-Instruct", "1B", 3500),
+                ("meta-llama/Llama-3.2-3B-Instruct", "3B", 7500),
+                ("meta-llama/Llama-3.2-8B-Instruct", "8B", 16000),
+            ]
+        }
+    ]
+    
+    families = []
+    for f in families_data:
+        variants = []
+        for v_id, v_name, v_min_vram in f["variants"]:
+            variants.append(LLMVariant(
+                id=v_id,
+                name=v_name,
+                min_vram_mb=v_min_vram,
+                recommended=vram_mb >= v_min_vram if vram_mb > 0 else True
+            ))
+        families.append(LLMFamily(name=f["name"], description=f["description"], variants=variants))
+    
+    return LLMModelsResponse(system_vram_mb=vram_mb, families=families)
 
 
 # ── Projects ──────────────────────────────────────────────────────────────────
@@ -140,9 +245,12 @@ async def _run_parse(project_id: str, task_id: str, cleaner: str):
         raw_path.write_text(raw_text, encoding="utf-8")
         _set_task(task_id, "running", "Cleaning text…", 50)
 
-        if cleaner == "llm":
-            cfg = load_config()
-            provider = "gemini" if cfg.gemini_api_key else "openai"
+        if cleaner in ("llm", "embedded"):
+            if cleaner == "embedded":
+                provider = "embedded"
+            else:
+                cfg = load_config()
+                provider = "gemini" if cfg.gemini_api_key else "openai"
             cleaned = await llm_clean_text(raw_text, provider=provider)
         else:
             cleaned = regex_clean_text(raw_text)
@@ -260,7 +368,7 @@ async def tts_preview(project_id: str, req: PreviewRequest):
     return FileResponse(preview_path, media_type="audio/mpeg", filename="preview.mp3")
 
 
-async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed: float):
+async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed: float, single_file: bool = False):
     try:
         chapters = load_chapters(project_id)
         if not chapters:
@@ -268,6 +376,8 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
 
         exports_dir = _project_path(project_id) / "exports"
         exports_dir.mkdir(exist_ok=True)
+
+        audio_files = []
 
         for i, ch in enumerate(chapters):
             progress = int((i / len(chapters)) * 90)
@@ -282,7 +392,27 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 speed=speed,
                 voice_sample_path=voice_sample,
             )
+            audio_files.append(audio_path)
             chapters[i]["audio_path"] = str(audio_path)
+
+        if single_file and audio_files:
+            _set_task(task_id, "running", "Merging audio files…", 95)
+            import subprocess
+            list_path = exports_dir / "concat_list.txt"
+            with open(list_path, "w", encoding="utf-8") as f:
+                for audio_path in audio_files:
+                    f.write(f"file '{audio_path.name}'\n")
+            
+            merged_path = exports_dir / "audiobook.m4b"  # or .mp3
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_path), "-c", "copy", str(merged_path)],
+                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                # optionally clean up individual chapters
+                list_path.unlink(missing_ok=True)
+            except Exception as e:
+                logger.warning(f"FFmpeg failed to merge audio: {e}")
 
         save_chapters(project_id, chapters)
         _set_task(task_id, "done", "Audio synthesis complete.", 100)
@@ -298,6 +428,7 @@ async def synthesize_book(
     engine: str = "edge-tts",
     voice: str = "en-US-AriaNeural",
     speed: float = 1.0,
+    single_file: bool = False,
 ):
     try:
         get_project(project_id)
@@ -306,7 +437,7 @@ async def synthesize_book(
 
     task_id = f"tts-{project_id}"
     _set_task(task_id, "running", "Queued…", 0)
-    background_tasks.add_task(_run_tts, project_id, task_id, engine, voice, speed)
+    background_tasks.add_task(_run_tts, project_id, task_id, engine, voice, speed, single_file)
     return {"task_id": task_id}
 
 

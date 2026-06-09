@@ -1,0 +1,35 @@
+# GPU-enabled backend image.
+# We use the official PyTorch base image so CUDA, libnvrtc, torch, and
+# torchaudio are fully pre-configured properly without version conflicts.
+
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# System audio/ML deps (ffmpeg for f5-tts, libsndfile for soundfile)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libsndfile1 \
+        libgomp1 \
+        ffmpeg \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Core app dependencies
+COPY requirements.txt .
+RUN grep -v '^\s*#' requirements.txt | grep -v '^\s*$' \
+    | pip install --no-cache-dir -r /dev/stdin
+
+# Kokoro + F5-TTS voice engines
+# (Using pre-installed torch/torchaudio so we just add the models)
+# transformers < 4.49.0 is required because PyTorch 2.5.1 does not have float8_e8m0fnu,
+# which breaks transformers >= 4.49.0
+RUN pip install --no-cache-dir kokoro f5-tts "transformers<4.49.0"
+
+COPY . .
+RUN mkdir -p projects
+
+EXPOSE 8000
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

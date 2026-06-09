@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
 import { createProject, uploadPdf, parsePdf, pollTask } from '../api'
 
-export default function Step1Upload({ projectId, setProjectId, onNext, toast }) {
+export default function Step1Upload({ setProjectId, onNext, toast }) {
   const [title, setTitle] = useState('')
   const [author, setAuthor] = useState('')
   const [cleaner, setCleaner] = useState('regex')
@@ -124,10 +124,11 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast }) 
       {/* Cleaner option */}
       <div className="field mt-4">
         <label>Text Cleanup Method</label>
-        <div className="flex gap-3 mt-1">
+        <div className="flex gap-3 mt-1" style={{ flexWrap: 'wrap' }}>
           {[
             { value: 'regex', label: 'Heuristic (fast, offline)', desc: 'Regex rules — no API key needed' },
             { value: 'llm', label: 'LLM (Gemini / OpenAI)', desc: 'Best quality — requires API key in Settings' },
+            { value: 'embedded', label: 'Embedded Local LLM', desc: 'Runs locally — uses GPU VRAM' },
           ].map(opt => (
             <label
               key={opt.value}

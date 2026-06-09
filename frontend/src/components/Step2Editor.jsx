@@ -33,7 +33,17 @@ export default function Step2Editor({ projectId, onNext, onBack, toast }) {
 
   const deleteChapter = (idx) => {
     if (chapters.length <= 1) { toast('Cannot delete the last chapter.', 'error'); return }
-    setChapters(prev => prev.filter((_, i) => i !== idx))
+    
+    setChapters(prev => {
+      const updated = [...prev]
+      const toDelete = updated[idx]
+      const mergeTargetIdx = idx > 0 ? idx - 1 : 1
+      
+      // Merge text
+      updated[mergeTargetIdx].text = `${updated[mergeTargetIdx].text}\n\n${toDelete.text}`.trim()
+      
+      return updated.filter((_, i) => i !== idx)
+    })
     setSelectedIdx(i => Math.min(i, chapters.length - 2))
   }
 

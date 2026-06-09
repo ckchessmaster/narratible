@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react'
 import { getProject, exportEpub, listExports, downloadExportUrl,
-         getAbsLibraries, uploadToAbs } from '../api'
+         getAbsLibraries, uploadToAbs, synthesizeBook, pollTask } from '../api'
 
 export default function Step4Export({ projectId, onBack, toast }) {
   const [meta, setMeta] = useState(null)
   const [exports, setExports] = useState([])
   const [exporting, setExporting] = useState(false)
+  const [synthesizing, setSynthesizing] = useState(false)
+  const [taskProgress, setTaskProgress] = useState(null)
+  const [singleAudio, setSingleAudio] = useState(false)
   const [libraries, setLibraries] = useState([])
   const [selectedLib, setSelectedLib] = useState('')
   const [selectedFiles, setSelectedFiles] = useState([])
@@ -44,6 +47,27 @@ export default function Step4Export({ projectId, onBack, toast }) {
       toast(e.message, 'error')
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleSynthesize = async () => {
+    if (!meta || !meta.tts_engine) {
+      toast('Please go back and configure a voice first.', 'error')
+      return
+    }
+    setSynthesizing(true)
+    setTaskProgress({ status: 'running', message: 'Queued…', progress: 0 })
+    try {
+      const { task_id } = await synthesizeBook(projectId, meta.tts_engine, meta.tts_voice, meta.tts_speed, singleAudio)
+      await pollTask(task_id, t => setTaskProgress(t))
+      if (taskProgress?.status !== 'error') {
+        toast('Synthesis complete!', 'success')
+      }
+      refreshExports()
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setSynthesizing(false)
     }
   }
 
@@ -116,13 +140,30 @@ export default function Step4Export({ projectId, onBack, toast }) {
               </button>
             </div>
 
-            <div className="glass p-4" style={{ flex: 1, borderRadius: 'var(--radius-sm)', opacity: 0.7 }}>
+            <div className="glass p-4" style={{ flex: 1, borderRadius: 'var(--radius-sm)' }}>
               <div style={{ fontSize: 28, marginBottom: 8 }}>🎧</div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>Audiobook MP3</div>
               <div className="text-sm text-muted mb-4">
-                Chapter audio files are generated in Step 3. Download them individually below.
+                Generate audio based on the voice configured in Step 3.
               </div>
-              <button className="btn btn-ghost w-full" disabled>Generated in Step 3</button>
+              <label className="flex items-center gap-2 mb-3 text-sm cursor-pointer">
+                <input type="checkbox" checked={singleAudio} onChange={e => setSingleAudio(e.target.checked)} disabled={synthesizing} />
+                Merge into single audio file (requires FFmpeg)
+              </label>
+              <button className="btn btn-primary w-full" onClick={handleSynthesize} disabled={synthesizing}>
+                {synthesizing ? '⏳ Synthesizing…' : '🎙 Generate Audio'}
+              </button>
+              {taskProgress && taskProgress.status !== 'done' && (
+                <div className="mt-3">
+                  <div className="flex justify-between text-xs text-secondary mb-1">
+                    <span>{taskProgress.message}</span>
+                    <span>{taskProgress.progress}%</span>
+                  </div>
+                  <div className="progress-bar">
+                    <div className="progress-bar-fill" style={{ width: `${taskProgress.progress}%` }} />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
