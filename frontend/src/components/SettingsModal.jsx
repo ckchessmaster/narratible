@@ -123,6 +123,29 @@ export default function SettingsModal({ onClose, toast }) {
             </div>
 
             <div className="field">
+              <div className="flex justify-between items-center mb-2">
+                <label style={{ margin: 0 }}>LLM Temperature (0.0 - 1.0)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    value={cfg.llm_temperature ?? 0.1}
+                    onChange={e => set('llm_temperature', parseFloat(e.target.value))}
+                    style={{ width: '120px', margin: 0, accentColor: 'var(--accent-primary)' }}
+                  />
+                  <span style={{ fontSize: '13px', fontWeight: 600, width: '25px', textAlign: 'right' }}>
+                    {(cfg.llm_temperature ?? 0.1).toFixed(1)}
+                  </span>
+                </div>
+              </div>
+              <div className="text-xs text-muted mb-4">
+                Higher values = more variation/creativity. Lower values = stricter adherence to text bounds. If local LLMs hallucinate loops, increase to 0.1 or 0.2.
+              </div>
+            </div>
+
+            <div className="field">
               <div className="flex justify-between items-start mb-2">
                 <label style={{ margin: 0 }}>Embedded Local LLM Model</label>
                 <label className="flex items-center gap-2 cursor-pointer" title="Drastically reduces the VRAM required to load larger LLM models, at the cost of slower generation speed. Enables larger models to run on smaller GPUs!">
@@ -300,20 +323,6 @@ export default function SettingsModal({ onClose, toast }) {
               </div>
               <div className="text-xs text-muted mt-2">
                 How many characters of the book to pass to the LLM at a time. Larger contexts give the AI better understanding of sentence flows and margin layouts, but consume significantly more memory.
-              </div>
-            </div>
-
-            <div className="field mt-3">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={cfg.multi_pass_cleaning || false}
-                  onChange={e => set('multi_pass_cleaning', e.target.checked)}
-                />
-                <span style={{ fontWeight: 500 }}>Multi-Pass LLM Strategy (Slower, Higher Quality)</span>
-              </label>
-              <div className="text-xs text-muted mt-1" style={{ marginLeft: 24 }}>
-                Takes each chunk and runs it through the LLM multiple times with dedicated prompts (e.g. Pass 1: formatting/hyphenation, Pass 2: footnotes/margins). Excellent for small models with low reasoning capability, but doubles the processing time.
               </div>
             </div>
 

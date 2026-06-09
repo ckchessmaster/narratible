@@ -1,7 +1,7 @@
 ---
-name: echo-scribe-test-runner
-description: 'Run Echo-Scribe verification checks for backend and frontend changes. Use for test requests, regression checks, and pre-PR validation when full automated tests are not yet available.'
-argument-hint: 'Optional scope: backend, frontend, or full'
+name: "echo-scribe-test-runner"
+description: "Run Echo-Scribe verification checks for backend and frontend changes. Use for test requests, regression checks, and pre-PR validation when full automated tests are not yet available."
+argument-hint: "Optional scope: backend, frontend, or full"
 user-invocable: true
 ---
 

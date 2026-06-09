@@ -1,8 +1,5 @@
 # GPU-enabled backend image.
-# We use the official PyTorch base image so CUDA, libnvrtc, torch, and
-# torchaudio are fully pre-configured properly without version conflicts.
-
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -11,6 +8,10 @@ WORKDIR /app
 
 # System audio/ML deps (ffmpeg for f5-tts, libsndfile for soundfile)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-venv \
+        python3.11-dev \
+        python3-pip \
         libsndfile1 \
         libgomp1 \
         ffmpeg \
@@ -18,14 +19,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
     && rm -rf /var/lib/apt/lists/*
 
+RUN ln -s /usr/bin/python3.11 /usr/bin/python
+
+# Install PyTorch 2.5.1 for CUDA 12.4 exactly as pip wheels
+RUN python -m pip install --no-cache-dir "torch==2.5.1" "torchvision==0.20.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cu124
+
 # Core app dependencies
 COPY requirements.txt .
-RUN grep -v '^\s*#' requirements.txt | grep -v '^\s*$' \
-    | pip install --no-cache-dir -r /dev/stdin
+RUN python -m pip install --upgrade pip && \
+    grep -v '^\s*#' requirements.txt | grep -v '^\s*$' | python -m pip install --no-cache-dir -r /dev/stdin
 
-# Kokoro + F5-TTS voice engines
-# (Using pre-installed torch/torchaudio so we just add the models)
-RUN pip install --no-cache-dir kokoro f5-tts git+https://github.com/huggingface/transformers.git
+# Kokoro + F5-TTS voice engines (torchcodec removed due to CUDA 13 libnvrtc.so.13 issues not needed for pure TTS)
+RUN python -m pip install --no-cache-dir kokoro f5-tts git+https://github.com/huggingface/transformers.git && \
+    python -m pip uninstall -y torchcodec
 
 COPY . .
 RUN mkdir -p projects

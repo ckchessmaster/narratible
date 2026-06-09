@@ -3,6 +3,10 @@ description: "Use when building or updating React wizard UI, component state flo
 name: "Echo-Scribe Frontend Conventions"
 applyTo:
   - "frontend/src/**/*.jsx"
+  - "frontend/src/**/*.js"
+  - "frontend/*.js"
+  - "frontend/index.html"
+  - "frontend/Dockerfile*"
   - "frontend/src/**/*.css"
 ---
 # Echo-Scribe Frontend Conventions

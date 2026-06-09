@@ -12,12 +12,21 @@ async function request(method, path, body, isFormData = false) {
   }
   const res = await fetch(`${BASE}${path}`, opts)
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || res.statusText)
-  }
+      const text = await res.text()
+      try {
+        const j = JSON.parse(text)
+        throw new Error(j.detail || j.message || res.statusText)
+      } catch (e) {
+        if (e instanceof SyntaxError) throw new Error(text || res.statusText)
+        throw e
+      }
+    }
   if (res.status === 204) return null
   return res.json()
 }
+
+// API endpoints
+export const getSystemDiagnostics = () => request('GET', '/system/diagnostics')
 
 // Settings
 export const getSettings = () => request('GET', '/settings')
@@ -40,6 +49,8 @@ export const uploadPdf = (projectId, file) => {
 
 export const parsePdf = (projectId, cleaner = 'regex') =>
   request('POST', `/projects/${projectId}/parse?cleaner=${cleaner}`)
+
+export const cancelTask = (projectId) => request('POST', `/projects/${projectId}/cancel`)
 
 // Chapters
 export const getChapters = (id) => request('GET', `/projects/${id}/chapters`)

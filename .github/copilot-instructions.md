@@ -1,4 +1,4 @@
-# AGENTS.md
+# copilot-instructions.md
 
 Agent guidance for this repository. Keep changes small and aligned with the current implementation state.
 
@@ -61,10 +61,3 @@ Frontend:
 - App config is stored in a user-home file via Path.home(); avoid breaking that location without migration.
 - LLM cleanup in cleaner.py falls back to regex when API keys are missing; keep fallback behavior intact.
 - Kokoro TTS path requires local model/runtime setup and may fail in unprepared environments.
-
-## Suggested Next Customizations
-
-If this repo grows, create focused instruction files:
-- Backend instructions scoped to backend/** for API design and async/background processing rules.
-- Frontend instructions scoped to frontend/** for UI/state conventions and accessibility checks.
-- Testing instructions scoped to tests/** once backend/frontend test suites are added.

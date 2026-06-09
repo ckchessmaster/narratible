@@ -1,6 +1,7 @@
 import logging
 import shutil
 from pathlib import Path
+import psutil
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,12 +42,42 @@ app.add_middleware(
 )
 
 # ── In-memory task status store ──────────────────────────────────────────────
-# Maps task_id -> {"status": "running"|"done"|"error", "message": str, "progress": 0-100}
+# Maps task_id -> {"status": "running"|"done"|"error", "message": str, "progress": 0-100, "is_cancelled": bool, "llm_output": str}
 _tasks: dict[str, dict] = {}
 
 
-def _set_task(task_id: str, status: str, message: str = "", progress: int = 0):
-    _tasks[task_id] = {"status": status, "message": message, "progress": progress}
+def _set_task(task_id: str, status: str, message: str = "", progress: int = 0, is_cancelled: bool = False, append_output: str = None):
+    existing = _tasks.get(task_id, {})
+    _is_cancelled = existing.get("is_cancelled", False) if not is_cancelled else is_cancelled
+    _llm_output = existing.get("llm_output", "")
+    if append_output:
+        _llm_output += append_output
+    _tasks[task_id] = {
+        "status": status, 
+        "message": message, 
+        "progress": progress, 
+        "is_cancelled": _is_cancelled,
+        "llm_output": _llm_output
+    }
+
+def _get_task(task_id: str):
+    return _tasks.get(task_id)
+
+@app.post("/api/projects/{project_id}/cancel")
+async def api_cancel_task(project_id: str):
+    task_id = f"parse-{project_id}"
+    task = _get_task(task_id)
+    if task:
+        task["is_cancelled"] = True
+    
+    # Also attempt to cancel TTS tasks if they are running under tts-{project_id}
+    tts_task_id = f"tts-{project_id}"
+    tts_task = _get_task(tts_task_id)
+    if tts_task:
+        tts_task["is_cancelled"] = True
+
+    return {"message": "Task cancelled"}
+
 
 
 # ── Health ────────────────────────────────────────────────────────────────────
@@ -54,6 +85,33 @@ def _set_task(task_id: str, status: str, message: str = "", progress: int = 0):
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/system/diagnostics")
+async def system_diagnostics():
+    cpu = psutil.cpu_percent(interval=0.1)
+    memory = psutil.virtual_memory()
+    info = {
+        "cpu_percent": cpu,
+        "ram_total_mb": round(memory.total / 1024**2),
+        "ram_used_mb": round(memory.used / 1024**2),
+        "ram_percent": memory.percent,
+        "vram_total_mb": 0,
+        "vram_used_mb": 0,
+        "vram_percent": 0.0,
+    }
+    try:
+        import torch
+        if torch.cuda.is_available():
+            vram_total = torch.cuda.get_device_properties(0).total_memory
+            vram_allocated = torch.cuda.memory_allocated(0)
+            info["vram_total_mb"] = round(vram_total / 1024**2)
+            info["vram_used_mb"] = round(vram_allocated / 1024**2)
+            info["vram_percent"] = round((vram_allocated / vram_total) * 100, 1) if vram_total > 0 else 0.0
+    except Exception:
+        pass
+
+    return info
 
 
 @app.get("/api/system/info")
@@ -123,14 +181,6 @@ async def get_llm_models():
                 ("Qwen/Qwen2.5-0.5B-Instruct", "0.5B", 2000, False),
                 ("Qwen/Qwen2.5-1.5B-Instruct", "1.5B", 4000, False),
                 ("Qwen/Qwen2.5-7B-Instruct", "7B", 14000, False),
-            ]
-        },
-        {
-            "name": "SmolLM2",
-            "description": "HuggingFace's ultra-lightweight models. Good balance of speed and quality for constrained environments.",
-            "variants": [
-                ("HuggingFaceTB/SmolLM2-360M-Instruct", "360M", 1500, False),
-                ("HuggingFaceTB/SmolLM2-1.7B-Instruct", "1.7B", 4000, False),
             ]
         },
         {
@@ -257,13 +307,24 @@ def _run_parse(project_id: str, task_id: str, cleaner: str):
                 provider = "gemini" if cfg.gemini_api_key else "openai"
                 
             def _progress_cb(msg: str, pct: int):
-                # We map the 0-100 cleaner progress onto the 10-90 overarching file parsing slot
                 overall_prog = 10 + int(pct * 0.8)
                 _set_task(task_id, "running", msg, overall_prog)
+
+            def _output_cb(chunk_text: str):
+                _set_task(task_id, "running", append_output=chunk_text + "\n\n")
+
+            def _cancel_check():
+                t = _get_task(task_id)
+                return t and t.get("is_cancelled", False)
                 
-            cleaned = llm_clean_text(raw_text, provider=provider, progress_callback=_progress_cb)
+            cleaned = llm_clean_text(raw_text, provider=provider, progress_callback=_progress_cb, cancel_check=_cancel_check, output_callback=_output_cb)
         else:
             cleaned = regex_clean_text(raw_text)
+
+        t = _get_task(task_id)
+        if t and t.get("is_cancelled"):
+            _set_task(task_id, "error", "Task was cancelled.", t.get("progress", 0))
+            return
 
         cleaned_path = _project_path(project_id) / "cleaned_text.txt"
         cleaned_path.write_text(cleaned, encoding="utf-8")
@@ -390,6 +451,11 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
         audio_files = []
 
         for i, ch in enumerate(chapters):
+            t = _get_task(task_id)
+            if t and t.get("is_cancelled"):
+                _set_task(task_id, "error", "Task was cancelled.", t.get("progress", 0))
+                return
+
             progress = int((i / len(chapters)) * 90)
             _set_task(task_id, "running", f"Synthesizing chapter {i + 1}/{len(chapters)}…", progress)
             audio_path = exports_dir / f"chapter{i + 1:03d}.mp3"

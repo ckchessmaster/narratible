@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { getProject, updateProject, getChapters, saveChapters, uploadCover } from '../api'
 
-export default function Step2Editor({ projectId, onNext, onBack, toast }) {
+export default function Step2Editor({ projectId, isActive, onNext, onBack, toast }) {
   const [meta, setMeta] = useState({ title: '', author: '', cover_image: null })
   const [chapters, setChapters] = useState([])
   const [selectedIdx, setSelectedIdx] = useState(0)
@@ -11,7 +11,16 @@ export default function Step2Editor({ projectId, onNext, onBack, toast }) {
   const textareaRef = useRef()
 
   useEffect(() => {
-    if (!projectId) return
+    if (!projectId) {
+      setMeta({ title: '', author: '', cover_image: null })
+      setChapters([])
+      setSelectedIdx(0)
+      setLoading(true)
+      return
+    }
+    if (!isActive) return // Don't fetch if not active
+    
+    setLoading(true)
     Promise.all([getProject(projectId), getChapters(projectId)])
       .then(([p, chs]) => {
         setMeta({ title: p.title, author: p.author, cover_image: p.cover_image })
@@ -19,16 +28,10 @@ export default function Step2Editor({ projectId, onNext, onBack, toast }) {
       })
       .catch(e => toast(e.message, 'error'))
       .finally(() => setLoading(false))
-  }, [projectId])
+  }, [projectId, isActive])
 
   const updateChapter = (idx, field, value) => {
     setChapters(prev => prev.map((ch, i) => i === idx ? { ...ch, [field]: value } : ch))
-  }
-
-  const addChapter = () => {
-    const newCh = { title: `Chapter ${chapters.length + 1}`, text: '', audio_path: null }
-    setChapters(prev => [...prev, newCh])
-    setSelectedIdx(chapters.length)
   }
 
   const deleteChapter = (idx) => {
@@ -120,10 +123,6 @@ export default function Step2Editor({ projectId, onNext, onBack, toast }) {
         <div className="flex gap-2">
           <button className="btn btn-ghost btn-sm" onClick={splitAtCursor} title="Split chapter at cursor position">
             ✂ Split Here
-          </button>
-          <button className="btn btn-ghost btn-sm" onClick={addChapter}>+ Add Chapter</button>
-          <button className="btn btn-secondary btn-sm" onClick={handleSave} disabled={saving}>
-            {saving ? 'Saving…' : '💾 Save'}
           </button>
         </div>
       </div>

@@ -106,12 +106,13 @@ def save_chapters(project_id: str, chapters: list[dict]):
 
 def auto_split_chapters(text: str) -> list[dict]:
     """
-    Heuristically split cleaned text into chapters using common heading patterns.
-    Falls back to a single chapter if no headings are found.
+    Heuristically split cleaned text into chapters using Markdown headings and common patterns.
+    Captures text before the first heading as 'Frontmatter' if present.
     """
     import re
+    # Match markdown '# ' or common structural names, or numbered combinations
     pattern = re.compile(
-        r'^(chapter\s+\w+[^\n]*|part\s+\w+[^\n]*|\d+\.\s+[A-Z][^\n]+)',
+        r'^(#\s+[^\n]+|\s*(?:chapter|part)\s+[A-Za-z0-IVXLCDM]+[^\n]*|\d+\.\s+[A-Z][^\n]{3,60}|\s*(?:introduction|preface|prologue|epilogue|conclusion|foreword|acknowledgements?)\s*)$',
         re.IGNORECASE | re.MULTILINE,
     )
     matches = list(pattern.finditer(text))
@@ -119,10 +120,27 @@ def auto_split_chapters(text: str) -> list[dict]:
         return [{"title": "Chapter 1", "text": text, "audio_path": None}]
 
     chapters = []
+    
+    # Check for text before the first match
+    if matches[0].start() > 0:
+        frontmatter = text[:matches[0].start()].strip()
+        if frontmatter:
+            chapters.append({"title": "Frontmatter", "text": frontmatter, "audio_path": None})
+
     for i, match in enumerate(matches):
         start = match.start()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        # Clean title: Remove leading '# ' if present
         title = match.group(0).strip()
+        if title.startswith('# '):
+            title = title[2:].strip()
+            
         body = text[start:end].strip()
+        # Optionally remove the matched title from the body so it doesn't repeat immediately, 
+        # but since heading may have contextual newline we just strip if we want.
+        # usually simpler to leave it, or strip if exactly matches
+        if body.lower().startswith(match.group(0).lower().strip()):
+            body = body[len(match.group(0).strip()):].strip()
+            
         chapters.append({"title": title, "text": body, "audio_path": None})
     return chapters

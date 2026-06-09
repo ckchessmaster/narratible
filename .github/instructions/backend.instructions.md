@@ -1,7 +1,10 @@
 ---
 description: "Use when adding or modifying FastAPI endpoints, backend processing modules, config persistence, or Python dependencies in Echo-Scribe."
 name: "Echo-Scribe Backend Conventions"
-applyTo: "backend/**/*.py"
+applyTo:
+  - "backend/**/*.py"
+  - "backend/requirements.txt"
+  - "backend/Dockerfile*"
 ---
 # Echo-Scribe Backend Conventions
 

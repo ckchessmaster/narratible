@@ -8,7 +8,7 @@ const ENGINES = [
   { value: 'f5-tts',  label: 'F5-TTS Clone', desc: 'Voice cloning · Uses your uploaded sample · GPU' },
 ]
 
-export default function Step3TTS({ projectId, onNext, onBack, toast }) {
+export default function Step3TTS({ projectId, isActive, onNext, onBack, toast }) {
   const [engine, setEngine] = useState('edge-tts')
   const [voices, setVoices] = useState([])
   const [voice, setVoice] = useState('en-US-AriaNeural')
@@ -40,18 +40,26 @@ export default function Step3TTS({ projectId, onNext, onBack, toast }) {
 
   // Load voice samples
   useEffect(() => {
-    if (!projectId) return
+    if (!projectId || !isActive) return
     listVoiceSamples(projectId)
       .then(res => setVoiceSamples(res.voices))
       .catch(() => {})
-  }, [projectId])
+  }, [projectId, isActive])
 
   const handlePreview = async () => {
     if (!previewText.trim()) return
     setPreviewing(true)
     try {
       const res = await ttsPreview(projectId, previewText, engine, voice, speed)
-      if (!res.ok) { const e = await res.json(); throw new Error(e.detail); }
+      if (!res.ok) {
+        const text = await res.text();
+        try {
+          const e = JSON.parse(text);
+          throw new Error(e.detail || text);
+        } catch {
+          throw new Error(text);
+        }
+      }
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
       audioRef.current.src = url

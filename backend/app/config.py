@@ -9,10 +9,11 @@ class AppConfig(BaseModel):
     gemini_api_key: str = ""
     openai_api_key: str = ""
     huggingface_token: str = ""
-    embedded_llm_model: str = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+    embedded_llm_model: str = "Qwen/Qwen2.5-1.5B-Instruct"
     use_4bit_quantization: bool = False
     llm_chunk_size: int = 5000
-    multi_pass_cleaning: bool = False
+    cloud_llm_chunk_size: int = 25000
+    llm_temperature: float = 0.1
     audiobookshelf_url: str = ""
     audiobookshelf_token: str = ""
     default_tts_engine: str = "edge-tts"

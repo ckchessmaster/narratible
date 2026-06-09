@@ -8,6 +8,27 @@ logger = logging.getLogger(__name__)
 _kokoro_pipeline = None
 _f5tts_model = None
 
+def unload_tts():
+    """Explicitly unload TTS models to free up VRAM."""
+    global _kokoro_pipeline, _f5tts_model
+    import gc
+    freed = False
+    if _kokoro_pipeline is not None:
+        _kokoro_pipeline = None
+        freed = True
+    if _f5tts_model is not None:
+        _f5tts_model = None
+        freed = True
+    if freed:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+        gc.collect()
+        logger.info("Unloaded TTS models to free VRAM.")
+
 
 async def get_available_voices(engine: str = "edge-tts") -> list[dict]:
     """Return a list of available voices for the given engine."""
@@ -83,6 +104,12 @@ async def synthesize_speech(
         device = "cuda" if torch.cuda.is_available() else "cpu"
         # Reinitialise if the cached pipeline is on the wrong device
         if _kokoro_pipeline is None or getattr(_kokoro_pipeline, '_device', None) != device:
+            # Drop F5-TTS to save VRAM if caching Kokoro
+            global _f5tts_model
+            if _f5tts_model is not None:
+                _f5tts_model = None
+                torch.cuda.empty_cache()
+            
             logger.info(f"Loading Kokoro pipeline on {device}")
             _kokoro_pipeline = KPipeline(lang_code="a", device=device)
             _kokoro_pipeline._device = device  # tag for mismatch detection
@@ -96,11 +123,6 @@ async def synthesize_speech(
                 text, voice=voice, speed=speed, split_pattern=r"\n+"
             )
             segs = [audio for _, _, audio in generator]
-            # Free VRAM immediately
-            _kokoro_pipeline = None
-            torch.cuda.empty_cache()
-            import gc
-            gc.collect()
             return segs
 
         segments = await loop.run_in_executor(None, _infer_kokoro)
@@ -150,6 +172,12 @@ async def _synthesize_f5tts(
     # Reinitialise if the cached model is on the wrong device (e.g. first run was CPU)
     cached_device = getattr(_f5tts_model, '_echo_device', None)
     if _f5tts_model is None or cached_device != device:
+        # Drop Kokoro to save VRAM if caching F5-TTS
+        global _kokoro_pipeline
+        if _kokoro_pipeline is not None:
+            _kokoro_pipeline = None
+            torch.cuda.empty_cache()
+
         logger.info(f"Loading F5-TTS model on {device} (first run downloads ~800 MB)…")
         _f5tts_model = F5TTS(device=device)
         _f5tts_model._echo_device = device  # tag for mismatch detection
@@ -171,14 +199,6 @@ async def _synthesize_f5tts(
         return wav, sr
 
     wav, sr = await loop.run_in_executor(None, _infer)
-
-    # Free VRAM immediately
-    _f5tts_model = None
-    torch.cuda.empty_cache()
-    import gc
-    gc.collect()
-
-    sf.write(str(output_path), wav, sr)
 
     sf.write(str(output_path), wav, sr)
     logger.info(f"F5-TTS wrote {output_path}")

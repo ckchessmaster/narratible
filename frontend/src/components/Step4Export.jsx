@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { getProject, exportEpub, listExports, downloadExportUrl,
          getAbsLibraries, uploadToAbs, synthesizeBook, pollTask } from '../api'
 
-export default function Step4Export({ projectId, onBack, toast }) {
+export default function Step4Export({ projectId, isActive, onBack, toast }) {
   const [meta, setMeta] = useState(null)
   const [exports, setExports] = useState([])
   const [exporting, setExporting] = useState(false)
@@ -17,10 +17,10 @@ export default function Step4Export({ projectId, onBack, toast }) {
   const [loadingLibs, setLoadingLibs] = useState(false)
 
   useEffect(() => {
-    if (!projectId) return
+    if (!projectId || !isActive) return
     getProject(projectId).then(setMeta).catch(() => {})
     refreshExports()
-  }, [projectId])
+  }, [projectId, isActive])
 
   const refreshExports = () => {
     listExports(projectId)

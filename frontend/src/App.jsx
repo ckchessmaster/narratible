@@ -55,44 +55,55 @@ export default function App() {
           })}
         </nav>
 
-        <button className="btn btn-ghost btn-sm" onClick={() => setShowSettings(true)}>
-          ⚙ Settings
-        </button>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          {(step > 1 || projectId) && (
+            <button className="btn btn-ghost btn-sm" onClick={() => { setProjectId(null); setStep(1); }}>
+              ↺ Clear Project
+            </button>
+          )}
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowSettings(true)}>
+            ⚙ Settings
+          </button>
+        </div>
       </header>
 
       {/* Main */}
       <main className="main">
-        {step === 1 && (
+        <div style={{ display: step === 1 ? 'block' : 'none' }}>
           <Step1Upload
             projectId={projectId}
             setProjectId={setProjectId}
+            isActive={step === 1}
             onNext={next}
             toast={toast}
           />
-        )}
-        {step === 2 && (
+        </div>
+        <div style={{ display: step === 2 ? 'block' : 'none' }}>
           <Step2Editor
             projectId={projectId}
+            isActive={step === 2}
             onNext={next}
             onBack={back}
             toast={toast}
           />
-        )}
-        {step === 3 && (
+        </div>
+        <div style={{ display: step === 3 ? 'block' : 'none' }}>
           <Step3TTS
             projectId={projectId}
+            isActive={step === 3}
             onNext={next}
             onBack={back}
             toast={toast}
           />
-        )}
-        {step === 4 && (
+        </div>
+        <div style={{ display: step === 4 ? 'block' : 'none' }}>
           <Step4Export
             projectId={projectId}
+            isActive={step === 4}
             onBack={back}
             toast={toast}
           />
-        )}
+        </div>
       </main>
 
       {/* Settings modal */}

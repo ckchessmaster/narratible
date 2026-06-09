@@ -53,7 +53,7 @@ Open **http://localhost**.
 ### GPU (Kokoro + F5-TTS voice cloning enabled)
 Requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and Docker Desktop with GPU enabled.
 ```powershell
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+docker compose -f docker-compose.gpu.yml up --build
 ```
 > First GPU build is ~6 GB (PyTorch CUDA + kokoro + f5-tts). Subsequent builds use the cache.
 
