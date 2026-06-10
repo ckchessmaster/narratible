@@ -11,6 +11,30 @@ class CleanedTextResponse(BaseModel):
 
 logger = logging.getLogger(__name__)
 
+_cached_pipe = None
+_cached_pipe_kwargs = None
+
+def unload_llm():
+    """Explicitly unload LLM to free up VRAM."""
+    global _cached_pipe, _cached_pipe_kwargs
+    if _cached_pipe is not None:
+        if hasattr(_cached_pipe, 'model'):
+            del _cached_pipe.model
+        if hasattr(_cached_pipe, 'tokenizer'):
+            del _cached_pipe.tokenizer
+        del _cached_pipe
+        _cached_pipe = None
+        _cached_pipe_kwargs = None
+        
+        try:
+            import torch
+            import gc
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                gc.collect()
+        except ImportError:
+            pass
+
 def regex_clean_text(text: str) -> str:
     """
     Basic heuristic cleanup of text.
@@ -107,8 +131,11 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
             cleaned_chunks.append(main_text)
         if notes_text:
             all_notes.append(notes_text)
-        if output_callback:
-            output_callback(main_text + ("\n\n[Notes: " + notes_text + "]" if notes_text else ""))
+        # Avoid duplicating output for streaming providers by only appending separators
+        if provider != "embedded" and output_callback:
+            output_callback(main_text + ("\n\n[Notes: " + notes_text + "]" if notes_text else "") + "\n\n")
+        elif provider == "embedded" and output_callback:
+            output_callback("\n\n---\n\n")
 
     if provider == "embedded":
         import torch
@@ -152,12 +179,49 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
         else:
             pipe_kwargs["device"] = device
 
-        pipe = None
+        global _cached_pipe, _cached_pipe_kwargs
+        
         try:
-            report("Moving weights to GPU... (may take a moment)", 28)
-            pipe = pipeline(**pipe_kwargs)
+            from transformers.generation.streamers import BaseStreamer
+            
+            class CallbackStreamer(BaseStreamer):
+                def __init__(self, tokenizer, callback):
+                    self.tokenizer = tokenizer
+                    self.callback = callback
+                    self.is_first = True
+                    
+                def put(self, value):
+                    if self.is_first:
+                        self.is_first = False
+                        return # Skip the prompt part
+                    # decode without skip_special_tokens to preserve <think>
+                    text = self.tokenizer.decode(value, skip_special_tokens=False)
+                    # We might get some garbage tokens, but let's just forward it
+                    if self.callback and text:
+                        self.callback(text)
+                
+                def end(self):
+                    pass
+
+            if _cached_pipe is None or str(_cached_pipe_kwargs) != str(pipe_kwargs):
+                unload_llm()
+                report("Moving weights to GPU... (may take a moment)", 28)
+                _cached_pipe = pipeline(**pipe_kwargs)
+                _cached_pipe_kwargs = pipe_kwargs
+            else:
+                report("Using cached LLM weights...", 28)
+
+            pipe = _cached_pipe
             
             for i, chunk in enumerate(chunks):
+                # Pre-emptively clear any residual fragmentation before starting the next heavy generation
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except ImportError:
+                    pass
+
                 if cancel_check and cancel_check():
                     report("Processing cancelled.", 0)
                     raise InterruptedError("User cancelled LLM clean text operation.")
@@ -169,29 +233,46 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": build_prompt(chunk)},
                 ]
-                result = pipe(messages, max_new_tokens=4096, temperature=getattr(cfg, "llm_temperature", 0.1), repetition_penalty=1.2, do_sample=True)
+                
+                streamer = CallbackStreamer(pipe.tokenizer, output_callback)
+
+                result = pipe(
+                    messages, 
+                    max_new_tokens=4096, 
+                    temperature=getattr(cfg, "llm_temperature", 0.1), 
+                    repetition_penalty=1.2, 
+                    do_sample=True,
+                    streamer=streamer
+                )
                 out = result[0]['generated_text']
                 raw_out = out[-1]['content'].strip() if isinstance(out, list) else out.strip()
                 
                 main_text, notes_text = parse_output(raw_out)
                 process_chunk_result(main_text, notes_text)
                 
+                # Free activation memory between chunks
+                del streamer
+                del messages
+                del result
+                if 'out' in locals():
+                    del out
+                if 'raw_out' in locals():
+                    del raw_out
+                
+                try:
+                    import torch
+                    import gc
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except ImportError:
+                    pass
+
         except Exception as e:
             err_msg = str(e)
             if "403" in err_msg or "401" in err_msg or "gated" in err_msg.lower():
                 raise RuntimeError(f"Gated Model Access Denied: Ensure your HF token is correct") from e
             raise
-        finally:
-            report("Unloading model and freeing VRAM...", 92)
-            if pipe is not None:
-                if hasattr(pipe, 'model'):
-                    del pipe.model
-                if hasattr(pipe, 'tokenizer'):
-                    del pipe.tokenizer
-                del pipe
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                gc.collect()
 
     elif provider == "gemini" and cfg.gemini_api_key:
         from google import genai

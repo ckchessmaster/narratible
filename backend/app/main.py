@@ -86,37 +86,10 @@ async def health_check():
     return {"status": "ok"}
 
 
-@app.get("/api/system/diagnostics")
-async def system_diagnostics():
-    cpu = psutil.cpu_percent(interval=0.1)
-    memory = psutil.virtual_memory()
-    info = {
-        "cpu_percent": cpu,
-        "ram_total_mb": round(memory.total / 1024**2),
-        "ram_used_mb": round(memory.used / 1024**2),
-        "ram_percent": memory.percent,
-        "vram_total_mb": 0,
-        "vram_used_mb": 0,
-        "vram_percent": 0.0,
-    }
-    try:
-        import torch
-        if torch.cuda.is_available():
-            vram_total = torch.cuda.get_device_properties(0).total_memory
-            vram_allocated = torch.cuda.memory_allocated(0)
-            info["vram_total_mb"] = round(vram_total / 1024**2)
-            info["vram_used_mb"] = round(vram_allocated / 1024**2)
-            info["vram_percent"] = round((vram_allocated / vram_total) * 100, 1) if vram_total > 0 else 0.0
-    except Exception:
-        pass
-
-    return info
-
-
 @app.get("/api/system/info")
 async def system_info():
     """Returns GPU/CUDA availability — useful for debugging device selection."""
-    info: dict = {"cuda_available": False, "gpu_name": None, "torch_version": None}
+    info: dict = {"cuda_available": False, "gpu_name": None, "torch_version": None, "vram_total_mb": 0}
     try:
         import torch
         info["torch_version"] = torch.__version__
@@ -157,74 +130,60 @@ class LLMFamily(BaseModel):
     description: str
     variants: list[LLMVariant]
 
-class LLMModelsResponse(BaseModel):
-    system_vram_mb: int
-    families: list[LLMFamily]
-
-@app.get("/api/llm/models", response_model=LLMModelsResponse)
-async def get_llm_models():
-    """Returns local LLM recommendations based on available CUDA VRAM."""
-    vram_mb = 0
+@app.get("/api/llm/model-info")
+async def get_model_info(model_id: str, token: str = None):
+    """Dynamic fallback. Returns real model info directly from the Hugging Face API."""
+    cfg = load_config()
+    hf_token = token or cfg.huggingface_token
+    
     try:
-        import torch
-        if torch.cuda.is_available():
-            vram_mb = round(torch.cuda.get_device_properties(0).total_memory / 1024 ** 2)
-    except (ImportError, RuntimeError):
-        pass
-    
-    families_data = [
-        {
-            "name": "Qwen 2.5",
-            "description": "Very fast, highly capable models. Great for quick cleanup tasks on older systems. May struggle with extremely complex margins at smaller sizes.",
-            "variants": [
-                ("Qwen/Qwen2.5-0.5B-Instruct", "0.5B", 2000, False),
-                ("Qwen/Qwen2.5-1.5B-Instruct", "1.5B", 4000, False),
-                ("Qwen/Qwen2.5-7B-Instruct", "7B", 14000, False),
-            ]
-        },
-        {
-            "name": "Gemma 4",
-            "description": "Excellent reasoning and instruction following. Punches well above its weight class for its size.",
-            "variants": [
-                ("google/gemma-4-E4B-it", "E4B", 5500, True),
-                ("google/gemma-4-12B-it", "12B", 24000, True),
-                ("google/gemma-4-31B-it", "31B", 62000, True),
-            ]
-        },
-        {
-            "name": "Phi-3",
-            "description": "Microsoft's high quality reasoning model. Best for structured formatting and handling margin notes gracefully.",
-            "variants": [
-                ("microsoft/Phi-3-mini-4k-instruct", "Mini (3.8B)", 8000, False),
-                ("microsoft/Phi-3-small-8k-instruct", "Small (7B)", 15000, False),
-            ]
-        },
-        {
-            "name": "Llama 3",
-            "description": "Production-grade performance and excellent instruction following. Meta's latest lightweight and medium-weight models.",
-            "variants": [
-                ("meta-llama/Llama-3.2-1B-Instruct", "3.2 (1B)", 3500, True),
-                ("meta-llama/Llama-3.2-3B-Instruct", "3.2 (3B)", 7500, True),
-                ("meta-llama/Meta-Llama-3.1-8B-Instruct", "3.1 (8B)", 16000, True),
-            ]
+        from huggingface_hub import HfApi
+        from huggingface_hub.utils import RepositoryNotFoundError, GatedRepoError, HfHubHTTPError
+        
+        # Initialize api with or without a token
+        api = HfApi(token=hf_token if hf_token else None)
+        try:
+            info = api.model_info(model_id, files_metadata=True)
+        except GatedRepoError:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Gated model. Ensure you have accepted the EULA on HuggingFace and your token has access.")
+        except RepositoryNotFoundError:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Model not found on HuggingFace.")
+        except HfHubHTTPError as e:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail=f"HuggingFace API error: {str(e)}")
+        except Exception as e:
+             from fastapi import HTTPException
+             raise HTTPException(status_code=500, detail=f"Failed to fetch model info: {str(e)}")
+        
+        size_bytes = 0
+        if info.siblings:
+            # Estimate size from .safetensors (or .bin)
+            sizes = [f.size for f in info.siblings if f.size and f.rfilename.endswith('.safetensors')]
+            if not sizes:
+               sizes = [f.size for f in info.siblings if f.size and f.rfilename.endswith('.bin')]
+            size_bytes = sum(sizes)
+        
+        vram_mb = 0
+        try:
+            import torch
+            if torch.cuda.is_available():
+                vram_mb = round(torch.cuda.get_device_properties(0).total_memory / 1024 ** 2)
+        except Exception:
+            pass
+            
+        return {
+            "id": info.modelId,
+            "author": getattr(info, "author", "Unknown"),
+            "tags": getattr(info, "tags", []),
+            "gated": getattr(info, 'gated', None) not in [False, None, 'false'],
+            "size_mb": round(size_bytes / 1024**2) if size_bytes else 0,
+            "system_vram_mb": vram_mb
         }
-    ]
-    
-    families = []
-    for f in families_data:
-        variants = []
-        for v_id, v_name, v_min_vram, v_gated in f["variants"]:
-            variants.append(LLMVariant(
-                id=v_id,
-                name=v_name,
-                min_vram_mb=v_min_vram,
-                base_vram_mb=v_min_vram,
-                recommended=vram_mb >= v_min_vram if vram_mb > 0 else True,
-                gated=v_gated
-            ))
-        families.append(LLMFamily(name=f["name"], description=f["description"], variants=variants))
-    
-    return LLMModelsResponse(system_vram_mb=vram_mb, families=families)
+    except ImportError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail="huggingface_hub package is not installed.")
 
 
 # ── Projects ──────────────────────────────────────────────────────────────────
@@ -328,7 +287,8 @@ def _run_parse(project_id: str, task_id: str, cleaner: str):
                     _set_task(task_id, "running", f"Cleaning '{ch_title}' - {msg}", overall_prog)
 
                 def _output_cb(chunk_text: str):
-                    _set_task(task_id, "running", append_output=chunk_text + "\n\n")
+                    # We just append whatever token/text we received directly
+                    _set_task(task_id, "running", append_output=chunk_text)
 
                 cleaned_ch_text = llm_clean_text(
                     ch["raw_text"], 
@@ -357,6 +317,11 @@ def _run_parse(project_id: str, task_id: str, cleaner: str):
                     "warnings": ch.get("warnings", [])
                 })
                 full_cleaned_text += cleaned_txt + "\n\n"
+
+        # Unload the LLM from VRAM *after* all chapters are done parsing
+        if cleaner == "embedded":
+            from app.cleaner import unload_llm
+            unload_llm()
 
         t = _get_task(task_id)
         if t and t.get("is_cancelled"):

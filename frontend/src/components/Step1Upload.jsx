@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { createProject, uploadPdf, parsePdf, cancelTask, pollTask, getSystemDiagnostics } from '../api'
+import { createProject, uploadPdf, parsePdf, cancelTask, pollTask } from '../api'
 
 export default function Step1Upload({ projectId, setProjectId, onNext, toast }) {
   const [title, setTitle] = useState('')
@@ -15,7 +15,6 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast }) 
   const [llmOutput, setLlmOutput] = useState('')
   const [timeElapsed, setTimeElapsed] = useState(0)
   const [finalTime, setFinalTime] = useState(null)
-  const [diagnostics, setDiagnostics] = useState(null)
   
   const inputRef = useRef()
   const outputRef = useRef()
@@ -36,14 +35,6 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast }) 
       setFinalTime(null)
     }
   }, [projectId, setProjectId])
-
-  useEffect(() => {
-    // Poll diagnostics
-    const iv = setInterval(() => {
-      getSystemDiagnostics().then(d => setDiagnostics(d)).catch(() => {})
-    }, 2000)
-    return () => clearInterval(iv)
-  }, [])
 
   useEffect(() => {
     if (status === 'uploading' || status === 'parsing' || status === 'creating') {
@@ -143,41 +134,38 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast }) 
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
+  // Parses LLM output to handle <think> tags.
+  // Unclosed <think> is rendered in a darker/muted color.
+  // Closed <think>...</think> is completely removed so it disappears when real output is generated.
+  const renderLlmOutput = (text) => {
+    if (!text) return null;
+    
+    // First, remove fully closed think blocks completely
+    let processedText = text.replace(/<think>[\s\S]*?<\/think>/g, '');
+    
+    // Check if there is an unclosed think block at the end
+    const unclosedThinkIndex = processedText.indexOf('<think>');
+    if (unclosedThinkIndex !== -1) {
+      const beforeThink = processedText.substring(0, unclosedThinkIndex);
+      const thinkContent = processedText.substring(unclosedThinkIndex + 7); // 7 is length of <think>
+      
+      return (
+        <>
+          {beforeThink}
+          <div style={{ color: 'var(--text-muted)', opacity: 0.6, fontStyle: 'italic', marginTop: '8px', borderLeft: '2px solid var(--glass-border)', paddingLeft: '8px' }}>
+            <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '4px' }}>Thinking...</div>
+            {thinkContent}
+          </div>
+        </>
+      );
+    }
+    
+    return processedText;
+  }
+
   return (
     <div style={{ display: 'flex', gap: '20px', alignItems: 'stretch' }}>
       
-      {/* LEFT: Diagnostics */}
-      <div className="glass p-4" style={{ flex: '0 0 220px', borderRadius: 'var(--radius)', fontSize: '13px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
-        <h3 style={{ margin: 0, fontSize: '15px' }}>System</h3>
-        {diagnostics ? (
-          <>
-            <div>
-              <div className="text-secondary mb-1">CPU Usage</div>
-              <div className="flex gap-2 items-center">
-                <div className="progress-bar flex-1" style={{ height: 8 }}><div className="progress-bar-fill" style={{ width: `${diagnostics.cpu_percent}%` }} /></div>
-                <div style={{ width: 40, textAlign: 'right' }}>{diagnostics.cpu_percent.toFixed(1)}%</div>
-              </div>
-            </div>
-            <div>
-              <div className="text-secondary mb-1">RAM ({diagnostics.ram_used_mb} / {diagnostics.ram_total_mb} MB)</div>
-              <div className="flex gap-2 items-center">
-                <div className="progress-bar flex-1" style={{ height: 8 }}><div className="progress-bar-fill" style={{ width: `${diagnostics.ram_percent}%` }} /></div>
-                <div style={{ width: 40, textAlign: 'right' }}>{diagnostics.ram_percent.toFixed(1)}%</div>
-              </div>
-            </div>
-            {diagnostics.vram_total_mb > 0 && (
-              <div>
-                <div className="text-secondary mb-1">VRAM ({diagnostics.vram_used_mb} / {diagnostics.vram_total_mb} MB)</div>
-                <div className="flex gap-2 items-center">
-                  <div className="progress-bar flex-1" style={{ height: 8 }}><div className="progress-bar-fill" style={{ width: `${diagnostics.vram_percent}%`, backgroundColor: 'var(--primary)' }} /></div>
-                  <div style={{ width: 40, textAlign: 'right' }}>{diagnostics.vram_percent.toFixed(1)}%</div>
-                </div>
-              </div>
-            )}
-          </>
-        ) : <div className="text-muted">Loading...</div>}
-      </div>
-
       {/* CENTER: Form */}
       <div className="step-card" style={{ flex: '2', minWidth: 400 }}>
         <div className="step-header">
@@ -309,7 +297,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast }) 
             Live LLM Output
           </div>
           <div ref={outputRef} style={{ flex: 1, padding: 15, overflowY: 'auto', whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--foreground)' }}>
-            {llmOutput || <span className="text-muted italic">Processing will appear here...</span>}
+            {llmOutput ? renderLlmOutput(llmOutput) : <span className="text-muted italic">Processing will appear here...</span>}
           </div>
         </div>
       )}

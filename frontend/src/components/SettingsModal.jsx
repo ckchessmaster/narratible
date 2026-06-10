@@ -1,55 +1,106 @@
-import { useState, useEffect, useMemo } from 'react'
-import { getSettings, saveSettings, getLlmModels } from '../api'
+import { useState, useEffect } from 'react'
+import { getSettings, saveSettings } from '../api'
+
+const PRESET_FAMILIES = [
+  {
+    name: "DeepSeek R1 (Thinking)",
+    description: "Models that reason through OCR errors before outputting text.",
+    variants: [
+      { id: "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", name: "1.5B" },
+      { id: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", name: "7B" },
+      { id: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", name: "8B" },
+    ]
+  },
+  {
+    name: "Qwen 2.5",
+    description: "Fast, efficient workhorses. Great balance of speed and quality.",
+    variants: [
+      { id: "Qwen/Qwen2.5-0.5B-Instruct", name: "0.5B" },
+      { id: "Qwen/Qwen2.5-1.5B-Instruct", name: "1.5B" },
+      { id: "Qwen/Qwen2.5-3B-Instruct", name: "3B" },
+      { id: "Qwen/Qwen2.5-7B-Instruct", name: "7B" },
+    ]
+  },
+  {
+    name: "Llama 3",
+    description: "Meta's highly stable production models. (Gated)",
+    variants: [
+      { id: "meta-llama/Llama-3.2-1B-Instruct", name: "1B" },
+      { id: "meta-llama/Llama-3.2-3B-Instruct", name: "3B" },
+      { id: "meta-llama/Meta-Llama-3.1-8B-Instruct", name: "8B" },
+    ]
+  },
+  {
+    name: "Gemma 4",
+    description: "Google's reasoning and instruction following models. (Gated)",
+    variants: [
+      { id: "google/gemma-4-E2B-it", name: "E2B" },
+      { id: "google/gemma-4-E4B-it", name: "E4B" },
+      { id: "google/gemma-4-12B-it", name: "12B" },
+      { id: "google/gemma-4-31B-it", name: "31B" },
+    ]
+  },
+  {
+    name: "Phi-3.5",
+    description: "Microsoft's logic specialist. Good at formatting and document structure.",
+    variants: [
+      { id: "microsoft/Phi-3.5-mini-instruct", name: "3.8B" },
+    ]
+  }
+]
 
 export default function SettingsModal({ onClose, toast }) {
   const [cfg, setCfg] = useState(null)
   const [saving, setSaving] = useState(false)
-  const [llmModelsData, setLlmModelsData] = useState({ system_vram_mb: 0, families: [] })
-  const [familyVariants, setFamilyVariants] = useState({})
-
-  // Global sticky VRAM calculations
-  const isQuantized = cfg?.use_4bit_quantization || false
-  const chunkSize = cfg?.llm_chunk_size || 5000
-  // Note: Tokens map roughly to 4 chars. A 24K char chunk is roughly ~6K tokens.
-  // 6K context in a typical transformer demands closer to ~1.2GB padding 
-  const contextVramCost = (chunkSize / 1000) * 50 // Assume ~50MB per 1k chars of context
-  
-  const selectedModelInfo = useMemo(() => {
-    if (!llmModelsData || !llmModelsData.families) return null;
-    for (const family of llmModelsData.families) {
-      const variant = family.variants.find(v => v.id === cfg?.embedded_llm_model);
-      if (variant) return variant;
-    }
-    return null;
-  }, [llmModelsData, cfg?.embedded_llm_model]);
-
-  const activeBaseVram = selectedModelInfo ? (selectedModelInfo.base_vram_mb || selectedModelInfo.min_vram_mb) : 0
-  const activeAdjVram = activeBaseVram ? (isQuantized ? activeBaseVram / 2 : activeBaseVram) + contextVramCost : 0
-  
-  const vramPercent = llmModelsData.system_vram_mb > 0 
-    ? Math.min(100, (activeAdjVram / llmModelsData.system_vram_mb) * 100) 
-    : 0
+  const [modelInfo, setModelInfo] = useState(null)
+  const [checkingModel, setCheckingModel] = useState(false)
+  const [checkingModelError, setCheckingModelError] = useState(null) 
+  const [systemInfo, setSystemInfo] = useState(null)
 
   useEffect(() => {
-    Promise.all([getSettings(), getLlmModels()])
-      .then(([settingsData, modelsData]) => {
-        setCfg(settingsData)
-        setLlmModelsData(modelsData)
-        if (modelsData && modelsData.families) {
-          const initial = {}
-          modelsData.families.forEach(f => {
-            const found = f.variants.find(v => v.id === settingsData?.embedded_llm_model)
-            initial[f.name] = found ? found.id : f.variants[0].id
-          })
-          setFamilyVariants(initial)
-        }
-      })
-      .catch(e => {
-        console.warn('Failed to load modal data', e)
-        if (!cfg) toast('Failed to load settings', 'error')
-      })
+    getSettings().then(setCfg).catch(e => {
+      console.warn('Failed to load settings', e)
+      if (!cfg) toast('Failed to load settings', 'error')
+    })
+    import('../api').then(({ getSystemInfo }) => {
+      getSystemInfo().then(setSystemInfo).catch(e => console.warn('Failed to load system info', e))
+    })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Auto-verify model when the selected model string changes (debounced slightly to avoid spamming if typing)
+  useEffect(() => {
+    if (!cfg?.embedded_llm_model) {
+      setModelInfo(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      handleCheckModel();
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [cfg?.embedded_llm_model, cfg?.huggingface_token]);
+
+  const handleCheckModel = async () => {
+    if (!cfg?.embedded_llm_model) return;
+    
+    setCheckingModel(true);
+    setCheckingModelError(null);
+    setModelInfo(null);
+    
+    try {
+      const res = await fetch(`/api/llm/model-info?model_id=${encodeURIComponent(cfg.embedded_llm_model)}&token=${encodeURIComponent(cfg.huggingface_token || '')}`);
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.detail || "Failed to fetch model info");
+      }
+      const data = await res.json();
+      setModelInfo(data);
+    } catch (e) {
+      setCheckingModelError(e.message);
+    } finally {
+      setCheckingModel(false);
+    }
+  }
 
   const set = (key, val) => setCfg(c => ({ ...c, [key]: val }))
 
@@ -163,147 +214,116 @@ export default function SettingsModal({ onClose, toast }) {
                 </label>
               </div>
 
-              {llmModelsData.system_vram_mb > 0 && activeBaseVram > 0 && (
-                <div className="glass p-3 mb-4" style={{ position: 'sticky', top: 0, zIndex: 10, background: 'var(--bg-primary)', borderBottom: '1px solid var(--glass-border)' }}>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span style={{ fontWeight: 600 }}>Active VRAM Usage ({selectedModelInfo?.name})</span>
-                    <span>
-                      {(activeAdjVram / 1024).toFixed(1)}GB / {(llmModelsData.system_vram_mb / 1024).toFixed(1)}GB
-                      {isQuantized && <span style={{ color: 'var(--accent-primary)', marginLeft: 4 }}>(4-bit)</span>}
-                    </span>
-                  </div>
-                  <div className="progress-bar" style={{ height: 8 }}>
-                    <div 
-                      className="progress-bar-fill" 
-                      style={{ 
-                        width: `${vramPercent}%`,
-                        background: vramPercent > 100 ? 'var(--danger)' : (vramPercent > 80 ? 'orange' : 'var(--success)')
-                      }} 
-                    />
-                  </div>
-                </div>
-              )}
+              <div className="flex flex-col gap-4 mt-2 mb-4">
+                {PRESET_FAMILIES.map(family => {
+                  const isFamilySelected = family.variants.some(v => v.id === cfg?.embedded_llm_model)
 
-              {llmModelsData.families.length > 0 ? (
-                <div className="flex flex-col gap-4 mt-2">
-                  {llmModelsData.families.map(family => {
-                    const activeVariantId = familyVariants[family.name] 
-                      || family.variants.find(v => v.id === cfg?.embedded_llm_model)?.id 
-                      || family.variants[0].id
-                    
-                    const activeVariant = family.variants.find(v => v.id === activeVariantId) || family.variants[0]
-                    const isFamilySelected = family.variants.some(v => v.id === cfg?.embedded_llm_model)
-
-                    // Dynamic VRAM calculations based on Quantization & Chunk toggle
-                    const isQuantized = cfg?.use_4bit_quantization || false
-                    const chunkSize = cfg?.llm_chunk_size || 5000
-                    const contextVramCost = (chunkSize / 1000) * 50 // Assume ~50MB per 1k chars of context
-                    
-                    const activeBaseVram = activeVariant.base_vram_mb || activeVariant.min_vram_mb
-                    const activeAdjVram = (isQuantized ? activeBaseVram / 2 : activeBaseVram) + contextVramCost
-                    
-                    const isActiveRecommended = llmModelsData.system_vram_mb > 0 
-                      ? llmModelsData.system_vram_mb >= activeAdjVram 
-                      : true
-                    
-                    const isGated = activeVariant.gated
-                    const hasToken = !!cfg?.huggingface_token
-                    const needsToken = isGated && !hasToken
-                    // Gated models require EULA agreement regardless of token presence.
-                    // We only "disable" selection if the token is completely missing.
-                    const isDisabled = !isActiveRecommended || needsToken
-
-                    return (
-                      <div
-                        key={family.name}
-                        className={`glass p-4 flex flex-col gap-3 ${!isDisabled ? 'glass-hover' : ''}`}
-                        style={{
-                          borderRadius: 'var(--radius-sm)',
-                          opacity: !isDisabled ? 1 : 0.65,
-                          border: isFamilySelected ? '2px solid var(--accent-primary)' : ''
-                        }}
-                      >
-                        <div className="flex items-start gap-3">
-                          <input
-                            type="radio"
-                            name="embedded_llm_model_family"
-                            checked={isFamilySelected}
-                            onChange={() => set('embedded_llm_model', activeVariantId)}
-                            disabled={isDisabled}
-                            style={{ marginTop: 4, cursor: !isDisabled ? 'pointer' : 'not-allowed' }}
-                          />
-                          <div style={{ flex: 1 }}>
-                            <div className="flex justify-between items-center mb-1">
-                              <div style={{ fontWeight: 600, fontSize: 15 }}>
-                                {family.name}
-                                {!isActiveRecommended && (
-                                  <span className="text-danger text-xs ml-2">(Insufficient VRAM)</span>
-                                )}
-                              </div>
+                  return (
+                    <div
+                      key={family.name}
+                      className="glass p-4 flex flex-col gap-3 glass-hover"
+                      style={{
+                        borderRadius: 'var(--radius-sm)',
+                        border: isFamilySelected ? '2px solid var(--accent-primary)' : ''
+                      }}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div style={{ flex: 1 }}>
+                          <div className="flex justify-between items-center mb-1">
+                            <div style={{ fontWeight: 600, fontSize: 15 }}>
+                              {family.name}
                             </div>
-                            <div className="text-xs text-muted mb-3">{family.description}</div>
+                          </div>
+                          <div className="text-xs text-muted mb-3">{family.description}</div>
 
-                            <div className="flex flex-wrap gap-2 mb-3">
-                              {family.variants.map(v => {
-                                const isVariantSelected = v.id === activeVariantId
-                                const btnStyle = isVariantSelected 
-                                  ? { background: 'var(--accent-primary)', color: '#fff', borderColor: 'transparent' }
-                                  : { background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }
-                                return (
-                                  <button
-                                    key={v.id}
-                                    type="button"
-                                    onClick={() => {
-                                      setFamilyVariants(prev => ({...prev, [family.name]: v.id}))
-                                      if (isFamilySelected) set('embedded_llm_model', v.id)
-                                    }}
-                                    style={{
-                                      fontSize: 12, padding: '4px 12px', borderRadius: 16, 
-                                      border: '1px solid var(--glass-border)', cursor: 'pointer',
-                                      transition: 'all 0.2s', ...btnStyle
-                                    }}
-                                  >
-                                    {v.name}
-                                  </button>
-                                )
-                              })}
-                            </div>
-
-                            {isGated && (
-                              <div className="mb-3 p-2 text-xs" style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: 6 }}>
-                                <span className="text-warning" style={{ fontWeight: 600 }}>⚠ Gated Model: </span> 
-                                {needsToken ? "Requires a HuggingFace Token above. " : ""}
-                                Make sure you have <a href={`https://huggingface.co/${activeVariant.id}`} target="_blank" rel="noreferrer" style={{color: 'var(--accent-primary)', textDecoration: 'underline'}}>accepted the license agreement here ↗</a> with your HuggingFace account before use.
-                              </div>
-                            )}
+                          <div className="flex flex-wrap gap-2 mb-1">
+                            {family.variants.map(v => {
+                              const isVariantSelected = v.id === cfg?.embedded_llm_model
+                              const btnStyle = isVariantSelected 
+                                ? { background: 'var(--accent-primary)', color: '#fff', borderColor: 'transparent' }
+                                : { background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }
+                              return (
+                                <button
+                                  key={v.id}
+                                  type="button"
+                                  onClick={() => set('embedded_llm_model', v.id)}
+                                  style={{
+                                    fontSize: 12, padding: '4px 12px', borderRadius: 16, 
+                                    border: '1px solid var(--glass-border)', cursor: 'pointer',
+                                    transition: 'all 0.2s', ...btnStyle
+                                  }}
+                                >
+                                  {v.name}
+                                </button>
+                              )
+                            })}
                           </div>
                         </div>
                       </div>
-                    )
-                  })}
-                  <div className="text-xs text-muted mt-3">
-                    Alternatively, specify a custom HuggingFace model ID below:
-                  </div>
-                  <input
-                    type="text"
-                    placeholder="Custom model ID..."
-                    value={cfg.embedded_llm_model}
-                    onChange={e => set('embedded_llm_model', e.target.value)}
-                  />
+                    </div>
+                  )
+                })}
+              </div>
+
+<div className="text-xs text-muted mt-3 mb-2" style={{ fontWeight: 600 }}>
+                Currently Selected Model ID:
+              </div>
+
+              <div className="glass p-4" style={{ borderRadius: 'var(--radius-sm)', border: '1px solid var(--accent-primary)' }}>
+                 <div className="flex gap-2 mb-3">
+                   <input 
+                     type="text" 
+                     value={cfg?.embedded_llm_model || ''}
+                     onChange={e => {
+                       set('embedded_llm_model', e.target.value);
+                       setModelInfo(null); // Clear previous check if typed manually
+                     }}
+                     placeholder="e.g. google/gemma-4-E4B-it"
+                     style={{ flex: 1, fontWeight: 500, border: '1px solid var(--glass-border)' }}
+                   />
+                 </div>
+
+                 {checkingModel && (
+                   <div className="text-muted text-sm mb-3 italic">
+                     Querying Hugging Face for model details...
+                   </div>
+                 )}
+
+                 {checkingModelError && !checkingModel && (
+                     <div className="text-danger text-sm mb-3">
+                       {checkingModelError}
+                     </div>
+                   )}
+
+                 {modelInfo && !checkingModelError && !checkingModel && (
+                     <div className="text-sm p-3 bg-base" style={{ borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)' }}>
+                       <div className="flex justify-between mb-1">
+                         <strong>{modelInfo.id}</strong>
+                         <span className="text-muted">{modelInfo.size_mb > 0 ? `${(modelInfo.size_mb / 1024).toFixed(1)} GB` : 'Unknown size'}</span>
+                       </div>
+                       
+                       <div className="text-muted text-xs mb-2">
+                         {modelInfo.author && <span className="mr-2">👤 {modelInfo.author}</span>}
+                         Tags: {modelInfo.tags?.slice(0, 5).join(', ')}{modelInfo.tags?.length > 5 ? '...' : ''}
+                       </div>
+                       
+                       {modelInfo.gated && (
+                         <div className="mb-2 p-2 text-xs" style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: 6 }}>
+                           <span className="text-warning" style={{ fontWeight: 600 }}>⚠ Gated Model: </span> 
+                           Make sure you have <a href={`https://huggingface.co/${modelInfo.id}`} target="_blank" rel="noreferrer" style={{color: 'var(--accent-primary)', textDecoration: 'underline'}}>accepted the license agreement here ↗</a> with your HuggingFace account before use.
+                         </div>
+                       )}
+
+                       {modelInfo.system_vram_mb > 0 && modelInfo.size_mb > 0 && (
+                         <div className={`text-xs ${modelInfo.size_mb > modelInfo.system_vram_mb ? 'text-danger' : 'text-success'}`} style={{ marginTop: '8px' }}>
+                           {modelInfo.size_mb > modelInfo.system_vram_mb 
+                             ? `Warning: Model size (${(modelInfo.size_mb / 1024).toFixed(1)} GB) exceeds your system VRAM (${(modelInfo.system_vram_mb / 1024).toFixed(1)} GB). It will likely fall back to slow CPU RAM.`
+                             : `Model size should fit within your ${ (modelInfo.system_vram_mb / 1024).toFixed(1) } GB of VRAM limit.`}
+                         </div>
+                       )}
+                     </div>
+                   )}
                 </div>
-              ) : (
-                <>
-                  <input
-                    type="text"
-                    placeholder="HuggingFaceTB/SmolLM2-1.7B-Instruct"
-                    value={cfg.embedded_llm_model}
-                    onChange={e => set('embedded_llm_model', e.target.value)}
-                  />
-                  <div className="text-xs text-muted mt-1">
-                    Local model loaded via Transformers. Make sure you have enough VRAM.
-                  </div>
-                </>
-              )}
             </div>
 
             <div className="field mt-3">

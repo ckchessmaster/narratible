@@ -26,12 +26,10 @@ async function request(method, path, body, isFormData = false) {
 }
 
 // API endpoints
-export const getSystemDiagnostics = () => request('GET', '/system/diagnostics')
-
 // Settings
 export const getSettings = () => request('GET', '/settings')
 export const saveSettings = (cfg) => request('PUT', '/settings', cfg)
-export const getLlmModels = () => request('GET', '/llm/models')
+export const getSystemInfo = () => request('GET', '/system/info')
 
 // Projects
 export const listProjects = () => request('GET', '/projects')

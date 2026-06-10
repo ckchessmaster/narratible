@@ -40,10 +40,14 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     setChapters(prev => {
       const updated = [...prev]
       const toDelete = updated[idx]
-      const mergeTargetIdx = idx > 0 ? idx - 1 : 1
       
-      // Merge text
-      updated[mergeTargetIdx].text = `${updated[mergeTargetIdx].text}\n\n${toDelete.text}`.trim()
+      if (idx === 0) {
+        // Merge to the top of next chapter
+        updated[1].text = `${toDelete.text}\n\n${updated[1].text}`.trim()
+      } else {
+        // Merge to the bottom of previous chapter
+        updated[idx - 1].text = `${updated[idx - 1].text}\n\n${toDelete.text}`.trim()
+      }
       
       return updated.filter((_, i) => i !== idx)
     })
@@ -149,7 +153,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="truncate text-sm flex items-center gap-1" style={{ fontWeight: i === selectedIdx ? 600 : 400 }}>
                   {ch.title || `Chapter ${i + 1}`}
-                  {(ch.warnings?.length > 0 || (ch.confidence && ch.confidence < 0.9)) && (
+                  {ch.warnings?.length > 0 && (
                     <span title="Verify boundaries" style={{ fontSize: 10 }}>⚠️</span>
                   )}
                 </div>
@@ -183,7 +187,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
                   style={{ fontWeight: 600, fontSize: 15 }}
                 />
               </div>
-              {(ch.warnings?.length > 0 || (ch.confidence && ch.confidence < 0.9)) && (
+              {ch.warnings?.length > 0 && (
                 <div style={{
                   padding: '8px 12px',
                   background: 'rgba(234, 179, 8, 0.1)',
@@ -196,8 +200,8 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
                 }}>
                   <span style={{ fontSize: 16 }}>⚠️</span>
                   <div>
-                    <div style={{ fontWeight: 600 }}>Low Confidence Chapter Split</div>
-                    {ch.warnings?.map((w, i) => <div key={i}>{w}</div>)}
+                    <div style={{ fontWeight: 600 }}>Chapter Warnings</div>
+                    {ch.warnings.map((w, i) => <div key={i}>{w}</div>)}
                   </div>
                 </div>
               )}
