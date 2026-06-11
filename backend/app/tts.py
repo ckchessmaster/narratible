@@ -96,9 +96,9 @@ async def synthesize_speech(
             import soundfile as sf
             import numpy as np
             import torch
-        except ImportError:
+        except ImportError as e:
             raise ImportError(
-                "Kokoro is not installed. Run: pip install kokoro"
+                f"Kokoro or a dependency failed to load ({e}). Run: pip install kokoro"
             )
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -156,9 +156,9 @@ async def _synthesize_f5tts(
         import soundfile as sf
         import numpy as np
         from f5_tts.api import F5TTS
-    except ImportError:
+    except ImportError as e:
         raise ImportError(
-            "F5-TTS is not installed. Run: pip install f5-tts"
+            f"F5-TTS or a dependency failed to load ({e}). Run: pip install f5-tts"
         )
 
     if voice_sample_path is None or not voice_sample_path.exists():

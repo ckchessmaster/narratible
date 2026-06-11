@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { cancelTask } from './api'
 import './App.css'
 import './index.css'
 import Step1Upload from './components/Step1Upload'
@@ -64,7 +65,7 @@ export default function App() {
 
         <div style={{ display: "flex", gap: "0.5rem" }}>
           {(step > 1 || projectId) && (
-            <button className="btn btn-ghost btn-sm" onClick={() => { setProjectId(null); setStep(1); setMaxStep(1); }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => { if (projectId) cancelTask(projectId).catch(() => {}); setProjectId(null); setStep(1); setMaxStep(1); }}>
               ↺ Clear Project
             </button>
           )}

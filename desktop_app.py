@@ -63,9 +63,36 @@ def open_browser(url):
         time.sleep(0.5)
     print("Timeout waiting for internal server to start.")
 
+
+def _augment_path_with_ffmpeg():
+    """Prepend the winget FFmpeg bin directory to PATH if found.
+
+    The Inno Setup installer installs FFmpeg via winget at install time, but
+    the newly added PATH entry is not visible to the current process.  This
+    function locates the winget-managed FFmpeg package directory and injects
+    its bin/ folder so that subprocess calls can find ffmpeg.exe.
+    """
+    local_app_data = os.environ.get('LOCALAPPDATA', '')
+    if not local_app_data:
+        return
+    winget_pkgs = Path(local_app_data) / 'Microsoft' / 'WinGet' / 'Packages'
+    if not winget_pkgs.exists():
+        return
+    for candidate in sorted(winget_pkgs.glob('Gyan.FFmpeg*')):
+        for bin_dir in candidate.glob('*/bin'):
+            if bin_dir.is_dir():
+                current_path = os.environ.get('PATH', '')
+                os.environ['PATH'] = str(bin_dir) + os.pathsep + current_path
+                print(f"FFmpeg located at: {bin_dir}")
+                return
+
+
 if __name__ == "__main__":
     check_for_updates()
-    
+
+    if getattr(sys, 'frozen', False):
+        _augment_path_with_ffmpeg()
+
     port = 8000
     url = f"http://127.0.0.1:{port}"
     

@@ -508,15 +508,22 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
         if single_file and audio_files:
             _set_task(task_id, "running", "Merging audio files…", 95)
             import subprocess
+            ffmpeg_exe = shutil.which("ffmpeg")
+            if ffmpeg_exe is None:
+                logger.warning("FFmpeg not found on PATH; skipping merge.")
+                save_chapters(project_id, chapters)
+                _set_task(task_id, "error",
+                          "FFmpeg not found. Please reinstall Echo-Scribe to trigger FFmpeg installation.", 95)
+                return
             list_path = exports_dir / "concat_list.txt"
             with open(list_path, "w", encoding="utf-8") as f:
                 for audio_path in audio_files:
                     f.write(f"file '{audio_path.name}'\n")
-            
+
             merged_path = exports_dir / "audiobook.m4b"  # or .mp3
             try:
                 subprocess.run(
-                    ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_path), "-c", "copy", str(merged_path)],
+                    [ffmpeg_exe, "-y", "-f", "concat", "-safe", "0", "-i", str(list_path), "-c", "copy", str(merged_path)],
                     check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                 )
                 # optionally clean up individual chapters

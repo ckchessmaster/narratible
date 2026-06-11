@@ -139,12 +139,18 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
             output_callback("\n\n---\n\n")
 
     if provider == "embedded":
-        import torch
-        import gc
-        import os
-        from transformers import pipeline
-        from .tts import unload_tts
-        
+        try:
+            import torch
+            import gc
+            import os
+            from transformers import pipeline
+            from .tts import unload_tts
+        except ImportError as e:
+            raise ImportError(
+                f"Embedded LLM dependencies failed to load ({e}). "
+                "Ensure transformers and torch are installed."
+            )
+
         # Ensure TTS models are out of VRAM before we allocate LLM
         unload_tts()
 

@@ -22,6 +22,13 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
     refreshExports()
   }, [projectId, isActive])
 
+  useEffect(() => {
+    if (!projectId) {
+      setSynthesizing(false)
+      setTaskProgress(null)
+    }
+  }, [projectId])
+
   const refreshExports = () => {
     listExports(projectId)
       .then(res => setExports(res.files))
