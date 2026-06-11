@@ -80,4 +80,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: EchoScribe-Installer
-          path: Output/EchoScribe_Installer.exe
+          path: packaging/Output/EchoScribe_Installer.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packaging/Output/EchoScribe_Installer.exe
+          generate_release_notes: true
