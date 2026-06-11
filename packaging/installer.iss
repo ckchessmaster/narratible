@@ -1,7 +1,7 @@
 [Setup]
 AppId={{ECHO-SCRIBE-8A7B-4E3D-9F1C-2D5A6B7C8D9E}
 AppName=Echo-Scribe
-AppVersion=0.1.0
+AppVersion={#MyAppVersion}
 DefaultDirName={localappdata}\EchoScribe
 DefaultGroupName=Echo-Scribe
 OutputBaseFilename=EchoScribe_Installer

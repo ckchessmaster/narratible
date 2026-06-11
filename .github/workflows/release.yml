@@ -11,6 +11,11 @@ on:
         required: true
         type: boolean
         default: true
+      version:
+        description: 'Version string to embed (e.g. 1.2.0). Defaults to the tag name on tag pushes.'
+        required: false
+        type: string
+        default: '0.0.0-dev'
 
 jobs:
   build-windows:
@@ -29,6 +34,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Set Version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -match 'refs/tags/v(.+)') {
+            $version = $matches[1]
+          } else {
+            $version = '${{ inputs.version }}'
+          }
+          echo "APP_VERSION=$version" >> $env:GITHUB_ENV
+          # Patch desktop_app.py
+          (Get-Content desktop_app.py) -replace '(?<=APP_VERSION = ")[^"]+', $version | Set-Content desktop_app.py
+          # Patch backend/app/main.py
+          (Get-Content backend/app/main.py) -replace '(?<=FastAPI\(title="Echo-Scribe API", version=")[^"]+', $version | Set-Content backend/app/main.py
 
       - name: Build Frontend
         run: |
@@ -53,8 +72,9 @@ jobs:
           python -m PyInstaller --name EchoScribe --add-data "frontend/dist;frontend_dist" --onedir desktop_app.py --noconfirm
 
       - name: Compile Inno Setup Installer
+        shell: pwsh
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /Q "packaging\installer.iss"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$env:APP_VERSION" packaging\installer.iss
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
