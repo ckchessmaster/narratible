@@ -138,6 +138,28 @@ class LLMFamily(BaseModel):
     description: str
     variants: list[LLMVariant]
 
+
+@app.get("/api/gemini/models")
+async def list_gemini_models(api_key: str = None):
+    """Return Gemini models that support generateContent, using the provided or configured API key."""
+    cfg = load_config()
+    key = api_key or cfg.gemini_api_key
+    if not key:
+        raise HTTPException(status_code=400, detail="No Gemini API key configured.")
+    try:
+        from google import genai
+        client = genai.Client(api_key=key)
+        models = [
+            {"id": m.name.removeprefix("models/"), "display_name": m.display_name}
+            for m in client.models.list()
+            if "generateContent" in (m.supported_actions or [])
+        ]
+        models.sort(key=lambda m: m["id"])
+        return {"models": models}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/llm/model-info")
 async def get_model_info(model_id: str, token: str = None):
     """Dynamic fallback. Returns real model info directly from the Hugging Face API."""

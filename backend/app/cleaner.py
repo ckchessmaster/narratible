@@ -1,5 +1,6 @@
 import re
 import json
+import time
 import logging
 from openai import OpenAI
 from pydantic import BaseModel
@@ -301,11 +302,30 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
                 response_schema=CleanedTextResponse,
             )
 
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=build_cloud_prompt(chunk),
-                config=config,
-            )
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    response = client.models.generate_content(
+                        model=getattr(cfg, "gemini_model", "gemini-2.5-flash"),
+                        contents=build_cloud_prompt(chunk),
+                        config=config,
+                    )
+                    break
+                except Exception as api_err:
+                    err_str = str(api_err)
+                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                        if "free_tier" in err_str or "limit: 0" in err_str:
+                            raise RuntimeError(
+                                "Gemini free-tier quota exhausted (limit is 0). "
+                                "Enable billing on your Google AI account or switch to a paid tier: "
+                                "https://ai.google.dev/gemini-api/docs/rate-limits"
+                            ) from api_err
+                        if attempt < max_retries - 1:
+                            wait = 2 ** attempt * 10
+                            report(f"Gemini rate limited, retrying in {wait}s... (attempt {attempt+1}/{max_retries})", base_prog)
+                            time.sleep(wait)
+                            continue
+                    raise
             try:
                 res_obj = CleanedTextResponse.model_validate_json(response.text.strip())
                 process_chunk_result(res_obj.main_text, res_obj.notes_text)

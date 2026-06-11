@@ -16,6 +16,7 @@ const STEPS = [
 
 export default function App() {
   const [step, setStep] = useState(1)
+  const [maxStep, setMaxStep] = useState(1)
   const [projectId, setProjectId] = useState(null)
   const [showSettings, setShowSettings] = useState(false)
   const [toasts, setToasts] = useState([])
@@ -26,7 +27,7 @@ export default function App() {
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000)
   }, [])
 
-  const next = () => setStep(s => Math.min(s + 1, 4))
+  const next = () => setStep(s => { const n = Math.min(s + 1, 4); setMaxStep(m => Math.max(m, n)); return n })
   const back = () => setStep(s => Math.max(s - 1, 1))
 
   return (
@@ -43,8 +44,14 @@ export default function App() {
             const n = i + 1
             const isActive = step === n
             const isDone = step > n
+            const isReachable = n <= maxStep && n !== step
             return (
-              <div key={n} className="step-item">
+              <div
+                key={n}
+                className="step-item"
+                style={{ cursor: isReachable ? 'pointer' : 'default' }}
+                onClick={() => isReachable && setStep(n)}
+              >
                 {i > 0 && <div className="step-connector" />}
                 <div className={`step-num ${isActive ? 'active' : isDone ? 'done' : ''}`}>
                   {isDone ? '✓' : n}
@@ -57,7 +64,7 @@ export default function App() {
 
         <div style={{ display: "flex", gap: "0.5rem" }}>
           {(step > 1 || projectId) && (
-            <button className="btn btn-ghost btn-sm" onClick={() => { setProjectId(null); setStep(1); }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => { setProjectId(null); setStep(1); setMaxStep(1); }}>
               ↺ Clear Project
             </button>
           )}

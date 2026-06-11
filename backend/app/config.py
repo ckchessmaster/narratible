@@ -13,9 +13,10 @@ else:
 
 class AppConfig(BaseModel):
     gemini_api_key: str = ""
+    gemini_model: str = "gemma-4-31b-it"
     openai_api_key: str = ""
     huggingface_token: str = ""
-    embedded_llm_model: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    embedded_llm_model: str = "google/gemma-4-E2B-it"
     use_4bit_quantization: bool = False
     llm_chunk_size: int = 5000
     cloud_llm_chunk_size: int = 25000

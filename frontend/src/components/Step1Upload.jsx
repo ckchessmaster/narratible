@@ -283,6 +283,11 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast }) 
                 Abort
               </button>
             )}
+            {projectId && !busy && (
+              <button className="btn btn-secondary btn-lg" onClick={onNext}>
+                Continue →
+              </button>
+            )}
             <button className="btn btn-primary btn-lg" onClick={handleSubmit} disabled={busy}>
               {busy ? 'Processing...' : 'Parse PDF →'}
             </button>

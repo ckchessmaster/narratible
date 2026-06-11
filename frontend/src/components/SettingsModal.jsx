@@ -56,6 +56,8 @@ export default function SettingsModal({ onClose, toast }) {
   const [checkingModel, setCheckingModel] = useState(false)
   const [checkingModelError, setCheckingModelError] = useState(null) 
   const [systemInfo, setSystemInfo] = useState(null)
+  const [geminiModels, setGeminiModels] = useState(null)
+  const [fetchingGeminiModels, setFetchingGeminiModels] = useState(false)
 
   useEffect(() => {
     getSettings().then(setCfg).catch(e => {
@@ -104,6 +106,26 @@ export default function SettingsModal({ onClose, toast }) {
 
   const set = (key, val) => setCfg(c => ({ ...c, [key]: val }))
 
+  const fetchGeminiModels = async (apiKey) => {
+    const key = apiKey ?? cfg?.gemini_api_key
+    if (!key) return
+    setFetchingGeminiModels(true)
+    try {
+      const res = await fetch(`/api/gemini/models?api_key=${encodeURIComponent(key)}`)
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to fetch models')
+      }
+      const data = await res.json()
+      setGeminiModels(data.models)
+    } catch (e) {
+      setGeminiModels(null)
+      console.warn('Gemini model fetch failed:', e.message)
+    } finally {
+      setFetchingGeminiModels(false)
+    }
+  }
+
   const handleSave = async () => {
     setSaving(true)
     try {
@@ -133,17 +155,52 @@ export default function SettingsModal({ onClose, toast }) {
 
             <div className="field">
               <label>Gemini API Key</label>
-              <input
-                type="password"
-                placeholder="AIza…"
-                value={cfg.gemini_api_key}
-                onChange={e => set('gemini_api_key', e.target.value)}
-                autoComplete="off"
-              />
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type="password"
+                  placeholder="AIza…"
+                  value={cfg.gemini_api_key}
+                  onChange={e => set('gemini_api_key', e.target.value)}
+                  autoComplete="off"
+                  style={{ flex: 1 }}
+                />
+                <button
+                  className="btn btn-secondary"
+                  style={{ whiteSpace: 'nowrap', fontSize: '12px', padding: '0 10px' }}
+                  disabled={!cfg.gemini_api_key || fetchingGeminiModels}
+                  onClick={() => fetchGeminiModels(cfg.gemini_api_key)}
+                >
+                  {fetchingGeminiModels ? '…' : 'Load Models'}
+                </button>
+              </div>
               <div className="text-xs text-muted mt-1">
                 Used for LLM-based text cleanup.{' '}
                 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
                   style={{ color: 'var(--accent-primary)' }}>Get key →</a>
+              </div>
+            </div>
+
+            <div className="field">
+              <label>Gemini Model</label>
+              {geminiModels ? (
+                <select
+                  value={cfg.gemini_model || 'gemini-2.5-flash'}
+                  onChange={e => set('gemini_model', e.target.value)}
+                >
+                  {geminiModels.map(m => (
+                    <option key={m.id} value={m.id}>{m.display_name || m.id}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  placeholder="gemini-2.5-flash"
+                  value={cfg.gemini_model || ''}
+                  onChange={e => set('gemini_model', e.target.value)}
+                />
+              )}
+              <div className="text-xs text-muted mt-1">
+                Enter a model ID manually or click "Load Models" above to pick from available models.
               </div>
             </div>
 
