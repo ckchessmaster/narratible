@@ -53,9 +53,8 @@ jobs:
           python -m PyInstaller --name EchoScribe --add-data "frontend/dist;frontend_dist" --onedir desktop_app.py --noconfirm
 
       - name: Compile Inno Setup Installer
-        uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
-        with:
-          path: packaging\installer.iss
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /Q "packaging\installer.iss"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
