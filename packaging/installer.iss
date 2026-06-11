@@ -14,6 +14,7 @@ SetupMutex=EchoScribeSetupMutex
 
 [Files]
 Source: "..\dist\EchoScribe\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\LICENSES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Echo-Scribe"; Filename: "{app}\EchoScribe.exe"; IconFilename: "{app}\EchoScribe.exe"
