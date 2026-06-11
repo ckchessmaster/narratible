@@ -50,7 +50,7 @@ jobs:
 
       - name: Compile PyInstaller Standalone App
         run: |
-          python -m PyInstaller --name EchoScribe --skip-version-info --add-data "frontend/dist;frontend_dist" --onedir desktop_app.py --noconfirm
+          python -m PyInstaller --name EchoScribe --add-data "frontend/dist;frontend_dist" --onedir desktop_app.py --noconfirm
 
       - name: Compile Inno Setup Installer
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
