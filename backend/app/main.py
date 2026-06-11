@@ -1,11 +1,14 @@
 import logging
 import shutil
+import os
+import sys
 from pathlib import Path
 import psutil
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .config import AppConfig, load_config, save_config
@@ -32,10 +35,15 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Echo-Scribe API", version="0.1.0")
 
+# In packaged mode, allow all origins so the local static frontend can fetch from the backend
+cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+if getattr(sys, 'frozen', False):
+    cors_origins.append("*")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=True if not getattr(sys, 'frozen', False) else False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -690,3 +698,20 @@ def _find_voice_sample(project_id: str) -> Path | None:
         if matches:
             return matches[0]
     return None
+
+
+# ── Static Frontend Serving (PyInstaller Packaged) ────────────────────────────
+from fastapi.responses import HTMLResponse
+
+if getattr(sys, "frozen", False):
+    frontend_dist = Path(sys._MEIPASS) / "frontend_dist"
+    if frontend_dist.exists():
+        app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
+        
+        @app.get("/{full_path:path}")
+        async def serve_frontend(full_path: str):
+            # Fallback to index.html for SPA routing
+            local_path = frontend_dist / full_path
+            if local_path.is_file() and full_path != "":
+                return FileResponse(local_path)
+            return FileResponse(frontend_dist / "index.html")

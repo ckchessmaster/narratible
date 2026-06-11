@@ -1,9 +1,15 @@
 import os
+import sys
 import json
 from pydantic import BaseModel
 from pathlib import Path
 
-CONFIG_FILE = Path.home() / ".echo_scribe_config.json"
+if getattr(sys, 'frozen', False):
+    _app_data_dir = Path(os.environ.get('APPDATA', Path.home())) / "EchoScribe"
+    _app_data_dir.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE = _app_data_dir / "config.json"
+else:
+    CONFIG_FILE = Path.home() / ".echo_scribe_config.json"
 
 class AppConfig(BaseModel):
     gemini_api_key: str = ""

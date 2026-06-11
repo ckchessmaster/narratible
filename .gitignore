@@ -21,3 +21,14 @@ Thumbs.db
 backend/projects/
 .echo_scribe_config.json
 /reports
+
+# Packaging
+desktop_app.spec
+EchoScribe.spec
+EchoScribe_Installer.exe
+EchoScribe-*.zip
+packaging/Output/
+packaging/build/
+packaging/dist/
+frontend_dist/
+build_local.ps1

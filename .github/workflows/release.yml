@@ -1,0 +1,64 @@
+name: Build Windows Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      include_gpu_engines:
+        description: 'Include heavy GPU dependencies (PyTorch/Kokoro/F5-TTS, ~4GB download)'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build Frontend
+        run: |
+          cd frontend
+          npm install
+          npm run build
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install pyinstaller requests psutil uvicorn
+
+      - name: Install GPU ML Components
+        if: ${{ inputs.include_gpu_engines == true || github.event_name == 'push' }}
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cu121
+          pip install kokoro f5-tts transformers accelerate bitsandbytes
+
+      - name: Compile PyInstaller Standalone App
+        run: |
+          python -m PyInstaller --name EchoScribe --skip-version-info --add-data "frontend/dist;frontend_dist" --onedir desktop_app.py --noconfirm
+
+      - name: Compile Inno Setup Installer
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+        with:
+          path: packaging\installer.iss
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EchoScribe-Installer
+          path: Output/EchoScribe_Installer.exe

@@ -2,13 +2,20 @@ import uuid
 import json
 import shutil
 import logging
+import sys
+import os
 from pathlib import Path
 from pydantic import BaseModel
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-PROJECTS_DIR = Path(__file__).parent.parent / "projects"
+if getattr(sys, 'frozen', False):
+    _app_data_dir = Path(os.environ.get('APPDATA', Path.home())) / "EchoScribe"
+    _app_data_dir.mkdir(parents=True, exist_ok=True)
+    PROJECTS_DIR = _app_data_dir / "projects"
+else:
+    PROJECTS_DIR = Path(__file__).parent.parent / "projects"
 
 
 class ProjectMetadata(BaseModel):
