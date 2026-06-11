@@ -1,5 +1,8 @@
-MIT License
+=======================================================================
+Echo-Scribe Licenses and Third-Party Attributions
+=======================================================================
 
+Echo-Scribe is open-source software released under the MIT License.
 Copyright (c) 2026 Chris Kingdon
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -19,3 +22,44 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+=======================================================================
+Third-Party Software Attributions
+=======================================================================
+This software automatically bundles or utilizes several open-source 
+technologies. Below are the licenses for the major components used:
+
+--- Python ---
+The Python runtime is distributed under the PSF (Python Software Foundation) License.
+
+--- FastAPI ---
+MIT License
+Copyright (c) 2018 Sebastián Ramírez
+
+--- Uvicorn ---
+BSD 3-Clause License
+Copyright (c) 2017-present, Tom Christie
+
+--- React & Vite ---
+React: MIT License - Copyright (c) Meta Platforms, Inc. and affiliates.
+Vite: MIT License - Copyright (c) 2019-present, Evan You and Vite contributors.
+
+--- PyTorch ---
+Modified BSD License
+Copyright (c) 2014-present, Facebook, Inc.
+
+--- Kokoro TTS ---
+Apache 2.0 License
+(c) Kokoro Contributors
+
+--- F5-TTS ---
+MIT License
+(c) F5-TTS Contributors
+
+--- FFmpeg ---
+FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
+The Echo-Scribe Windows application utilizes `winget` to download official GPL windows binaries from Gyan.dev at runtime. FFmpeg source code can be found at https://ffmpeg.org. 
+
+=======================================================================
+All third-party libraries are subject to their respective licenses.
+=======================================================================
