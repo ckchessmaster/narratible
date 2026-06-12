@@ -159,7 +159,12 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
             os.environ["HF_TOKEN"] = hf_token
             os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = "cuda"
+        if not __import__('torch').cuda.is_available():
+            raise RuntimeError(
+                "The embedded LLM requires a CUDA-capable GPU. "
+                "No GPU was detected on this system."
+            )
         model_name = cfg.embedded_llm_model or "HuggingFaceTB/SmolLM2-1.7B-Instruct"
 
         report(f"Loading embedded LLM '{model_name.split('/')[-1]}' into VRAM...", 25)
@@ -167,11 +172,11 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
         pipe_kwargs = {
             "task": "text-generation",
             "model": model_name,
-            "torch_dtype": torch.float16 if device == "cuda" else torch.float32,
+            "torch_dtype": torch.float16,
             "token": hf_token
         }
 
-        if getattr(cfg, "use_4bit_quantization", False) and device == "cuda":
+        if getattr(cfg, "use_4bit_quantization", False):
             report("Initializing 4-bit Quantization configs...", 26)
             from transformers import BitsAndBytesConfig
             pipe_kwargs["model_kwargs"] = {
@@ -184,7 +189,7 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
             }
             pipe_kwargs["device_map"] = "auto"
         else:
-            pipe_kwargs["device"] = device
+            pipe_kwargs["device"] = "cuda"
 
         global _cached_pipe, _cached_pipe_kwargs
         

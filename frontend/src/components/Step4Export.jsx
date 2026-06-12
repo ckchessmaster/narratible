@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { getProject, exportEpub, listExports, downloadExportUrl,
          getAbsLibraries, uploadToAbs, synthesizeBook, pollTask } from '../api'
 
@@ -16,6 +16,10 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
   const [uploadLog, setUploadLog] = useState([])
   const [loadingLibs, setLoadingLibs] = useState(false)
 
+  // Incremented every time a new synthesis starts or the project is cleared.
+  // The pollTask callback checks this to discard results from a stale session.
+  const synthesizeSessionRef = useRef(0)
+
   useEffect(() => {
     if (!projectId || !isActive) return
     getProject(projectId).then(setMeta).catch(() => {})
@@ -24,6 +28,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
 
   useEffect(() => {
     if (!projectId) {
+      synthesizeSessionRef.current += 1  // invalidate any in-progress poll
       setSynthesizing(false)
       setTaskProgress(null)
     }
@@ -62,19 +67,23 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
       toast('Please go back and configure a voice first.', 'error')
       return
     }
+    const session = ++synthesizeSessionRef.current
     setSynthesizing(true)
     setTaskProgress({ status: 'running', message: 'Queued…', progress: 0 })
     try {
       const { task_id } = await synthesizeBook(projectId, meta.tts_engine, meta.tts_voice, meta.tts_speed, singleAudio)
-      await pollTask(task_id, t => setTaskProgress(t))
-      if (taskProgress?.status !== 'error') {
-        toast('Synthesis complete!', 'success')
+      await pollTask(task_id, t => {
+        if (synthesizeSessionRef.current !== session) return
+        setTaskProgress(t)
+      })
+      if (synthesizeSessionRef.current === session) {
+        if (taskProgress?.status !== 'error') toast('Synthesis complete!', 'success')
+        refreshExports()
       }
-      refreshExports()
     } catch (e) {
-      toast(e.message, 'error')
+      if (synthesizeSessionRef.current === session) toast(e.message, 'error')
     } finally {
-      setSynthesizing(false)
+      if (synthesizeSessionRef.current === session) setSynthesizing(false)
     }
   }
 

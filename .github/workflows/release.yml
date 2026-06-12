@@ -6,11 +6,6 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
-      include_gpu_engines:
-        description: 'Include heavy GPU dependencies (PyTorch/Kokoro/F5-TTS, ~4GB download)'
-        required: true
-        type: boolean
-        default: true
       version:
         description: 'Version string to embed (e.g. 1.2.0). Defaults to the tag name on tag pushes.'
         required: false
@@ -51,6 +46,27 @@ jobs:
           # Patch backend/app/main.py
           (Get-Content backend/app/main.py) -replace '(?<=FastAPI\(title="Echo-Scribe API", version=")[^"]+', $version | Set-Content backend/app/main.py
 
+      - name: Cache pip (base dependencies)
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-base-${{ runner.os }}-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: pip-base-${{ runner.os }}-
+
+      - name: Cache pip (GPU ML components)
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-gpu-${{ runner.os }}-cu121-kokoro-f5tts-transformers
+          restore-keys: pip-gpu-${{ runner.os }}-
+
+      - name: Cache PyInstaller work directory
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: pyinstaller-${{ runner.os }}-${{ hashFiles('EchoScribe.spec', 'desktop_app.py', 'backend/**/*.py') }}
+          restore-keys: pyinstaller-${{ runner.os }}-
+
       - name: Build Frontend
         run: |
           cd frontend
@@ -64,14 +80,13 @@ jobs:
           pip install pyinstaller requests psutil uvicorn
 
       - name: Install GPU ML Components
-        if: ${{ inputs.include_gpu_engines == true || github.event_name == 'push' }}
         run: |
           pip install torch --index-url https://download.pytorch.org/whl/cu121
           pip install kokoro f5-tts transformers accelerate bitsandbytes
 
       - name: Compile PyInstaller Standalone App
         run: |
-          python -m PyInstaller EchoScribe.spec --noconfirm
+          python -m PyInstaller EchoScribe.spec --noconfirm --workpath build\pyinstaller-work --distpath dist
 
       - name: Compile Inno Setup Installer
         shell: pwsh

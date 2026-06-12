@@ -59,18 +59,14 @@ Then open **http://localhost:5173** in your browser.
 
 ## Docker
 
-### CPU-only (Edge-TTS works, no Kokoro/F5-TTS)
+Requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and Docker Desktop with GPU enabled.
+
 ```powershell
 docker compose up --build
 ```
 Open **http://localhost**.
 
-### GPU (Kokoro + F5-TTS voice cloning enabled)
-Requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and Docker Desktop with GPU enabled.
-```powershell
-docker compose -f docker-compose.gpu.yml up --build
-```
-> First GPU build is ~6 GB (PyTorch CUDA + kokoro + f5-tts). Subsequent builds use the cache.
+> First build is ~6 GB (PyTorch CUDA + kokoro + f5-tts). Subsequent builds use the cache.
 
 Project files persist in Docker named volumes (`projects_data`, `config_data`).  
 The API is also available directly at **http://localhost:8000/docs** (Swagger UI).

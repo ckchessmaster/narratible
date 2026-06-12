@@ -97,22 +97,54 @@ async def synthesize_speech(
             import numpy as np
             import torch
         except ImportError as e:
+            import sys
+            if getattr(sys, 'frozen', False):
+                raise ImportError(
+                    "Kokoro TTS is not available in this build. "
+                    "Please use Edge TTS, or download a GPU-enabled build from GitHub."
+                ) from e
             raise ImportError(
                 f"Kokoro or a dependency failed to load ({e}). Run: pip install kokoro"
+            ) from e
+
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "Kokoro TTS requires a CUDA-capable GPU. "
+                "No GPU was detected on this system."
             )
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        # Reinitialise if the cached pipeline is on the wrong device
-        if _kokoro_pipeline is None or getattr(_kokoro_pipeline, '_device', None) != device:
-            # Drop F5-TTS to save VRAM if caching Kokoro
+        if _kokoro_pipeline is None:
+            # Drop F5-TTS to save VRAM before loading Kokoro
             global _f5tts_model
             if _f5tts_model is not None:
                 _f5tts_model = None
                 torch.cuda.empty_cache()
-            
-            logger.info(f"Loading Kokoro pipeline on {device}")
-            _kokoro_pipeline = KPipeline(lang_code="a", device=device)
-            _kokoro_pipeline._device = device  # tag for mismatch detection
+
+            logger.info("Loading Kokoro pipeline on cuda")
+            # trf=False: use en_core_web_sm (smaller) instead of en_core_web_trf.
+            # In a frozen build spacy.util.is_package() can return False for
+            # bundled models because importlib.metadata doesn't enumerate frozen
+            # packages reliably. Patch it so the download is never triggered.
+            try:
+                import sys as _sys
+                if getattr(_sys, 'frozen', False):
+                    import spacy.util as _spacy_util
+                    _real_is_package = _spacy_util.is_package
+                    _spacy_util.is_package = (
+                        lambda name: True
+                        if name in ('en_core_web_sm', 'en_core_web_trf')
+                        else _real_is_package(name)
+                    )
+            except Exception:
+                pass
+            try:
+                _kokoro_pipeline = KPipeline(lang_code="a", device="cuda", trf=False)
+            except SystemExit as e:
+                raise RuntimeError(
+                    "Kokoro failed to load: the spaCy language model (en_core_web_sm) "
+                    "could not be found or downloaded. "
+                    f"(SystemExit {e})"
+                ) from e
 
         import asyncio
         loop = asyncio.get_event_loop()
@@ -152,36 +184,49 @@ async def _synthesize_f5tts(
     """
     global _f5tts_model
     try:
+        import sys as _sys
         import torch
         import soundfile as sf
         import numpy as np
+        # torch.jit.script no-op is now applied in the runtime hook before
+        # any ML library loads. The guard here is a belt-and-suspenders
+        # fallback for non-frozen (dev) runs where the hook doesn't execute.
+        if getattr(_sys, 'frozen', False) and not getattr(torch.jit, '_echoscribe_noop', False):
+            torch.jit.script = lambda fn, *a, **k: fn
+            torch.jit._echoscribe_noop = True
         from f5_tts.api import F5TTS
     except ImportError as e:
+        import sys
+        if getattr(sys, 'frozen', False):
+            raise ImportError(
+                "F5-TTS (voice cloning) is not available in this build. "
+                "Please use Edge TTS, or download a GPU-enabled build from GitHub."
+            ) from e
         raise ImportError(
             f"F5-TTS or a dependency failed to load ({e}). Run: pip install f5-tts"
-        )
+        ) from e
 
     if voice_sample_path is None or not voice_sample_path.exists():
         raise ValueError(
             "F5-TTS requires a voice sample. Upload a .wav file in Step 3 first."
         )
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    logger.info(f"F5-TTS device: {device}")
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "F5-TTS (voice cloning) requires a CUDA-capable GPU. "
+            "No GPU was detected on this system."
+        )
 
-    # Reinitialise if the cached model is on the wrong device (e.g. first run was CPU)
-    cached_device = getattr(_f5tts_model, '_echo_device', None)
-    if _f5tts_model is None or cached_device != device:
-        # Drop Kokoro to save VRAM if caching F5-TTS
+    if _f5tts_model is None:
+        # Drop Kokoro to save VRAM before loading F5-TTS
         global _kokoro_pipeline
         if _kokoro_pipeline is not None:
             _kokoro_pipeline = None
             torch.cuda.empty_cache()
 
-        logger.info(f"Loading F5-TTS model on {device} (first run downloads ~800 MB)…")
-        _f5tts_model = F5TTS(device=device)
-        _f5tts_model._echo_device = device  # tag for mismatch detection
-        logger.info(f"F5-TTS loaded on {device}")
+        logger.info("Loading F5-TTS model on cuda (first run downloads ~800 MB)…")
+        _f5tts_model = F5TTS(device="cuda")
+        logger.info("F5-TTS loaded on cuda")
 
     logger.info(f"F5-TTS cloning from {voice_sample_path}")
 
