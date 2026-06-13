@@ -1,5 +1,5 @@
 """
-Audiobookshelf uploader for Echo-Scribe.
+Audiobookshelf uploader for narratible.
 Uploads EPUB/MP3 exports to a local or remote Audiobookshelf instance.
 """
 import logging

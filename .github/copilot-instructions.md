@@ -4,7 +4,7 @@ Agent guidance for this repository. Keep changes small and aligned with the curr
 
 ## Project Snapshot
 
-- Product: Echo-Scribe (PDF to ebook/audiobook workflow)
+- Product: narratible (PDF to ebook/audiobook workflow)
 - Monorepo layout:
   - backend: FastAPI service and processing modules
   - frontend: React + Vite UI

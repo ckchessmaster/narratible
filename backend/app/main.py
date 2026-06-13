@@ -33,7 +33,7 @@ from .uploader import AudiobookshelfUploader
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Echo-Scribe API", version="0.1.0")
+app = FastAPI(title="narratible API", version="0.1.0")
 
 # In packaged mode, allow all origins so the local static frontend can fetch from the backend
 cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -630,7 +630,7 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 logger.warning("FFmpeg not found on PATH; skipping merge.")
                 save_chapters(project_id, chapters)
                 _set_task(task_id, "error",
-                          "FFmpeg not found. Please reinstall Echo-Scribe to trigger FFmpeg installation.", 95)
+                          "FFmpeg not found. Please reinstall narratible to trigger FFmpeg installation.", 95)
                 return
             list_path = exports_dir / "concat_list.txt"
             with open(list_path, "w", encoding="utf-8") as f:

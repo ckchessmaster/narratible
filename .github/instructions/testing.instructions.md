@@ -1,6 +1,6 @@
 ---
-description: "Use when creating or modifying backend/frontend unit tests in Echo-Scribe. Enforces manual mutation checks and report generation."
-name: "Echo-Scribe Testing And Mutation Policy"
+description: "Use when creating or modifying backend/frontend unit tests in narratible. Enforces manual mutation checks and report generation."
+name: "narratible Testing And Mutation Policy"
 applyTo:
   - "backend/tests/**/*.py"
   - "frontend/src/**/*.test.js"
@@ -12,7 +12,7 @@ applyTo:
   - "frontend/src/**/*.spec.ts"
   - "frontend/src/**/*.spec.tsx"
 ---
-# Echo-Scribe Testing And Mutation Policy
+# narratible Testing And Mutation Policy
 
 When a unit test is introduced or changed, treat mutation validation as required.
 
@@ -37,4 +37,4 @@ When a unit test is introduced or changed, treat mutation validation as required
 
 ## Skill Shortcut
 
-Use [run-test-validation.ps1](../skills/echo-scribe-test-runner/scripts/run-test-validation.ps1) to execute checks and write a timestamped report.
+Use [run-test-validation.ps1](../skills/narratible-test-runner/scripts/run-test-validation.ps1) to execute checks and write a timestamped report.

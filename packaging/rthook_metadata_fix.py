@@ -41,8 +41,8 @@ _imeta.from_name = _safe_from_name
 # etc. silently leave the functions as plain Python. Inference is unaffected.
 try:
     import torch as _torch
-    if not getattr(_torch.jit, '_echoscribe_noop', False):
+    if not getattr(_torch.jit, '_narratible_noop', False):
         _torch.jit.script = lambda fn, *a, **kw: fn
-        _torch.jit._echoscribe_noop = True
+        _torch.jit._narratible_noop = True
 except Exception:
     pass

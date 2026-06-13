@@ -5,11 +5,11 @@ from pydantic import BaseModel
 from pathlib import Path
 
 if getattr(sys, 'frozen', False):
-    _app_data_dir = Path(os.environ.get('APPDATA', Path.home())) / "EchoScribe"
+    _app_data_dir = Path(os.environ.get('APPDATA', Path.home())) / "narratible"
     _app_data_dir.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE = _app_data_dir / "config.json"
 else:
-    CONFIG_FILE = Path.home() / ".echo_scribe_config.json"
+    CONFIG_FILE = Path.home() / ".narratible_config.json"
 
 class AppConfig(BaseModel):
     llm_provider: str = "gemini"  # "gemini" | "openai" | "local" | "none"

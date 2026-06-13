@@ -5,11 +5,11 @@ param(
 
 if ($Full) {
     Write-Host "=====================================" -ForegroundColor Cyan
-    Write-Host " Building Echo-Scribe (exe + installer)" -ForegroundColor Cyan
+    Write-Host " Building narratible (exe + installer)" -ForegroundColor Cyan
     Write-Host "=====================================" -ForegroundColor Cyan
 } else {
     Write-Host "=====================================" -ForegroundColor Cyan
-    Write-Host " Building Echo-Scribe (exe only)" -ForegroundColor Cyan
+    Write-Host " Building narratible (exe only)" -ForegroundColor Cyan
     Write-Host "=====================================" -ForegroundColor Cyan
 }
 
@@ -28,14 +28,14 @@ Write-Host "`n[2] Freezing Python backend with PyInstaller..." -ForegroundColor 
 # Ensure pyinstaller is installed in the active environment
 python -m pip install pyinstaller
 # --workpath keeps the analysis cache between runs so re-builds are faster
-python -m PyInstaller EchoScribe.spec --noconfirm --workpath build\pyinstaller-work --distpath dist
+python -m PyInstaller narratible.spec --noconfirm --workpath build\pyinstaller-work --distpath dist
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "`n[ERROR] PyInstaller failed (exit code $LASTEXITCODE)." -ForegroundColor Red
     exit $LASTEXITCODE
 }
 
-Write-Host "`nSUCCESS! Executable is at: dist\EchoScribe\EchoScribe.exe" -ForegroundColor Green
+Write-Host "`nSUCCESS! Executable is at: dist\narratible\narratible.exe" -ForegroundColor Green
 
 if (-not $Full) {
     exit 0
@@ -51,7 +51,7 @@ if (Test-Path $isccPath) {
     if (-not $version) { $version = "0.0.0-dev" }
     & $isccPath "/DMyAppVersion=$version" "packaging\installer.iss"
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "`nSUCCESS! Installer is at: packaging\Output\EchoScribe_Installer.exe" -ForegroundColor Green
+        Write-Host "`nSUCCESS! Installer is at: packaging\Output\narratible_Installer.exe" -ForegroundColor Green
     } else {
         Write-Host "`n[ERROR] Inno Setup compilation failed (exit code $LASTEXITCODE)." -ForegroundColor Red
     }

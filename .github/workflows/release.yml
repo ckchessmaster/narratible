@@ -44,7 +44,7 @@ jobs:
           # Patch desktop_app.py
           (Get-Content desktop_app.py) -replace '(?<=APP_VERSION = ")[^"]+', $version | Set-Content desktop_app.py
           # Patch backend/app/main.py
-          (Get-Content backend/app/main.py) -replace '(?<=FastAPI\(title="Echo-Scribe API", version=")[^"]+', $version | Set-Content backend/app/main.py
+          (Get-Content backend/app/main.py) -replace '(?<=FastAPI\(title="narratible API", version=")[^"]+', $version | Set-Content backend/app/main.py
 
       - name: Cache pip (base dependencies)
         uses: actions/cache@v4
@@ -64,7 +64,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build
-          key: pyinstaller-${{ runner.os }}-${{ hashFiles('EchoScribe.spec', 'desktop_app.py', 'backend/**/*.py') }}
+          key: pyinstaller-${{ runner.os }}-${{ hashFiles('narratible.spec', 'desktop_app.py', 'backend/**/*.py') }}
           restore-keys: pyinstaller-${{ runner.os }}-
 
       - name: Build Frontend
@@ -86,7 +86,7 @@ jobs:
 
       - name: Compile PyInstaller Standalone App
         run: |
-          python -m PyInstaller EchoScribe.spec --noconfirm --workpath build\pyinstaller-work --distpath dist
+          python -m PyInstaller narratible.spec --noconfirm --workpath build\pyinstaller-work --distpath dist
 
       - name: Compile Inno Setup Installer
         shell: pwsh
@@ -96,13 +96,13 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: EchoScribe-Installer
-          path: packaging/Output/EchoScribe_Installer.exe
+          name: narratible-Installer
+          path: packaging/Output/narratible_Installer.exe
           if-no-files-found: error
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: packaging/Output/EchoScribe_Installer.exe
+          files: packaging/Output/narratible_Installer.exe
           generate_release_notes: true

@@ -19,13 +19,13 @@ Thumbs.db
 
 # App specific
 backend/projects/
-.echo_scribe_config.json
+.narratible_config.json
 /reports
 
 # Packaging
 desktop_app.spec
-EchoScribe_Installer.exe
-EchoScribe-*.zip
+narratible_Installer.exe
+narritable-*.zip
 packaging/Output/
 packaging/build/
 packaging/dist/

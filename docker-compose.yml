@@ -1,4 +1,4 @@
-# Echo-Scribe — Docker Compose (GPU build, Kokoro + F5-TTS enabled)
+# narratible — Docker Compose (GPU build, Kokoro + F5-TTS enabled)
 # Requires NVIDIA Container Toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
 # Docker Desktop → Settings → Resources → GPU enabled  (Windows/WSL2)
 #
@@ -19,7 +19,7 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - projects_data:/app/projects   # persists all project files
-      - config_data:/root             # persists ~/.echo_scribe_config.json
+      - config_data:/root             # persists ~/.narratible_config.json
     ports:
       - "8000:8000"   # optional — for direct API access / Swagger UI
     deploy:

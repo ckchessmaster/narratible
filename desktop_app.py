@@ -30,7 +30,7 @@ def check_for_updates():
             return
             
         print("Checking for updates...")
-        response = requests.get("https://api.github.com/repos/ckchessmaster/echo-scribe/releases/latest", timeout=3)
+        response = requests.get("https://api.github.com/repos/ckchessmaster/narratible/releases/latest", timeout=3)
         if response.status_code == 200:
             latest_release = response.json()
             latest_version = latest_release.get("tag_name", "").lstrip("v")
@@ -42,7 +42,7 @@ def check_for_updates():
                 root = tk.Tk()
                 root.withdraw()
                 root.attributes("-topmost", True)
-                msg = f"A new version of Echo-Scribe is available! (v{latest_version})\n\nYou are currently running v{APP_VERSION}.\n\nWould you like to open GitHub to download the update?"
+                msg = f"A new version of narratible is available! (v{latest_version})\n\nYou are currently running v{APP_VERSION}.\n\nWould you like to open GitHub to download the update?"
                 if messagebox.askyesno("Update Available", msg):
                     webbrowser.open(latest_release.get("html_url"))
                 root.destroy()
@@ -55,7 +55,7 @@ def open_browser(url):
         try:
             r = requests.get(f"{url}/api/health", timeout=1)
             if r.status_code == 200:
-                print("Echo-Scribe started! Opening browser...")
+                print("narratible started! Opening browser...")
                 webbrowser.open(url)
                 return
         except Exception:
@@ -98,5 +98,5 @@ if __name__ == "__main__":
     
     threading.Thread(target=open_browser, args=(url,), daemon=True).start()
     
-    print(f"Starting Echo-Scribe on {url}...")
+    print(f"Starting narratible on {url}...")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")

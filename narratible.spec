@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# EchoScribe PyInstaller spec — GPU build only.
+# narratible PyInstaller spec — GPU build only.
 # All ML engines (transformers, kokoro, f5-tts, bitsandbytes) are expected
 # to be installed in the build environment. Build will fail if they are absent.
 
@@ -119,7 +119,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='EchoScribe',
+    name='narratible',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -139,5 +139,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='EchoScribe',
+    name='narratible',
 )

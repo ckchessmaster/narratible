@@ -13,7 +13,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
   const [voices, setVoices] = useState([])
   const [voice, setVoice] = useState('en-US-AriaNeural')
   const [speed, setSpeed] = useState(1.0)
-  const [previewText, setPreviewText] = useState('Welcome to Echo-Scribe. This is a preview of the selected voice.')
+  const [previewText, setPreviewText] = useState('Welcome to narratible. This is a preview of the selected voice.')
   const [previewing, setPreviewing] = useState(false)
   const [voiceSamples, setVoiceSamples] = useState([])
   const [loadingVoices, setLoadingVoices] = useState(false)

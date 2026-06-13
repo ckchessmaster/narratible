@@ -259,9 +259,9 @@ async def _synthesize_f5tts(
         # torch.jit.script no-op is now applied in the runtime hook before
         # any ML library loads. The guard here is a belt-and-suspenders
         # fallback for non-frozen (dev) runs where the hook doesn't execute.
-        if getattr(_sys, 'frozen', False) and not getattr(torch.jit, '_echoscribe_noop', False):
+        if getattr(_sys, 'frozen', False) and not getattr(torch.jit, '_narratible_noop', False):
             torch.jit.script = lambda fn, *a, **k: fn
-            torch.jit._echoscribe_noop = True
+            torch.jit._narratible_noop = True
         # F5-TTS calls torchaudio.load internally, which dispatches to
         # torchcodec on torchaudio >= 2.9.  torchcodec needs FFmpeg DLLs that
         # the frozen build lacks, so route torchaudio I/O through soundfile

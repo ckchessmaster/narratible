@@ -1,6 +1,6 @@
-# Echo-Scribe
+# narratible
 
-Echo-Scribe is an end-to-end PDF-to-Ebook/Audiobook creation tool. It parses a PDF, cleans up the text (handling footnotes, margins, and parsing artifacts), organizes the text into chapters with an interactive editor, generates natural-sounding audiobook files (MP3) using local/cloud TTS engines, compiles the book into EPUB, and can optionally upload the results to Audiobookshelf.
+narritable is an end-to-end PDF-to-Ebook/Audiobook creation tool. It parses a PDF, cleans up the text (handling footnotes, margins, and parsing artifacts), organizes the text into chapters with an interactive editor, generates natural-sounding audiobook files (MP3) using local/cloud TTS engines, compiles the book into EPUB, and can optionally upload the results to Audiobookshelf.
 
 ## Architecture
 
@@ -12,16 +12,16 @@ The project consists of two main components:
 
 ## Windows Native App Installer (.exe)
 
-For Windows users who want to run the app natively without Docker or starting separate server/frontend processes, Echo-Scribe provides a seamless standalone installer.
+For Windows users who want to run the app natively without Docker or starting separate server/frontend processes, narratible provides a seamless standalone installer.
 
 1. Navigate to the **Releases** tab on GitHub.
-2. Download the latest `EchoScribe_Installer.exe`.
-3. Run the installer and launch Echo-Scribe from your Start Menu.
+2. Download the latest `narratible_Installer.exe`.
+3. Run the installer and launch narratible from your Start Menu.
    - A background server will initialize quietly, and your default web browser will open to the app natively.
    - During the installation, FFmpeg is automatically downloaded via Windows Package Manager (`winget`) so that high-quality audio merging is fully enabled without triggering GPL distribution violations in the installer.
    - The installer bundles all other core dependencies (including the PyTorch CUDA extensions offline) so you can use high-quality local TTS engines like Kokoro and F5-TTS without any extra config.
 
-*Note: Data and configuration for packaged apps are saved in your user profile at `%APPDATA%\EchoScribe`.*
+*Note: Data and configuration for packaged apps are saved in your user profile at `%APPDATA%\narratible`.*
 
 ---
 
@@ -37,9 +37,9 @@ cd backend
 python run.py                   # starts FastAPI on http://localhost:8000
 ```
 
-> **First time only** — create the venv using the `echoscribe` conda env (Python 3.12):
+> **First time only** — create the venv using the `narratible` conda env (Python 3.12):
 > ```powershell
-> conda run -n echoscribe python -m venv .venv
+> conda run -n narratible python -m venv .venv
 > .venv\Scripts\pip install -r requirements.txt
 > .venv\Scripts\pip install kokoro f5-tts
 > .venv\Scripts\pip install torch --force-reinstall --index-url https://download.pytorch.org/whl/cu128

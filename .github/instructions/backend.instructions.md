@@ -1,12 +1,12 @@
 ---
-description: "Use when adding or modifying FastAPI endpoints, backend processing modules, config persistence, or Python dependencies in Echo-Scribe."
-name: "Echo-Scribe Backend Conventions"
+description: "Use when adding or modifying FastAPI endpoints, backend processing modules, config persistence, or Python dependencies in narratible."
+name: "narratible Backend Conventions"
 applyTo:
   - "backend/**/*.py"
   - "backend/requirements.txt"
   - "backend/Dockerfile*"
 ---
-# Echo-Scribe Backend Conventions
+# narratible Backend Conventions
 
 - Treat [implementation_plan.md](../../implementation_plan.md) as roadmap guidance only; verify current behavior from code.
 - Follow boundaries documented in [AGENTS.md](../../AGENTS.md) before introducing new modules.

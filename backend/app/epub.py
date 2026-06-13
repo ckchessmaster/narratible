@@ -1,5 +1,5 @@
 """
-EPUB generator for Echo-Scribe.
+EPUB generator for narratible.
 Produces a valid EPUB 3 file from chapter data and project metadata.
 """
 import uuid

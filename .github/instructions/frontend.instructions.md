@@ -1,6 +1,6 @@
 ---
-description: "Use when building or updating React wizard UI, component state flow, or CSS styling in frontend/src for Echo-Scribe."
-name: "Echo-Scribe Frontend Conventions"
+description: "Use when building or updating React wizard UI, component state flow, or CSS styling in frontend/src for narratible."
+name: "narratible Frontend Conventions"
 applyTo:
   - "frontend/src/**/*.jsx"
   - "frontend/src/**/*.js"
@@ -9,7 +9,7 @@ applyTo:
   - "frontend/Dockerfile*"
   - "frontend/src/**/*.css"
 ---
-# Echo-Scribe Frontend Conventions
+# narratible Frontend Conventions
 
 - Keep implementation aligned with current app boundaries documented in [AGENTS.md](../../AGENTS.md).
 - Prefer React function components and hooks, consistent with [frontend/src/App.jsx](../../frontend/src/App.jsx) and [frontend/src/main.jsx](../../frontend/src/main.jsx).

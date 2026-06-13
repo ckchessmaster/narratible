@@ -1,8 +1,8 @@
 =======================================================================
-Echo-Scribe Licenses and Third-Party Attributions
+narritable Licenses and Third-Party Attributions
 =======================================================================
 
-Echo-Scribe is open-source software released under the MIT License.
+narritable is open-source software released under the MIT License.
 Copyright (c) 2026 Chris Kingdon
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -58,7 +58,7 @@ MIT License
 
 --- FFmpeg ---
 FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
-The Echo-Scribe Windows application utilizes `winget` to download official GPL windows binaries from Gyan.dev at runtime. FFmpeg source code can be found at https://ffmpeg.org. 
+The narratible Windows application utilizes `winget` to download official GPL windows binaries from Gyan.dev at runtime. FFmpeg source code can be found at https://ffmpeg.org. 
 
 =======================================================================
 All third-party libraries are subject to their respective licenses.
