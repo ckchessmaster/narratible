@@ -31,6 +31,11 @@ export const getSettings = () => request('GET', '/settings')
 export const saveSettings = (cfg) => request('PUT', '/settings', cfg)
 export const getSystemInfo = () => request('GET', '/system/info')
 
+// Key validation
+export const validateGeminiKey = (api_key) => request('POST', '/validate/gemini-key', { api_key })
+export const validateOpenAIKey = (api_key) => request('POST', '/validate/openai-key', { api_key })
+export const validateHuggingFaceToken = (api_key) => request('POST', '/validate/huggingface-token', { api_key })
+
 // Projects
 export const listProjects = () => request('GET', '/projects')
 export const createProject = (title, author) => request('POST', '/projects', { title, author })

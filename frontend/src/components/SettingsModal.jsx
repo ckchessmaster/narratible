@@ -1,7 +1,19 @@
 import { useState, useEffect } from 'react'
-import { getSettings, saveSettings } from '../api'
+import { getSettings, saveSettings, getSystemInfo,
+         validateGeminiKey, validateOpenAIKey, validateHuggingFaceToken } from '../api'
 
 const PRESET_FAMILIES = [
+  {
+    name: "Gemma 4",
+    recommended: true,
+    description: "Google's reasoning and instruction-following models. (Gated)",
+    variants: [
+      { id: "google/gemma-4-E2B-it", name: "E2B" },
+      { id: "google/gemma-4-E4B-it", name: "E4B" },
+      { id: "google/gemma-4-12B-it", name: "12B" },
+      { id: "google/gemma-4-31B-it", name: "31B" },
+    ]
+  },
   {
     name: "DeepSeek R1 (Thinking)",
     description: "Models that reason through OCR errors before outputting text.",
@@ -31,16 +43,6 @@ const PRESET_FAMILIES = [
     ]
   },
   {
-    name: "Gemma 4",
-    description: "Google's reasoning and instruction following models. (Gated)",
-    variants: [
-      { id: "google/gemma-4-E2B-it", name: "E2B" },
-      { id: "google/gemma-4-E4B-it", name: "E4B" },
-      { id: "google/gemma-4-12B-it", name: "12B" },
-      { id: "google/gemma-4-31B-it", name: "31B" },
-    ]
-  },
-  {
     name: "Phi-3.5",
     description: "Microsoft's logic specialist. Good at formatting and document structure.",
     variants: [
@@ -49,62 +51,67 @@ const PRESET_FAMILIES = [
   }
 ]
 
+const TABS = [
+  ['ai', 'Cloud LLM Keys'],
+  ['local', 'Local AI'],
+  ['integrations', 'Integrations'],
+  ['system', 'System'],
+]
+
 export default function SettingsModal({ onClose, toast }) {
   const [cfg, setCfg] = useState(null)
   const [saving, setSaving] = useState(false)
-  const [modelInfo, setModelInfo] = useState(null)
-  const [checkingModel, setCheckingModel] = useState(false)
-  const [checkingModelError, setCheckingModelError] = useState(null) 
   const [systemInfo, setSystemInfo] = useState(null)
   const [geminiModels, setGeminiModels] = useState(null)
   const [fetchingGeminiModels, setFetchingGeminiModels] = useState(false)
+  const [activeTab, setActiveTab] = useState('ai')
+  // Which accordion sections are open (Set of provider ids)
+  const [openSections, setOpenSections] = useState(new Set(['gemini']))
+  // Key visibility toggles: { gemini: bool, openai: bool, hf: bool }
+  const [showKey, setShowKey] = useState({ gemini: false, openai: false, hf: false })
+  // Tracks which key fields the user has modified this session
+  const [dirtyKeys, setDirtyKeys] = useState(new Set())
+  // Validation state: { field: 'validating' | 'ok' | 'error', message: string }
+  const [keyValidation, setKeyValidation] = useState({})
+  // Tooltip hover state for 4-bit quantization info (retained for future use)
+  const [showQuantTip, setShowQuantTip] = useState(false)
 
   useEffect(() => {
-    getSettings().then(setCfg).catch(e => {
+    getSettings().then(cfg => {
+      setCfg(cfg)
+      // Open the currently active provider section by default
+      if (cfg?.llm_provider) setOpenSections(new Set([cfg.llm_provider]))
+    }).catch(e => {
       console.warn('Failed to load settings', e)
-      if (!cfg) toast('Failed to load settings', 'error')
     })
-    import('../api').then(({ getSystemInfo }) => {
-      getSystemInfo().then(setSystemInfo).catch(e => console.warn('Failed to load system info', e))
-    })
+    getSystemInfo().then(setSystemInfo).catch(e => console.warn('Failed to load system info', e))
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Auto-verify model when the selected model string changes (debounced slightly to avoid spamming if typing)
-  useEffect(() => {
-    if (!cfg?.embedded_llm_model) {
-      setModelInfo(null);
-      return;
-    }
-    const timer = setTimeout(() => {
-      handleCheckModel();
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [cfg?.embedded_llm_model, cfg?.huggingface_token]);
+  const set = (key, val) => setCfg(c => ({ ...c, [key]: val }))
 
-  const handleCheckModel = async () => {
-    if (!cfg?.embedded_llm_model) return;
-    
-    setCheckingModel(true);
-    setCheckingModelError(null);
-    setModelInfo(null);
-    
-    try {
-      const res = await fetch(`/api/llm/model-info?model_id=${encodeURIComponent(cfg.embedded_llm_model)}&token=${encodeURIComponent(cfg.huggingface_token || '')}`);
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.detail || "Failed to fetch model info");
-      }
-      const data = await res.json();
-      setModelInfo(data);
-    } catch (e) {
-      setCheckingModelError(e.message);
-    } finally {
-      setCheckingModel(false);
-    }
+  const setKey = (field, cfgKey, val) => {
+    set(cfgKey, val)
+    setDirtyKeys(prev => new Set(prev).add(field))
+    // Clear validation status when user edits
+    setKeyValidation(prev => ({ ...prev, [field]: null }))
   }
 
-  const set = (key, val) => setCfg(c => ({ ...c, [key]: val }))
+  const clearKey = (field, cfgKey) => {
+    set(cfgKey, '')
+    setDirtyKeys(prev => new Set(prev).add(field))
+    setKeyValidation(prev => ({ ...prev, [field]: null }))
+  }
+
+  const toggleShowKey = (field) =>
+    setShowKey(prev => ({ ...prev, [field]: !prev[field] }))
+
+  const toggleSection = (id) =>
+    setOpenSections(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
 
   const fetchGeminiModels = async (apiKey) => {
     const key = apiKey ?? cfg?.gemini_api_key
@@ -128,6 +135,35 @@ export default function SettingsModal({ onClose, toast }) {
 
   const handleSave = async () => {
     setSaving(true)
+    // Validate dirty non-empty keys before saving
+    const validations = []
+    if (dirtyKeys.has('gemini') && cfg?.gemini_api_key) {
+      validations.push({ field: 'gemini', fn: () => validateGeminiKey(cfg.gemini_api_key), label: 'Gemini API key' })
+    }
+    if (dirtyKeys.has('openai') && cfg?.openai_api_key) {
+      validations.push({ field: 'openai', fn: () => validateOpenAIKey(cfg.openai_api_key), label: 'OpenAI API key' })
+    }
+    if (dirtyKeys.has('hf') && cfg?.huggingface_token) {
+      validations.push({ field: 'hf', fn: () => validateHuggingFaceToken(cfg.huggingface_token), label: 'HuggingFace token' })
+    }
+    for (const v of validations) {
+      setKeyValidation(prev => ({ ...prev, [v.field]: 'validating' }))
+      try {
+        const result = await v.fn()
+        if (!result.valid) {
+          setKeyValidation(prev => ({ ...prev, [v.field]: 'error' }))
+          toast(`Invalid ${v.label}: ${result.error || 'Validation failed'}`, 'error')
+          setSaving(false)
+          return
+        }
+        setKeyValidation(prev => ({ ...prev, [v.field]: 'ok' }))
+      } catch (e) {
+        setKeyValidation(prev => ({ ...prev, [v.field]: 'error' }))
+        toast(`Failed to validate ${v.label}: ${e.message}`, 'error')
+        setSaving(false)
+        return
+      }
+    }
     try {
       await saveSettings(cfg)
       toast('Settings saved!', 'success')
@@ -138,6 +174,84 @@ export default function SettingsModal({ onClose, toast }) {
       setSaving(false)
     }
   }
+
+  const provider = cfg?.llm_provider ?? 'gemini'
+
+  // Derive whether the selected GPU supports CUDA
+  const selectedGpuIndex = cfg?.selected_gpu_index ?? 0
+  const gpus = systemInfo?.gpus ?? []
+  const selectedGpu = gpus.find(g => g.index === selectedGpuIndex) ?? gpus[0] ?? null
+  const cudaEnabled = selectedGpu?.cuda ?? true // default true when systemInfo not yet loaded
+
+  // Helper: renders a key field with show/hide + clear buttons
+  const renderKeyField = (field, cfgKey, placeholder) => {
+    const val = cfg?.[cfgKey] ?? ''
+    const visible = showKey[field]
+    const vState = keyValidation[field]
+    return (
+      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+        <input
+          type={visible ? 'text' : 'password'}
+          placeholder={placeholder}
+          value={val}
+          onChange={e => setKey(field, cfgKey, e.target.value)}
+          onBlur={() => {
+            if (field === 'gemini' && val) fetchGeminiModels(val)
+          }}
+          autoComplete="off"
+          style={{ flex: 1, ...(vState === 'error' ? { borderColor: 'var(--danger, #ef4444)' } : vState === 'ok' ? { borderColor: 'var(--success, #22c55e)' } : {}) }}
+        />
+        <button
+          type="button"
+          className="btn btn-ghost btn-icon"
+          title={visible ? 'Hide' : 'Show'}
+          onClick={() => toggleShowKey(field)}
+          style={{ padding: '0 8px', fontSize: 14 }}
+        >
+          {visible ? '🙈' : '👁'}
+        </button>
+        {val && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-icon"
+            title="Clear"
+            onClick={() => clearKey(field, cfgKey)}
+            style={{ padding: '0 8px', fontSize: 14, color: 'var(--text-muted)' }}
+          >
+            ✕
+          </button>
+        )}
+        {vState === 'validating' && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Checking…</span>}
+        {vState === 'ok' && <span style={{ fontSize: 14 }}>✅</span>}
+        {vState === 'error' && <span style={{ fontSize: 14 }}>❌</span>}
+      </div>
+    )
+  }
+
+  const temperatureField = cfg && (
+    <div className="field">
+      <div className="flex justify-between items-center mb-2">
+        <label style={{ margin: 0 }}>LLM Temperature (0.0 – 1.0)</label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.1"
+            value={cfg.llm_temperature ?? 0.1}
+            onChange={e => set('llm_temperature', parseFloat(e.target.value))}
+            style={{ width: '120px', margin: 0, accentColor: 'var(--accent-primary)' }}
+          />
+          <span style={{ fontSize: '13px', fontWeight: 600, width: '25px', textAlign: 'right' }}>
+            {(cfg.llm_temperature ?? 0.1).toFixed(1)}
+          </span>
+        </div>
+      </div>
+      <div className="text-xs text-muted mb-4">
+        Higher values = more variation/creativity. Lower values = stricter adherence to text bounds. If local LLMs hallucinate loops, increase to 0.1 or 0.2.
+      </div>
+    </div>
+  )
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -151,298 +265,360 @@ export default function SettingsModal({ onClose, toast }) {
           <div className="text-secondary">Loading…</div>
         ) : (
           <>
-            <div className="section-title">AI Text Cleanup</div>
-
-            <div className="field">
-              <label>Gemini API Key</label>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <input
-                  type="password"
-                  placeholder="AIza…"
-                  value={cfg.gemini_api_key}
-                  onChange={e => set('gemini_api_key', e.target.value)}
-                  autoComplete="off"
-                  style={{ flex: 1 }}
-                />
+            {/* Tab bar */}
+            <div className="settings-tabs">
+              {TABS.map(([id, label]) => (
                 <button
-                  className="btn btn-secondary"
-                  style={{ whiteSpace: 'nowrap', fontSize: '12px', padding: '0 10px' }}
-                  disabled={!cfg.gemini_api_key || fetchingGeminiModels}
-                  onClick={() => fetchGeminiModels(cfg.gemini_api_key)}
+                  key={id}
+                  className={`settings-tab${activeTab === id ? ' active' : ''}`}
+                  onClick={() => setActiveTab(id)}
                 >
-                  {fetchingGeminiModels ? '…' : 'Load Models'}
+                  {label}
                 </button>
-              </div>
-              <div className="text-xs text-muted mt-1">
-                Used for LLM-based text cleanup.{' '}
-                <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
-                  style={{ color: 'var(--accent-primary)' }}>Get key →</a>
-              </div>
+              ))}
             </div>
 
-            <div className="field">
-              <label>Gemini Model</label>
-              {geminiModels ? (
-                <select
-                  value={cfg.gemini_model || 'gemini-2.5-flash'}
-                  onChange={e => set('gemini_model', e.target.value)}
-                >
-                  {geminiModels.map(m => (
-                    <option key={m.id} value={m.id}>{m.display_name || m.id}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="text"
-                  placeholder="gemini-2.5-flash"
-                  value={cfg.gemini_model || ''}
-                  onChange={e => set('gemini_model', e.target.value)}
-                />
-              )}
-              <div className="text-xs text-muted mt-1">
-                Enter a model ID manually or click "Load Models" above to pick from available models.
-              </div>
-            </div>
+            {/* ── Cloud LLM Keys tab ─────────────────────────────────────────────── */}
+            {activeTab === 'ai' && (() => {
+              const accentBorder = '1px solid var(--glass-border)'
+              const sectionStyle = (isActive) => ({
+                borderRadius: 'var(--radius-sm)',
+                border: isActive ? '1.5px solid var(--accent-primary)' : accentBorder,
+                overflow: 'hidden',
+                marginBottom: 8,
+              })
+              const headerStyle = (isActive) => ({
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '12px 14px', cursor: 'pointer',
+                background: isActive ? 'rgba(99,102,241,0.07)' : 'transparent',
+              })
+              const bodyStyle = {
+                padding: '14px 16px 16px',
+                borderTop: accentBorder,
+                background: 'rgba(0,0,0,0.15)',
+              }
+              const badge = (text, color) => (
+                <span style={{
+                  fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 99,
+                  background: color === 'green' ? 'rgba(34,197,94,0.12)' : 'rgba(255,255,255,0.06)',
+                  color: color === 'green' ? 'var(--success, #22c55e)' : 'var(--text-muted)',
+                  border: `1px solid ${color === 'green' ? 'rgba(34,197,94,0.25)' : 'var(--glass-border)'}`,
+                  whiteSpace: 'nowrap',
+                }}>
+                  {text}
+                </span>
+              )
+              const chevron = (open) => (
+                <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 4, transition: 'transform 0.15s', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
+              )
 
-            <div className="field">
-              <label>OpenAI API Key</label>
-              <input
-                type="password"
-                placeholder="sk-…"
-                value={cfg.openai_api_key}
-                onChange={e => set('openai_api_key', e.target.value)}
-                autoComplete="off"
-              />
-              <div className="text-xs text-muted mt-1">Fallback LLM cleanup provider.</div>
-            </div>
+              // ── Gemini ──────────────────────────────────────────
+              const geminiOpen = openSections.has('gemini')
+              const geminiActive = provider === 'gemini'
+              const geminiConfigured = !!(cfg.gemini_api_key)
 
-            <div className="field">
-              <label>HuggingFace Token</label>
-              <input
-                type="password"
-                placeholder="hf_..."
-                value={cfg.huggingface_token}
-                onChange={e => set('huggingface_token', e.target.value)}
-                autoComplete="off"
-              />
-              <div className="text-xs text-muted mt-1">
-                Required for gated/restricted models (like Llama / Gemma).
-              </div>
-            </div>
+              // ── OpenAI ───────────────────────────────────────────
+              const openaiOpen = openSections.has('openai')
+              const openaiActive = provider === 'openai'
+              const openaiConfigured = !!(cfg.openai_api_key)
 
-            <div className="field">
-              <div className="flex justify-between items-center mb-2">
-                <label style={{ margin: 0 }}>LLM Temperature (0.0 - 1.0)</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.1"
-                    value={cfg.llm_temperature ?? 0.1}
-                    onChange={e => set('llm_temperature', parseFloat(e.target.value))}
-                    style={{ width: '120px', margin: 0, accentColor: 'var(--accent-primary)' }}
-                  />
-                  <span style={{ fontSize: '13px', fontWeight: 600, width: '25px', textAlign: 'right' }}>
-                    {(cfg.llm_temperature ?? 0.1).toFixed(1)}
-                  </span>
-                </div>
-              </div>
-              <div className="text-xs text-muted mb-4">
-                Higher values = more variation/creativity. Lower values = stricter adherence to text bounds. If local LLMs hallucinate loops, increase to 0.1 or 0.2.
-              </div>
-            </div>
+              // ── Local ─────────────────────────────────────────────
+              const localOpen = openSections.has('local')
+              const localActive = provider === 'local'
+              const localDisabled = !cudaEnabled
+              const localConfigured = !!(cfg.huggingface_token)
 
-            <div className="field">
-              <div className="flex justify-between items-start mb-2">
-                <label style={{ margin: 0 }}>Embedded Local LLM Model</label>
-                <label className="flex items-center gap-2 cursor-pointer" title="Drastically reduces the VRAM required to load larger LLM models, at the cost of slower generation speed. Enables larger models to run on smaller GPUs!">
-                  <div className="toggle-switch">
-                    <input
-                      type="checkbox"
-                      checked={cfg.use_4bit_quantization || false}
-                      onChange={e => set('use_4bit_quantization', e.target.checked)}
-                    />
-                    <span className="toggle-slider"></span>
-                  </div>
-                  <span style={{ fontWeight: 500, fontSize: 13, color: cfg.use_4bit_quantization ? 'var(--accent-primary)' : 'var(--text-secondary)' }}>
-                    4-bit Quantization
-                  </span>
-                </label>
-              </div>
+              // ── None ──────────────────────────────────────────────
+              const noneActive = provider === 'none'
 
-              <div className="flex flex-col gap-4 mt-2 mb-4">
-                {PRESET_FAMILIES.map(family => {
-                  const isFamilySelected = family.variants.some(v => v.id === cfg?.embedded_llm_model)
+              return (
+                <div style={{ marginTop: 4 }}>
 
-                  return (
-                    <div
-                      key={family.name}
-                      className="glass p-4 flex flex-col gap-3 glass-hover"
-                      style={{
-                        borderRadius: 'var(--radius-sm)',
-                        border: isFamilySelected ? '2px solid var(--accent-primary)' : ''
-                      }}
+                  {/* Gemini */}
+                  <div style={sectionStyle(geminiActive)}>
+                    <div style={headerStyle(geminiActive)}
+                      onClick={() => toggleSection('gemini')}
                     >
-                      <div className="flex items-start gap-3">
-                        <div style={{ flex: 1 }}>
-                          <div className="flex justify-between items-center mb-1">
-                            <div style={{ fontWeight: 600, fontSize: 15 }}>
-                              {family.name}
-                            </div>
-                          </div>
-                          <div className="text-xs text-muted mb-3">{family.description}</div>
-
-                          <div className="flex flex-wrap gap-2 mb-1">
-                            {family.variants.map(v => {
-                              const isVariantSelected = v.id === cfg?.embedded_llm_model
-                              const btnStyle = isVariantSelected 
-                                ? { background: 'var(--accent-primary)', color: '#fff', borderColor: 'transparent' }
-                                : { background: 'rgba(255,255,255,0.05)', color: 'var(--text-secondary)' }
-                              return (
-                                <button
-                                  key={v.id}
-                                  type="button"
-                                  onClick={() => set('embedded_llm_model', v.id)}
-                                  style={{
-                                    fontSize: 12, padding: '4px 12px', borderRadius: 16, 
-                                    border: '1px solid var(--glass-border)', cursor: 'pointer',
-                                    transition: 'all 0.2s', ...btnStyle
-                                  }}
-                                >
-                                  {v.name}
-                                </button>
-                              )
-                            })}
+                      <input type="radio" name="llm_provider" checked={geminiActive}
+                        onChange={e => { e.stopPropagation(); set('llm_provider', 'gemini') }}
+                        onClick={e => e.stopPropagation()}
+                        style={{ width: 'auto', flexShrink: 0 }}
+                      />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>Gemini</div>
+                        <div className="text-xs text-muted">Google AI · free tier available</div>
+                      </div>
+                      {geminiConfigured ? badge('✓ Key set', 'green') : badge('No key', null)}
+                      {chevron(geminiOpen)}
+                    </div>
+                    {geminiOpen && (
+                      <div style={bodyStyle}>
+                        <div className="field">
+                          <label>API Key</label>
+                          {renderKeyField('gemini', 'gemini_api_key', 'AIza…')}
+                          <div className="text-xs text-muted mt-1">
+                            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer"
+                              style={{ color: 'var(--accent-primary)' }}>Get a free key →</a>
                           </div>
                         </div>
+                        {cfg.gemini_api_key && (
+                          <>
+                            <div className="field">
+                              <label>Model {fetchingGeminiModels && <span className="text-muted">(loading…)</span>}</label>
+                              {geminiModels ? (
+                                <select value={cfg.gemini_model || 'gemini-2.5-flash'} onChange={e => set('gemini_model', e.target.value)}>
+                                  {geminiModels.map(m => (
+                                    <option key={m.id} value={m.id}>{m.display_name || m.id}</option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <input type="text" placeholder="gemini-2.5-flash" value={cfg.gemini_model || ''} onChange={e => set('gemini_model', e.target.value)} />
+                              )}
+                              <div className="text-xs text-muted mt-1">Models auto-load when your key is saved.</div>
+                            </div>
+                            {temperatureField}
+                          </>
+                        )}
                       </div>
+                    )}
+                  </div>
+
+                  {/* OpenAI */}
+                  <div style={sectionStyle(openaiActive)}>
+                    <div style={headerStyle(openaiActive)}
+                      onClick={() => toggleSection('openai')}
+                    >
+                      <input type="radio" name="llm_provider" checked={openaiActive}
+                        onChange={e => { e.stopPropagation(); set('llm_provider', 'openai') }}
+                        onClick={e => e.stopPropagation()}
+                        style={{ width: 'auto', flexShrink: 0 }}
+                      />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>OpenAI</div>
+                        <div className="text-xs text-muted">Paid API · GPT-4o mini</div>
+                      </div>
+                      {openaiConfigured ? badge('✓ Key set', 'green') : badge('No key', null)}
+                      {chevron(openaiOpen)}
                     </div>
-                  )
-                })}
-              </div>
+                    {openaiOpen && (
+                      <div style={bodyStyle}>
+                        <div className="field">
+                          <label>API Key</label>
+                          {renderKeyField('openai', 'openai_api_key', 'sk-…')}
+                        </div>
+                        {cfg.openai_api_key && temperatureField}
+                      </div>
+                    )}
+                  </div>
 
-<div className="text-xs text-muted mt-3 mb-2" style={{ fontWeight: 600 }}>
-                Currently Selected Model ID:
-              </div>
-
-              <div className="glass p-4" style={{ borderRadius: 'var(--radius-sm)', border: '1px solid var(--accent-primary)' }}>
-                 <div className="flex gap-2 mb-3">
-                   <input 
-                     type="text" 
-                     value={cfg?.embedded_llm_model || ''}
-                     onChange={e => {
-                       set('embedded_llm_model', e.target.value);
-                       setModelInfo(null); // Clear previous check if typed manually
-                     }}
-                     placeholder="e.g. google/gemma-4-E4B-it"
-                     style={{ flex: 1, fontWeight: 500, border: '1px solid var(--glass-border)' }}
-                   />
-                 </div>
-
-                 {checkingModel && (
-                   <div className="text-muted text-sm mb-3 italic">
-                     Querying Hugging Face for model details...
-                   </div>
-                 )}
-
-                 {checkingModelError && !checkingModel && (
-                     <div className="text-danger text-sm mb-3">
-                       {checkingModelError}
-                     </div>
-                   )}
-
-                 {modelInfo && !checkingModelError && !checkingModel && (
-                     <div className="text-sm p-3 bg-base" style={{ borderRadius: 'var(--radius-sm)', border: '1px solid var(--glass-border)' }}>
-                       <div className="flex justify-between mb-1">
-                         <strong>{modelInfo.id}</strong>
-                         <span className="text-muted">{modelInfo.size_mb > 0 ? `${(modelInfo.size_mb / 1024).toFixed(1)} GB` : 'Unknown size'}</span>
-                       </div>
-                       
-                       <div className="text-muted text-xs mb-2">
-                         {modelInfo.author && <span className="mr-2">👤 {modelInfo.author}</span>}
-                         Tags: {modelInfo.tags?.slice(0, 5).join(', ')}{modelInfo.tags?.length > 5 ? '...' : ''}
-                       </div>
-                       
-                       {modelInfo.gated && (
-                         <div className="mb-2 p-2 text-xs" style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: 6 }}>
-                           <span className="text-warning" style={{ fontWeight: 600 }}>⚠ Gated Model: </span> 
-                           Make sure you have <a href={`https://huggingface.co/${modelInfo.id}`} target="_blank" rel="noreferrer" style={{color: 'var(--accent-primary)', textDecoration: 'underline'}}>accepted the license agreement here ↗</a> with your HuggingFace account before use.
-                         </div>
-                       )}
-
-                       {modelInfo.system_vram_mb > 0 && modelInfo.size_mb > 0 && (
-                         <div className={`text-xs ${modelInfo.size_mb > modelInfo.system_vram_mb ? 'text-danger' : 'text-success'}`} style={{ marginTop: '8px' }}>
-                           {modelInfo.size_mb > modelInfo.system_vram_mb 
-                             ? `Warning: Model size (${(modelInfo.size_mb / 1024).toFixed(1)} GB) exceeds your system VRAM (${(modelInfo.system_vram_mb / 1024).toFixed(1)} GB). It will likely fall back to slow CPU RAM.`
-                             : `Model size should fit within your ${ (modelInfo.system_vram_mb / 1024).toFixed(1) } GB of VRAM limit.`}
-                         </div>
-                       )}
-                     </div>
-                   )}
                 </div>
-            </div>
+              )
+            })()}
 
-            <div className="field mt-3">
-              <label>LLM Content Chunk Size: {(cfg.llm_chunk_size || 5000).toLocaleString()} characters</label>
-              <input
-                type="range"
-                min="1000"
-                max="32000"
-                step="1000"
-                value={cfg.llm_chunk_size || 5000}
-                onChange={e => set('llm_chunk_size', parseInt(e.target.value) || 5000)}
-              />
-              <div className="flex justify-between text-xs text-muted mt-1">
-                <span>1k (Fast, Tiny VRAM)</span>
-                <span>16k (Balanced)</span>
-                <span>32k (Slow, Heavy VRAM)</span>
-              </div>
-              <div className="text-xs text-muted mt-2">
-                How many characters of the book to pass to the LLM at a time. Larger contexts give the AI better understanding of sentence flows and margin layouts, but consume significantly more memory.
-              </div>
-            </div>
+            {/* ── Integrations tab ────────────────────────────────────── */}
+            {activeTab === 'integrations' && (
+              <>
+                <div className="section-title">Audiobookshelf</div>
 
-            <div className="divider" />
-            <div className="section-title">Audiobookshelf</div>
+                <div className="field">
+                  <label>Server URL</label>
+                  <input
+                    type="url"
+                    placeholder="http://192.168.1.x:13378"
+                    value={cfg.audiobookshelf_url}
+                    onChange={e => set('audiobookshelf_url', e.target.value)}
+                  />
+                </div>
 
-            <div className="field">
-              <label>Server URL</label>
-              <input
-                type="url"
-                placeholder="http://192.168.1.x:13378"
-                value={cfg.audiobookshelf_url}
-                onChange={e => set('audiobookshelf_url', e.target.value)}
-              />
-            </div>
+                <div className="field">
+                  <label>API Token</label>
+                  <input
+                    type="password"
+                    placeholder="Your Audiobookshelf API token"
+                    value={cfg.audiobookshelf_token}
+                    onChange={e => set('audiobookshelf_token', e.target.value)}
+                    autoComplete="off"
+                  />
+                  <div className="text-xs text-muted mt-1">
+                    Found in Audiobookshelf → Settings → Users → your user → API Token
+                  </div>
+                </div>
+              </>
+            )}
 
-            <div className="field">
-              <label>API Token</label>
-              <input
-                type="password"
-                placeholder="Your Audiobookshelf API token"
-                value={cfg.audiobookshelf_token}
-                onChange={e => set('audiobookshelf_token', e.target.value)}
-                autoComplete="off"
-              />
-              <div className="text-xs text-muted mt-1">
-                Found in Audiobookshelf → Settings → Users → your user → API Token
-              </div>
-            </div>
+            {/* ── System tab ─────────────────────────────────────────────────────── */}
+            {activeTab === 'system' && (
+              <>
+                <div className="section-title">GPU Selection</div>
+                {!systemInfo ? (
+                  <div className="text-muted text-sm">Loading hardware info…</div>
+                ) : (
+                  <div className="flex flex-col gap-2 mb-4">
+                    {(systemInfo.gpus ?? []).map(gpu => (
+                      <label
+                        key={gpu.index}
+                        className="glass flex items-center gap-3 p-3 glass-hover"
+                        style={{ borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                          border: (cfg.selected_gpu_index ?? 0) === gpu.index ? '2px solid var(--accent-primary)' : '' }}
+                      >
+                        <input
+                          type="radio"
+                          name="gpu"
+                          checked={(cfg.selected_gpu_index ?? 0) === gpu.index}
+                          onChange={() => set('selected_gpu_index', gpu.index)}
+                          style={{ width: 'auto' }}
+                        />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 600, fontSize: 14 }}>{gpu.name}</div>
+                          {gpu.cuda && (
+                            <div className="text-xs text-muted mt-0.5">
+                              {(gpu.vram_mb / 1024).toFixed(1)} GB VRAM &middot; CUDA enabled
+                            </div>
+                          )}
+                        </div>
+                        {gpu.cuda && (
+                          <span style={{ fontSize: 11, color: 'var(--success, #22c55e)', fontWeight: 600 }}>CUDA</span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                )}
 
-            <div className="divider" />
-            <div className="section-title">Default TTS Engine</div>
+                {/* Warning when non-CUDA is selected */}
+                {!cudaEnabled && (
+                  <div className="glass p-3" style={{
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'rgba(245,158,11,0.08)',
+                    border: '1px solid rgba(245,158,11,0.35)'
+                  }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: 'rgb(245,158,11)', marginBottom: 4 }}>
+                      ⚠️ No CUDA GPU selected
+                    </div>
+                    <div className="text-xs text-muted">
+                      Local LLM cleanup, Kokoro TTS, and Voice Clone (F5-TTS) all require a CUDA-capable GPU.
+                      Edge-TTS and cloud LLM providers (Gemini, OpenAI) will still work.
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
 
-            <div className="field">
-              <select
-                value={cfg.default_tts_engine}
-                onChange={e => set('default_tts_engine', e.target.value)}
-              >
-                <option value="edge-tts">Edge-TTS (online, free)</option>
-                <option value="kokoro">Kokoro-82M (local, GPU)</option>
-              </select>
-            </div>
+            {/* ── Local AI tab ─────────────────────────────────────────────────── */}
+            {activeTab === 'local' && (
+              <>
+                {!cudaEnabled && (
+                  <div className="glass p-3 mb-4" style={{
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'rgba(245,158,11,0.08)',
+                    border: '1px solid rgba(245,158,11,0.35)'
+                  }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: 'rgb(245,158,11)', marginBottom: 4 }}>
+                      ⚠️ No CUDA GPU selected
+                    </div>
+                    <div className="text-xs text-muted">
+                      All local features require a CUDA GPU. Select one in the <strong>System</strong> tab.
+                    </div>
+                  </div>
+                )}
 
+                <div className="section-title">HuggingFace Token</div>
+                <div className="field" style={{ opacity: cudaEnabled ? 1 : 0.5, pointerEvents: cudaEnabled ? 'auto' : 'none' }}>
+                  {renderKeyField('hf', 'huggingface_token', 'hf_…')}
+                  <div className="text-xs text-muted mt-1">
+                    Required for gated models (Llama, Gemma). Free account at{' '}
+                    <a href="https://huggingface.co" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-primary)' }}>huggingface.co</a>.
+                  </div>
+                </div>
+
+                <div style={{ opacity: cudaEnabled ? 1 : 0.5, pointerEvents: cudaEnabled ? 'auto' : 'none' }}>
+                  <div className="field">
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="section-title" style={{ margin: 0 }}>Embedded LLM Model</div>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <div className="toggle-switch">
+                          <input type="checkbox" checked={cfg.use_4bit_quantization || false}
+                            onChange={e => set('use_4bit_quantization', e.target.checked)} />
+                          <span className="toggle-slider"></span>
+                        </div>
+                        <span style={{ fontWeight: 500, fontSize: 13, color: cfg.use_4bit_quantization ? 'var(--accent-primary)' : 'var(--text-secondary)' }}>
+                          4-bit Quantization
+                        </span>
+                        <span
+                          style={{ position: 'relative', display: 'inline-block', cursor: 'help', fontSize: 13, color: 'var(--text-muted)' }}
+                          onMouseEnter={() => setShowQuantTip(true)}
+                          onMouseLeave={() => setShowQuantTip(false)}
+                        >
+                          ⓘ
+                          {showQuantTip && (
+                            <div style={{
+                              position: 'absolute', bottom: '130%', right: 0, width: 240,
+                              background: 'var(--glass-bg, #1e1e2e)', border: '1px solid var(--glass-border)',
+                              borderRadius: 8, padding: '10px 12px', fontSize: 12, lineHeight: 1.5,
+                              color: 'var(--text-primary)', zIndex: 100, boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+                              pointerEvents: 'none',
+                            }}>
+                              Loads model weights in 4-bit instead of 16-bit precision — roughly 4× less VRAM.
+                              Slightly slower inference but lets you run much larger models on smaller GPUs.
+                            </div>
+                          )}
+                        </span>
+                      </label>
+                    </div>
+                    <div className="flex flex-col gap-3 mt-2 mb-2">
+                      {PRESET_FAMILIES.map(family => {
+                        const isFamilySelected = family.variants.some(v => v.id === cfg?.embedded_llm_model)
+                        return (
+                          <div key={family.name} className="glass p-4 flex flex-col gap-2 glass-hover"
+                            style={{ borderRadius: 'var(--radius-sm)', border: isFamilySelected ? '2px solid var(--accent-primary)' : '' }}>
+                            <div className="flex items-center gap-2 mb-1">
+                              <div style={{ fontWeight: 600, fontSize: 14 }}>{family.name}</div>
+                              {family.recommended && (
+                                <span style={{
+                                  fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px',
+                                  padding: '2px 7px', borderRadius: 99, background: 'rgba(99,102,241,0.18)',
+                                  color: 'var(--accent-primary)', border: '1px solid rgba(99,102,241,0.35)'
+                                }}>★ Recommended</span>
+                              )}
+                            </div>
+                            <div className="text-xs text-muted" style={{ marginBottom: 6 }}>{family.description}</div>
+                            <div className="flex flex-wrap gap-2">
+                              {family.variants.map(v => {
+                                const sel = v.id === cfg?.embedded_llm_model
+                                return (
+                                  <button key={v.id} type="button" onClick={() => set('embedded_llm_model', v.id)}
+                                    style={{
+                                      fontSize: 12, padding: '4px 12px', borderRadius: 16,
+                                      border: '1px solid var(--glass-border)', cursor: 'pointer', transition: 'all 0.2s',
+                                      background: sel ? 'var(--accent-primary)' : 'rgba(255,255,255,0.05)',
+                                      color: sel ? '#fff' : 'var(--text-secondary)',
+                                    }}>
+                                    {v.name}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label>Chunk Size: {(cfg.llm_chunk_size || 5000).toLocaleString()} characters</label>
+                    <input type="range" min="1000" max="32000" step="1000"
+                      value={cfg.llm_chunk_size || 5000}
+                      onChange={e => set('llm_chunk_size', parseInt(e.target.value) || 5000)} />
+                    <div className="flex justify-between text-xs text-muted mt-1">
+                      <span>1k (fast)</span><span>16k (balanced)</span><span>32k (quality)</span>
+                    </div>
+                    <div className="text-xs text-muted mt-2">
+                      Characters passed to the LLM per chunk. Larger = better context but more VRAM.
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* ── Footer ──────────────────────────────────────────────── */}
             <div className="flex justify-between mt-4">
               <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
               <button className="btn btn-primary" onClick={handleSave} disabled={saving}>

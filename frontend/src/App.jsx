@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react'
-import { cancelTask } from './api'
+import { useState, useCallback, useEffect } from 'react'
+import { cancelTask, getSystemInfo, getSettings } from './api'
 import './App.css'
 import './index.css'
 import Step1Upload from './components/Step1Upload'
@@ -21,6 +21,21 @@ export default function App() {
   const [projectId, setProjectId] = useState(null)
   const [showSettings, setShowSettings] = useState(false)
   const [toasts, setToasts] = useState([])
+  const [cudaEnabled, setCudaEnabled] = useState(true)
+  const [hasCloudKey, setHasCloudKey] = useState(false)
+
+  const refreshHardwareState = useCallback(() => {
+    Promise.all([getSystemInfo(), getSettings()]).then(([info, cfg]) => {
+      const gpus = info?.gpus ?? []
+      const selectedIdx = cfg?.selected_gpu_index ?? 0
+      const selectedGpu = gpus.find(g => g.index === selectedIdx) ?? gpus[0]
+      setCudaEnabled(selectedGpu?.cuda ?? true)
+      setHasCloudKey(!!(cfg?.gemini_api_key || cfg?.openai_api_key))
+    }).catch(() => {})
+  }, [])
+
+  // Fetch on mount
+  useEffect(() => { refreshHardwareState() }, [refreshHardwareState])
 
   const toast = useCallback((message, type = 'info') => {
     const id = Date.now()
@@ -84,6 +99,8 @@ export default function App() {
             isActive={step === 1}
             onNext={next}
             toast={toast}
+            cudaEnabled={cudaEnabled}
+            hasCloudKey={hasCloudKey}
           />
         </div>
         <div style={{ display: step === 2 ? 'block' : 'none' }}>
@@ -102,6 +119,7 @@ export default function App() {
             onNext={next}
             onBack={back}
             toast={toast}
+            cudaEnabled={cudaEnabled}
           />
         </div>
         <div style={{ display: step === 4 ? 'block' : 'none' }}>
@@ -116,7 +134,7 @@ export default function App() {
 
       {/* Settings modal */}
       {showSettings && (
-        <SettingsModal onClose={() => setShowSettings(false)} toast={toast} />
+        <SettingsModal onClose={() => { setShowSettings(false); refreshHardwareState() }} toast={toast} />
       )}
 
       {/* Toasts */}

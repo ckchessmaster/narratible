@@ -1,7 +1,7 @@
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,7 @@ async def synthesize_speech(
     voice: str = "en-US-AriaNeural",
     speed: float = 1.0,
     voice_sample_path: Optional[Path] = None,
+    progress_cb: Optional[Callable[[str, int], None]] = None,
 ):
     """
     Synthesize text to speech using the selected engine.
@@ -173,7 +174,20 @@ async def synthesize_speech(
                 _f5tts_model = None
                 torch.cuda.empty_cache()
 
-            logger.info("Loading Kokoro pipeline on cuda")
+            from .config import get_device_string
+            device = get_device_string()
+            # Check if this looks like a first-time download by inspecting HF cache
+            try:
+                import os
+                hf_cache = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+                kokoro_cache = hf_cache / "hub" / "models--hexgrad--Kokoro-82M"
+                is_first_run = not kokoro_cache.exists()
+            except Exception:
+                is_first_run = False
+            if progress_cb:
+                progress_cb("Downloading Kokoro model (first run, ~300 MB)…" if is_first_run else "Loading Kokoro model into GPU…", 0)
+
+            logger.info(f"Loading Kokoro pipeline on {device}")
             # trf=False: use en_core_web_sm (smaller) instead of en_core_web_trf.
             # In a frozen build spacy.util.is_package() can return False for
             # bundled models because importlib.metadata doesn't enumerate frozen
@@ -191,7 +205,7 @@ async def synthesize_speech(
             except Exception:
                 pass
             try:
-                _kokoro_pipeline = KPipeline(lang_code="a", device="cuda", trf=False)
+                _kokoro_pipeline = KPipeline(lang_code="a", device=device, trf=False)
             except SystemExit as e:
                 raise RuntimeError(
                     "Kokoro failed to load: the spaCy language model (en_core_web_sm) "
@@ -218,7 +232,7 @@ async def synthesize_speech(
         sf.write(str(output_path), final_audio, 24000)
 
     elif engine == "f5-tts":
-        await _synthesize_f5tts(text, output_path, speed, voice_sample_path)
+        await _synthesize_f5tts(text, output_path, speed, voice_sample_path, progress_cb)
 
     else:
         raise NotImplementedError(f"TTS engine '{engine}' is not implemented.")
@@ -229,6 +243,7 @@ async def _synthesize_f5tts(
     output_path: Path,
     speed: float = 1.0,
     voice_sample_path: Optional[Path] = None,
+    progress_cb: Optional[Callable[[str, int], None]] = None,
 ):
     """
     Voice cloning via F5-TTS (https://github.com/SWivid/F5-TTS).
@@ -282,9 +297,22 @@ async def _synthesize_f5tts(
             _kokoro_pipeline = None
             torch.cuda.empty_cache()
 
-        logger.info("Loading F5-TTS model on cuda (first run downloads ~800 MB)…")
-        _f5tts_model = F5TTS(device="cuda")
-        logger.info("F5-TTS loaded on cuda")
+        from .config import get_device_string
+        device = get_device_string()
+        # Detect first-run download
+        try:
+            import os
+            hf_cache = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+            f5_cache = hf_cache / "hub" / "models--SWivid--F5-TTS"
+            is_first_run = not f5_cache.exists()
+        except Exception:
+            is_first_run = False
+        if progress_cb:
+            progress_cb("Downloading F5-TTS model (first run, ~800 MB)…" if is_first_run else "Loading F5-TTS model into GPU…", 0)
+
+        logger.info(f"Loading F5-TTS model on {device} (first run downloads ~800 MB)…")
+        _f5tts_model = F5TTS(device=device)
+        logger.info(f"F5-TTS loaded on {device}")
 
     logger.info(f"F5-TTS cloning from {voice_sample_path}")
 

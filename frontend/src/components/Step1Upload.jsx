@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { createProject, uploadPdf, parsePdf, cancelTask, pollTask } from '../api'
 
-export default function Step1Upload({ projectId, setProjectId, onNext, toast }) {
+export default function Step1Upload({ projectId, setProjectId, onNext, toast, cudaEnabled = true, hasCloudKey = false }) {
   const [title, setTitle] = useState('')
   const [author, setAuthor] = useState('')
   const [cleaner, setCleaner] = useState('regex')
@@ -69,6 +69,10 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast }) 
   const handleSubmit = async () => {
     if (!title.trim()) { toast('Please enter a book title.', 'error'); return }
     if (!file) { toast('Please select a PDF file.', 'error'); return }
+    if (cleaner === 'embedded' && !cudaEnabled) {
+      toast('Embedded Local LLM requires a CUDA GPU. Please select a different cleanup method.', 'error')
+      return
+    }
 
     try {
       setStatus('creating')
@@ -228,22 +232,26 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast }) 
           <label>Text Cleanup Method</label>
           <div className="flex gap-3 mt-1" style={{ flexWrap: 'wrap' }}>
             {[
-              { value: 'regex', label: 'Heuristic (fast, offline)', desc: 'Regex rules — no API key needed' },
-              { value: 'llm', label: 'LLM (Gemini / OpenAI)', desc: 'Best quality — requires API key in Settings' },
-              { value: 'embedded', label: 'Embedded Local LLM', desc: 'Runs locally — uses GPU VRAM' },
+              { value: 'regex', label: 'Heuristic (fast, offline)', desc: 'Regex rules — no API key or GPU needed', disabled: false },
+              { value: 'llm', label: 'LLM (Gemini / OpenAI)', desc: hasCloudKey ? 'Best quality — uses your configured API key' : 'Requires a Gemini or OpenAI key in ⚙ Settings', disabled: false },
+              { value: 'embedded', label: 'Embedded Local LLM', desc: cudaEnabled ? 'Runs locally — uses GPU VRAM' : 'Requires a CUDA-capable GPU', disabled: !cudaEnabled },
             ].map(opt => (
               <label
                 key={opt.value}
                 className="glass flex gap-3 p-3"
-                style={{ flex: 1, cursor: 'pointer', borderRadius: 'var(--radius-sm)', alignItems: 'flex-start' }}
+                style={{
+                  flex: 1, cursor: (busy || opt.disabled) ? 'not-allowed' : 'pointer',
+                  borderRadius: 'var(--radius-sm)', alignItems: 'flex-start',
+                  opacity: opt.disabled ? 0.45 : 1,
+                }}
               >
                 <input
                   type="radio"
                   name="cleaner"
                   value={opt.value}
                   checked={cleaner === opt.value}
-                  onChange={() => setCleaner(opt.value)}
-                  disabled={busy}
+                  onChange={() => !opt.disabled && setCleaner(opt.value)}
+                  disabled={busy || opt.disabled}
                   style={{ marginTop: 3, width: 'auto' }}
                 />
                 <div>

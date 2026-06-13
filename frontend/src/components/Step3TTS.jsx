@@ -3,12 +3,12 @@ import { getVoices, ttsPreview,
          uploadVoiceSample, listVoiceSamples, updateProject } from '../api'
 
 const ENGINES = [
-  { value: 'edge-tts', label: 'Edge-TTS', desc: 'Free · Microsoft voices · Online' },
-  { value: 'kokoro',   label: 'Kokoro-82M', desc: 'Local · Fast · GPU accelerated' },
-  { value: 'f5-tts',  label: 'F5-TTS Clone', desc: 'Voice cloning · Uses your uploaded sample · GPU' },
+  { value: 'edge-tts', label: 'Edge-TTS', desc: 'Free · Microsoft voices · Online', requiresCuda: false },
+  { value: 'kokoro',   label: 'Kokoro-82M', desc: 'Local · Fast · GPU accelerated', requiresCuda: true },
+  { value: 'f5-tts',  label: 'F5-TTS Clone', desc: 'Voice cloning · Uses your uploaded sample · GPU', requiresCuda: true },
 ]
 
-export default function Step3TTS({ projectId, isActive, onNext, onBack, toast }) {
+export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, cudaEnabled = true }) {
   const [engine, setEngine] = useState('edge-tts')
   const [voices, setVoices] = useState([])
   const [voice, setVoice] = useState('en-US-AriaNeural')
@@ -19,6 +19,11 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast })
   const [loadingVoices, setLoadingVoices] = useState(false)
   const audioRef = useRef()
   const sampleInputRef = useRef()
+
+  // Switch away from CUDA engines if CUDA becomes unavailable
+  useEffect(() => {
+    if (!cudaEnabled) setEngine('edge-tts')
+  }, [cudaEnabled])
 
   // Load voices when engine changes
   useEffect(() => {
@@ -113,24 +118,34 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast })
           {/* Engine selector */}
           <div className="section-title">Engine</div>
           <div className="flex gap-3 mb-4">
-            {ENGINES.map(eng => (
-              <label
-                key={eng.value}
-                className="glass flex gap-3 p-3 glass-hover"
-                style={{ flex: 1, cursor: 'pointer', alignItems: 'flex-start', borderRadius: 'var(--radius-sm)' }}
-              >
-                <input
-                  type="radio" name="engine" value={eng.value}
-                  checked={engine === eng.value}
-                  onChange={() => setEngine(eng.value)}
-                  style={{ marginTop: 3, width: 'auto' }}
-                />
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>{eng.label}</div>
-                  <div className="text-xs text-muted mt-1">{eng.desc}</div>
-                </div>
-              </label>
-            ))}
+            {ENGINES.map(eng => {
+              const disabled = eng.requiresCuda && !cudaEnabled
+              return (
+                <label
+                  key={eng.value}
+                  className="glass flex gap-3 p-3 glass-hover"
+                  style={{
+                    flex: 1, cursor: disabled ? 'not-allowed' : 'pointer',
+                    alignItems: 'flex-start', borderRadius: 'var(--radius-sm)',
+                    opacity: disabled ? 0.45 : 1,
+                  }}
+                >
+                  <input
+                    type="radio" name="engine" value={eng.value}
+                    checked={engine === eng.value}
+                    onChange={() => !disabled && setEngine(eng.value)}
+                    disabled={disabled}
+                    style={{ marginTop: 3, width: 'auto' }}
+                  />
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{eng.label}</div>
+                    <div className="text-xs text-muted mt-1">
+                      {disabled ? '⚠ Requires CUDA GPU' : eng.desc}
+                    </div>
+                  </div>
+                </label>
+              )
+            })}
           </div>
 
           {/* Voice selector — hidden for f5-tts since it uses uploaded sample */}

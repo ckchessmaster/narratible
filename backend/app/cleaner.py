@@ -4,7 +4,7 @@ import time
 import logging
 from openai import OpenAI
 from pydantic import BaseModel
-from .config import settings
+from .config import settings, get_device_string
 
 class CleanedTextResponse(BaseModel):
     main_text: str
@@ -159,15 +159,31 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
             os.environ["HF_TOKEN"] = hf_token
             os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
 
-        device = "cuda"
-        if not __import__('torch').cuda.is_available():
+        device = get_device_string()
+        if device == "cpu" or not __import__('torch').cuda.is_available():
             raise RuntimeError(
                 "The embedded LLM requires a CUDA-capable GPU. "
                 "No GPU was detected on this system."
             )
         model_name = cfg.embedded_llm_model or "HuggingFaceTB/SmolLM2-1.7B-Instruct"
 
-        report(f"Loading embedded LLM '{model_name.split('/')[-1]}' into VRAM...", 25)
+        # Detect first-run download
+        try:
+            import os as _os
+            from pathlib import Path as _Path
+            hf_cache = _Path(_os.environ.get("HF_HOME", _Path.home() / ".cache" / "huggingface"))
+            safe_name = model_name.replace("/", "--")
+            model_cache = hf_cache / "hub" / f"models--{safe_name}"
+            is_first_run = not model_cache.exists()
+        except Exception:
+            is_first_run = False
+
+        load_msg = (
+            f"Downloading model '{model_name.split('/')[-1]}' from HuggingFace (first run)…"
+            if is_first_run
+            else f"Loading model '{model_name.split('/')[-1]}' into GPU VRAM…"
+        )
+        report(load_msg, 25)
         
         pipe_kwargs = {
             "task": "text-generation",
@@ -189,7 +205,7 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
             }
             pipe_kwargs["device_map"] = "auto"
         else:
-            pipe_kwargs["device"] = "cuda"
+            pipe_kwargs["device"] = device
 
         global _cached_pipe, _cached_pipe_kwargs
         

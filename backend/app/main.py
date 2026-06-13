@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .config import AppConfig, load_config, save_config
+from .config import AppConfig, load_config, save_config, get_device_string
 from .projects import (
     PROJECTS_DIR,
     ProjectMetadata,
@@ -96,17 +96,29 @@ async def health_check():
 
 @app.get("/api/system/info")
 async def system_info():
-    """Returns GPU/CUDA availability — useful for debugging device selection."""
-    info: dict = {"cuda_available": False, "gpu_name": None, "torch_version": None, "vram_total_mb": 0}
+    """Returns GPU/CUDA availability and a list of all detected GPUs."""
+    info: dict = {"cuda_available": False, "gpu_name": None, "torch_version": None, "vram_total_mb": 0, "gpus": []}
     try:
         import torch
         info["torch_version"] = torch.__version__
         info["cuda_available"] = torch.cuda.is_available()
+        gpus: list[dict] = []
         if torch.cuda.is_available():
             info["gpu_name"] = torch.cuda.get_device_name(0)
             info["vram_total_mb"] = round(torch.cuda.get_device_properties(0).total_memory / 1024 ** 2)
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                gpus.append({
+                    "index": i,
+                    "name": torch.cuda.get_device_name(i),
+                    "vram_mb": round(props.total_memory / 1024 ** 2),
+                    "cuda": True,
+                })
+        gpus.append({"index": -1, "name": "CPU (No GPU)", "vram_mb": 0, "cuda": False})
+        info["gpus"] = gpus
     except ImportError:
         info["torch_version"] = "not installed"
+        info["gpus"] = [{"index": -1, "name": "CPU (No GPU)", "vram_mb": 0, "cuda": False}]
     return info
 
 
@@ -121,6 +133,62 @@ async def get_settings():
 async def update_settings(config: AppConfig):
     save_config(config)
     return config
+
+
+# ── Key Validation ────────────────────────────────────────────────────────────
+
+class ValidateKeyRequest(BaseModel):
+    api_key: str
+
+
+@app.post("/api/validate/gemini-key")
+async def validate_gemini_key(req: ValidateKeyRequest):
+    """Validate a Gemini API key by listing models."""
+    try:
+        from google import genai
+        client = genai.Client(api_key=req.api_key)
+        list(client.models.list())
+        return {"valid": True, "error": None}
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+
+
+@app.post("/api/validate/openai-key")
+async def validate_openai_key(req: ValidateKeyRequest):
+    """Validate an OpenAI API key by listing models."""
+    try:
+        from openai import AsyncOpenAI, AuthenticationError
+        client = AsyncOpenAI(api_key=req.api_key)
+        await client.models.list()
+        return {"valid": True, "error": None}
+    except Exception as e:
+        # Extract a readable error message from openai errors
+        msg = getattr(e, "message", None) or str(e)
+        return {"valid": False, "error": msg}
+
+
+@app.post("/api/validate/huggingface-token")
+async def validate_huggingface_token(req: ValidateKeyRequest):
+    """Validate a HuggingFace token via the whoami endpoint."""
+    import asyncio
+    import requests as _requests
+
+    def _check():
+        try:
+            r = _requests.get(
+                "https://huggingface.co/api/whoami-v2",
+                headers={"Authorization": f"Bearer {req.api_key}"},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return {"valid": True, "username": data.get("name", ""), "error": None}
+            return {"valid": False, "username": None, "error": f"HTTP {r.status_code}"}
+        except Exception as e:
+            return {"valid": False, "username": None, "error": str(e)}
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _check)
 
 
 # ── LLM Models ────────────────────────────────────────────────────────────────
@@ -298,7 +366,14 @@ def _run_parse(project_id: str, task_id: str, cleaner: str):
                 provider = "embedded"
             else:
                 cfg = load_config()
-                provider = "gemini" if cfg.gemini_api_key else "openai"
+                lp = cfg.llm_provider
+                if lp == "local":
+                    provider = "embedded"
+                elif lp in ("gemini", "openai"):
+                    provider = lp
+                else:
+                    # "none" or unconfigured — fall back to key-based detection
+                    provider = "gemini" if cfg.gemini_api_key else "openai"
                 
             def _cancel_check():
                 t = _get_task(task_id)
@@ -492,9 +567,14 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 return
 
             progress = int((i / len(chapters)) * 90)
-            _set_task(task_id, "running", f"Synthesizing chapter {i + 1}/{len(chapters)}…", progress)
+            ch_title = ch.get("title", f"Chapter {i + 1}")
+            _set_task(task_id, "running", f"Chapter {i + 1}/{len(chapters)}: {ch_title} — Synthesizing…", progress)
             audio_path = exports_dir / f"chapter{i + 1:03d}.mp3"
             voice_sample = _find_voice_sample(project_id) if engine == "f5-tts" else None
+
+            def _tts_progress_cb(msg: str, _pct: int = 0, _task_id: str = task_id, _base: int = progress):
+                _set_task(_task_id, "running", msg, _base)
+
             await synthesize_speech(
                 text=ch.get("text", ""),
                 output_path=audio_path,
@@ -502,6 +582,7 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 voice=voice,
                 speed=speed,
                 voice_sample_path=voice_sample,
+                progress_cb=_tts_progress_cb,
             )
             audio_files.append(audio_path)
             chapters[i]["audio_path"] = str(audio_path)
