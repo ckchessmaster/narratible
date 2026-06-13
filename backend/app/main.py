@@ -468,6 +468,7 @@ async def tts_preview(project_id: str, req: PreviewRequest):
             voice_sample_path=voice_sample,
         )
     except Exception as e:
+        logger.exception("TTS preview failed")
         raise HTTPException(status_code=500, detail=str(e))
 
     return FileResponse(preview_path, media_type="audio/mpeg", filename="preview.mp3")

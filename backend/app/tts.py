@@ -1,16 +1,65 @@
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+_torchaudio_shim_installed = False
+
+
+def _install_torchaudio_soundfile_shim():
+    """Replace torchaudio.load/save with soundfile-backed implementations.
+
+    torchaudio >= 2.9 dropped its built-in I/O backends and dispatches all
+    file decoding to ``torchcodec``, which needs FFmpeg "full-shared" DLLs
+    that aren't present in the frozen Windows build.  F5-TTS calls
+    ``torchaudio.load(ref_audio)`` internally, so without a backend it raises
+    a RuntimeError and the request 500s.
+
+    ``soundfile`` (libsndfile) is already bundled and reads the PCM WAV that
+    F5-TTS produces during reference preprocessing, so we route torchaudio I/O
+    through it and bypass torchcodec entirely.  torchaudio resolves ``load``/
+    ``save`` as module attributes at call time, so patching them here takes
+    effect for the F5-TTS code path.
+    """
+    global _torchaudio_shim_installed
+    if _torchaudio_shim_installed:
+        return
+    try:
+        import torchaudio
+        import soundfile as sf
+        import torch
+    except ImportError:
+        return
+
+    def _sf_load(filepath, *args, **kwargs):  # noqa: ANN001
+        # soundfile returns float64 frames shaped (frames,) or (frames, channels).
+        data, sample_rate = sf.read(str(filepath), dtype="float32", always_2d=True)
+        # torchaudio.load contract: tensor shaped [channels, frames].
+        waveform = torch.from_numpy(data.T.copy())
+        return waveform, sample_rate
+
+    def _sf_save(filepath, src, sample_rate, *args, **kwargs):  # noqa: ANN001
+        # torchaudio.save passes a tensor shaped [channels, frames].
+        if hasattr(src, "detach"):
+            src = src.detach().cpu().numpy()
+        sf.write(str(filepath), src.T, int(sample_rate))
+
+    torchaudio.load = _sf_load
+    torchaudio.save = _sf_save
+    _torchaudio_shim_installed = True
+    logger.info("Installed torchaudio→soundfile I/O shim (bypasses torchcodec).")
+
 # Cached pipeline instances — loaded lazily to avoid startup cost
 _kokoro_pipeline = None
 _f5tts_model = None
+_whisper_model = None
+_whisper_processor = None
 
 def unload_tts():
     """Explicitly unload TTS models to free up VRAM."""
-    global _kokoro_pipeline, _f5tts_model
+    global _kokoro_pipeline, _f5tts_model, _whisper_model, _whisper_processor
     import gc
     freed = False
     if _kokoro_pipeline is not None:
@@ -18,6 +67,10 @@ def unload_tts():
         freed = True
     if _f5tts_model is not None:
         _f5tts_model = None
+        freed = True
+    if _whisper_model is not None:
+        _whisper_model = None
+        _whisper_processor = None
         freed = True
     if freed:
         try:
@@ -194,8 +247,13 @@ async def _synthesize_f5tts(
         if getattr(_sys, 'frozen', False) and not getattr(torch.jit, '_echoscribe_noop', False):
             torch.jit.script = lambda fn, *a, **k: fn
             torch.jit._echoscribe_noop = True
+        # F5-TTS calls torchaudio.load internally, which dispatches to
+        # torchcodec on torchaudio >= 2.9.  torchcodec needs FFmpeg DLLs that
+        # the frozen build lacks, so route torchaudio I/O through soundfile
+        # before importing F5-TTS.
+        _install_torchaudio_soundfile_shim()
         from f5_tts.api import F5TTS
-    except ImportError as e:
+    except (ImportError, RuntimeError) as e:
         import sys
         if getattr(sys, 'frozen', False):
             raise ImportError(
@@ -235,13 +293,114 @@ async def _synthesize_f5tts(
     loop = asyncio.get_event_loop()
 
     def _infer():
-        wav, sr, _ = _f5tts_model.infer(
-            ref_file=str(voice_sample_path),
-            ref_text="",        # auto-transcribe reference
-            gen_text=text,
-            speed=speed,
-        )
-        return wav, sr
+        # F5-TTS clips the reference *audio* to ~12s internally but uses
+        # whatever ref_text we pass.  If we transcribe a longer clip in full,
+        # the text describes far more speech than the clipped audio contains,
+        # which breaks alignment and produces garbled output.  So we clip the
+        # audio to ~10s ourselves, transcribe exactly that clip, and hand the
+        # clipped file to F5-TTS — keeping audio and text in sync.
+        #
+        # Transcription is done with Whisper's processor + model on a numpy
+        # array (NOT the transformers pipeline), which never touches
+        # torchcodec-backed file loading.  An accurate ref_text is also
+        # required, not just cosmetic: F5-TTS estimates generated duration as
+        #   ref_audio_len / len(ref_text) * len(gen_text)
+        # so a missing/one-char ref_text makes the duration explode past the
+        # model's positional limit and crashes inference.
+        global _whisper_model, _whisper_processor
+        import soundfile as sf
+        import numpy as np
+        import torch
+        import tempfile
+        import os
+        from transformers import WhisperProcessor, WhisperForConditionalGeneration
+
+        MAX_REF_SECONDS = 10
+
+        audio_arr, orig_sr = sf.read(str(voice_sample_path), dtype="float32")
+        if audio_arr.ndim > 1:
+            audio_arr = audio_arr.mean(axis=1)
+
+        max_samples = int(MAX_REF_SECONDS * orig_sr)
+        was_clipped = len(audio_arr) > max_samples
+        clipped = audio_arr[:max_samples] if was_clipped else audio_arr
+
+        # Reference file handed to F5-TTS: a temp clip if we trimmed it,
+        # otherwise the original file untouched.
+        ref_file = str(voice_sample_path)
+        tmp_ref = None
+        if was_clipped:
+            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            tmp_ref = tmp.name
+            tmp.close()
+            sf.write(tmp_ref, clipped, orig_sr)
+            ref_file = tmp_ref
+
+        try:
+            # Resample the clip to 16 kHz for Whisper.
+            asr_arr = clipped
+            if orig_sr != 16000:
+                n_out = int(round(len(clipped) * 16000 / orig_sr))
+                indices = np.round(
+                    np.linspace(0, len(clipped) - 1, n_out)
+                ).astype(int)
+                asr_arr = clipped[indices]
+
+            ref_text = ""
+            try:
+                if _whisper_processor is None or _whisper_model is None:
+                    _whisper_processor = WhisperProcessor.from_pretrained(
+                        "openai/whisper-base"
+                    )
+                    _whisper_model = WhisperForConditionalGeneration.from_pretrained(
+                        "openai/whisper-base"
+                    )
+                    if torch.cuda.is_available():
+                        _whisper_model = _whisper_model.to("cuda")
+
+                inputs = _whisper_processor(
+                    asr_arr, sampling_rate=16000, return_tensors="pt"
+                )
+                input_features = inputs.input_features
+                if torch.cuda.is_available():
+                    input_features = input_features.to("cuda")
+                with torch.no_grad():
+                    generated_ids = _whisper_model.generate(input_features)
+                ref_text = _whisper_processor.batch_decode(
+                    generated_ids, skip_special_tokens=True
+                )[0].strip()
+                logger.info(
+                    f"Pre-transcribed reference "
+                    f"({'~' + str(MAX_REF_SECONDS) + 's clip' if was_clipped else 'full'}): "
+                    f"{ref_text!r}"
+                )
+            except Exception as exc:
+                ref_text = ""
+                logger.warning(f"Reference audio pre-transcription failed ({exc}).")
+
+            # Guard against a missing/too-short transcription: F5-TTS divides
+            # the duration estimate by len(ref_text), so a very short ref_text
+            # blows up the generated length.  Fall back to a neutral sentence
+            # rather than a single character.
+            if len(ref_text) < 4:
+                ref_text = "This is a reference sample of the speaker's voice."
+                logger.warning(
+                    "Using neutral fallback ref_text to keep F5-TTS duration sane."
+                )
+
+            wav, sr, _ = _f5tts_model.infer(
+                ref_file=ref_file,
+                ref_text=ref_text,
+                gen_text=text,
+                speed=speed,
+            )
+            return wav, sr
+        finally:
+            if tmp_ref and os.path.exists(tmp_ref):
+                try:
+                    os.remove(tmp_ref)
+                except OSError:
+                    pass
 
     wav, sr = await loop.run_in_executor(None, _infer)
 
