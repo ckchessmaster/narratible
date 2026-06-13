@@ -5,6 +5,8 @@ AppVersion={#MyAppVersion}
 DefaultDirName={localappdata}\EchoScribe
 DefaultGroupName=Echo-Scribe
 OutputBaseFilename=EchoScribe_Installer
+SetupIconFile=..\packaging\logo.ico
+UninstallDisplayIcon={app}\EchoScribe.exe
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=lowest
@@ -15,9 +17,10 @@ SetupMutex=EchoScribeSetupMutex
 [Files]
 Source: "..\dist\EchoScribe\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\packaging\logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Echo-Scribe"; Filename: "{app}\EchoScribe.exe"; IconFilename: "{app}\EchoScribe.exe"
+Name: "{group}\Echo-Scribe"; Filename: "{app}\EchoScribe.exe"; IconFilename: "{app}\logo.ico"
 
 [Run]
 ; Silently install FFmpeg via Windows Package Manager to avoid GPL distribution violations

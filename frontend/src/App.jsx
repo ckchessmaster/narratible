@@ -51,7 +51,7 @@ export default function App() {
       {/* Header */}
       <header className="header">
         <div className="header-brand">
-          <span className="header-logo">Echo-Scribe</span>
+          <img src="/logo.png" alt="Echo-Scribe" style={{ height: 36, width: 'auto' }} />
           <span className="header-subtitle">PDF → Audiobook</span>
         </div>
 

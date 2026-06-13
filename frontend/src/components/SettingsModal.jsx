@@ -475,9 +475,17 @@ export default function SettingsModal({ onClose, toast }) {
                               {(gpu.vram_mb / 1024).toFixed(1)} GB VRAM &middot; CUDA enabled
                             </div>
                           )}
+                          {!gpu.cuda && gpu.index >= 0 && gpu.cuda_unavailable_reason && (
+                            <div className="text-xs mt-0.5" style={{ color: 'rgb(245,158,11)' }}>
+                              {gpu.vram_mb > 0 ? `${(gpu.vram_mb / 1024).toFixed(1)} GB VRAM · ` : ''}{gpu.cuda_unavailable_reason}
+                            </div>
+                          )}
                         </div>
                         {gpu.cuda && (
                           <span style={{ fontSize: 11, color: 'var(--success, #22c55e)', fontWeight: 600 }}>CUDA</span>
+                        )}
+                        {!gpu.cuda && gpu.index >= 0 && (
+                          <span style={{ fontSize: 11, color: 'rgb(245,158,11)', fontWeight: 600 }}>No CUDA</span>
                         )}
                       </label>
                     ))}

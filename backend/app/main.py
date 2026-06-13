@@ -94,6 +94,35 @@ async def health_check():
     return {"status": "ok"}
 
 
+def _nvidia_smi_gpus() -> list[dict]:
+    """Fallback: query nvidia-smi for NVIDIA GPUs when torch CUDA is unavailable."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return []
+        gpus = []
+        for line in result.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) == 3:
+                try:
+                    gpus.append({
+                        "index": int(parts[0]),
+                        "name": parts[1],
+                        "vram_mb": int(parts[2]),
+                        "cuda": False,  # torch CUDA unavailable; GPU is present but PyTorch can't reach it
+                        "cuda_unavailable_reason": "GPU detected but CUDA is unavailable. Ensure your NVIDIA drivers are up to date.",
+                    })
+                except ValueError:
+                    pass
+        return gpus
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+
+
 @app.get("/api/system/info")
 async def system_info():
     """Returns GPU/CUDA availability and a list of all detected GPUs."""
@@ -114,11 +143,17 @@ async def system_info():
                     "vram_mb": round(props.total_memory / 1024 ** 2),
                     "cuda": True,
                 })
+        else:
+            # PyTorch CUDA unavailable — fall back to nvidia-smi so the GPU still appears
+            gpus = _nvidia_smi_gpus()
         gpus.append({"index": -1, "name": "CPU (No GPU)", "vram_mb": 0, "cuda": False})
         info["gpus"] = gpus
     except ImportError:
         info["torch_version"] = "not installed"
-        info["gpus"] = [{"index": -1, "name": "CPU (No GPU)", "vram_mb": 0, "cuda": False}]
+        # torch not installed at all — still try nvidia-smi
+        gpus = _nvidia_smi_gpus()
+        gpus.append({"index": -1, "name": "CPU (No GPU)", "vram_mb": 0, "cuda": False})
+        info["gpus"] = gpus
     return info
 
 
