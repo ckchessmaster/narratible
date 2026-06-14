@@ -7,6 +7,8 @@ import Step2Editor from './components/Step2Editor'
 import Step3TTS from './components/Step3TTS'
 import Step4Export from './components/Step4Export'
 import SettingsModal from './components/SettingsModal'
+import Coachmark from './components/Coachmark'
+import useTips from './useTips'
 
 const STEPS = [
   { label: 'Upload' },
@@ -23,6 +25,8 @@ export default function App() {
   const [toasts, setToasts] = useState([])
   const [cudaEnabled, setCudaEnabled] = useState(true)
   const [hasCloudKey, setHasCloudKey] = useState(false)
+  const { getActiveTips, dismiss, disableAll } = useTips()
+  const wizardTips = getActiveTips(t => t.context === 'wizard' && t.step === step)
 
   const refreshHardwareState = useCallback(() => {
     Promise.all([getSystemInfo(), getSettings()]).then(([info, cfg]) => {
@@ -84,7 +88,7 @@ export default function App() {
               ↺ Clear Project
             </button>
           )}
-          <button className="btn btn-ghost btn-sm" onClick={() => setShowSettings(true)}>
+          <button className="btn btn-ghost btn-sm" data-tip-anchor="settings-button" onClick={() => setShowSettings(true)}>
             ⚙ Settings
           </button>
         </div>
@@ -131,6 +135,11 @@ export default function App() {
           />
         </div>
       </main>
+
+      {/* First-time-user coach-mark tips (hidden while Settings modal is open) */}
+      {!showSettings && (
+        <Coachmark tips={wizardTips} onDismiss={dismiss} onDisableAll={disableAll} zIndex={150} />
+      )}
 
       {/* Settings modal */}
       {showSettings && (

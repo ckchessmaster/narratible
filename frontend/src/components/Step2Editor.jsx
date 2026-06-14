@@ -125,7 +125,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           <div className="step-desc">{chapters.length} chapter{chapters.length !== 1 ? 's' : ''} · Click a chapter to edit</div>
         </div>
         <div className="flex gap-2">
-          <button className="btn btn-ghost btn-sm" onClick={splitAtCursor} title="Split chapter at cursor position">
+          <button className="btn btn-ghost btn-sm" data-tip-anchor="split-button" onClick={splitAtCursor} title="Split chapter at cursor position">
             ✂ Split Here
           </button>
         </div>
@@ -137,7 +137,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           width: 240, flexShrink: 0,
           borderRight: '1px solid var(--glass-border)',
           overflowY: 'auto', padding: '12px 0',
-        }}>
+        }} data-tip-anchor="chapter-list">
           {chapters.map((ch, i) => (
             <div
               key={i}
@@ -227,7 +227,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           width: 220, flexShrink: 0,
           borderLeft: '1px solid var(--glass-border)',
           padding: 16, overflowY: 'auto',
-        }}>
+        }} data-tip-anchor="metadata-sidebar">
           <div className="section-title">Book Metadata</div>
 
           <div className="field">

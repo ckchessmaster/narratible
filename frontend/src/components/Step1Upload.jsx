@@ -180,7 +180,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
         </div>
 
         {/* Book metadata */}
-        <div className="field-row">
+        <div className="field-row" data-tip-anchor="upload-meta">
           <div className="field">
             <label>Book Title *</label>
             <input
@@ -228,7 +228,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
         </div>
 
         {/* Cleaner option */}
-        <div className="field mt-4">
+        <div className="field mt-4" data-tip-anchor="cleanup-method">
           <label>Text Cleanup Method</label>
           <div className="flex gap-3 mt-1" style={{ flexWrap: 'wrap' }}>
             {[
@@ -296,7 +296,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
                 Continue →
               </button>
             )}
-            <button className="btn btn-primary btn-lg" onClick={handleSubmit} disabled={busy}>
+            <button className="btn btn-primary btn-lg" data-tip-anchor="parse-button" onClick={handleSubmit} disabled={busy}>
               {busy ? 'Processing...' : 'Parse PDF →'}
             </button>
           </div>

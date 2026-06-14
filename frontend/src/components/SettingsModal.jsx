@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { getSettings, saveSettings, getSystemInfo,
          validateGeminiKey, validateOpenAIKey, validateHuggingFaceToken } from '../api'
+import Coachmark from './Coachmark'
+import useTips from '../useTips'
 
 const PRESET_FAMILIES = [
   {
@@ -75,6 +77,9 @@ export default function SettingsModal({ onClose, toast }) {
   const [keyValidation, setKeyValidation] = useState({})
   // Tooltip hover state for 4-bit quantization info (retained for future use)
   const [showQuantTip, setShowQuantTip] = useState(false)
+  // First-time-user coach-mark tips for the Settings modal
+  const { getActiveTips, dismiss, disableAll, reset } = useTips()
+  const settingsTips = getActiveTips(t => t.context === 'settings' && t.tab === activeTab)
 
   useEffect(() => {
     getSettings().then(cfg => {
@@ -229,7 +234,7 @@ export default function SettingsModal({ onClose, toast }) {
   }
 
   const temperatureField = cfg && (
-    <div className="field">
+    <div className="field" data-tip-anchor="settings-temperature">
       <div className="flex justify-between items-center mb-2">
         <label style={{ margin: 0 }}>LLM Temperature (0.0 – 1.0)</label>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -335,7 +340,7 @@ export default function SettingsModal({ onClose, toast }) {
                 <div style={{ marginTop: 4 }}>
 
                   {/* Gemini */}
-                  <div style={sectionStyle(geminiActive)}>
+                  <div style={sectionStyle(geminiActive)} data-tip-anchor="settings-gemini">
                     <div style={headerStyle(geminiActive)}
                       onClick={() => toggleSection('gemini')}
                     >
@@ -420,7 +425,7 @@ export default function SettingsModal({ onClose, toast }) {
               <>
                 <div className="section-title">Audiobookshelf</div>
 
-                <div className="field">
+                <div className="field" data-tip-anchor="settings-abs">
                   <label>Server URL</label>
                   <input
                     type="url"
@@ -453,7 +458,7 @@ export default function SettingsModal({ onClose, toast }) {
                 {!systemInfo ? (
                   <div className="text-muted text-sm">Loading hardware info…</div>
                 ) : (
-                  <div className="flex flex-col gap-2 mb-4">
+                  <div className="flex flex-col gap-2 mb-4" data-tip-anchor="settings-gpu">
                     {(systemInfo.gpus ?? []).map(gpu => (
                       <label
                         key={gpu.index}
@@ -508,6 +513,19 @@ export default function SettingsModal({ onClose, toast }) {
                     </div>
                   </div>
                 )}
+
+                <div className="section-title mt-4">Tooltips</div>
+                <div className="flex items-center justify-between gap-3" data-tip-anchor="settings-reset">
+                  <div className="text-xs text-muted" style={{ flex: 1 }}>
+                    Replay the first-time onboarding tips throughout the app.
+                  </div>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => { reset(); toast('Tooltip progress reset.', 'success') }}
+                  >
+                    Reset tooltip progress
+                  </button>
+                </div>
               </>
             )}
 
@@ -530,7 +548,7 @@ export default function SettingsModal({ onClose, toast }) {
                 )}
 
                 <div className="section-title">HuggingFace Token</div>
-                <div className="field" style={{ opacity: cudaEnabled ? 1 : 0.5, pointerEvents: cudaEnabled ? 'auto' : 'none' }}>
+                <div className="field" data-tip-anchor="settings-hf" style={{ opacity: cudaEnabled ? 1 : 0.5, pointerEvents: cudaEnabled ? 'auto' : 'none' }}>
                   {renderKeyField('hf', 'huggingface_token', 'hf_…')}
                   <div className="text-xs text-muted mt-1">
                     Required for gated models (Llama, Gemma). Free account at{' '}
@@ -539,7 +557,20 @@ export default function SettingsModal({ onClose, toast }) {
                 </div>
 
                 <div style={{ opacity: cudaEnabled ? 1 : 0.5, pointerEvents: cudaEnabled ? 'auto' : 'none' }}>
-                  <div className="field">
+                  <div className="field" data-tip-anchor="settings-chunk">
+                    <label>Chunk Size: {(cfg.llm_chunk_size || 16000).toLocaleString()} characters</label>
+                    <input type="range" min="1000" max="32000" step="1000"
+                      value={cfg.llm_chunk_size || 16000}
+                      onChange={e => set('llm_chunk_size', parseInt(e.target.value) || 16000)} />
+                    <div className="flex justify-between text-xs text-muted mt-1">
+                      <span>1k (fast)</span><span>16k (balanced)</span><span>32k (quality)</span>
+                    </div>
+                    <div className="text-xs text-muted mt-2">
+                      Characters passed to the LLM per chunk. Larger = better context but more VRAM.
+                    </div>
+                  </div>
+
+                  <div className="field" data-tip-anchor="settings-models">
                     <div className="flex justify-between items-start mb-2">
                       <div className="section-title" style={{ margin: 0 }}>Embedded LLM Model</div>
                       <label className="flex items-center gap-2 cursor-pointer">
@@ -610,18 +641,6 @@ export default function SettingsModal({ onClose, toast }) {
                       })}
                     </div>
                   </div>
-                  <div className="field">
-                    <label>Chunk Size: {(cfg.llm_chunk_size || 5000).toLocaleString()} characters</label>
-                    <input type="range" min="1000" max="32000" step="1000"
-                      value={cfg.llm_chunk_size || 5000}
-                      onChange={e => set('llm_chunk_size', parseInt(e.target.value) || 5000)} />
-                    <div className="flex justify-between text-xs text-muted mt-1">
-                      <span>1k (fast)</span><span>16k (balanced)</span><span>32k (quality)</span>
-                    </div>
-                    <div className="text-xs text-muted mt-2">
-                      Characters passed to the LLM per chunk. Larger = better context but more VRAM.
-                    </div>
-                  </div>
                 </div>
               </>
             )}
@@ -633,6 +652,9 @@ export default function SettingsModal({ onClose, toast }) {
                 {saving ? 'Saving…' : 'Save Settings'}
               </button>
             </div>
+
+            {/* First-time-user coach-mark tips for Settings (above the modal) */}
+            <Coachmark tips={settingsTips} onDismiss={dismiss} onDisableAll={disableAll} zIndex={250} />
           </>
         )}
       </div>

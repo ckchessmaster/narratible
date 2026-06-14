@@ -19,7 +19,7 @@ class AppConfig(BaseModel):
     huggingface_token: str = ""
     embedded_llm_model: str = "google/gemma-4-E2B-it"
     use_4bit_quantization: bool = False
-    llm_chunk_size: int = 5000
+    llm_chunk_size: int = 16000
     cloud_llm_chunk_size: int = 50000
     llm_temperature: float = 0.1
     audiobookshelf_url: str = ""

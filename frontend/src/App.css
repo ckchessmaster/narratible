@@ -251,6 +251,71 @@
   to   { transform: translateX(0);    opacity: 1; }
 }
 
+/* ── Coach-mark tips ─────────────────────────────────────────────────────── */
+.coachmark {
+  position: fixed;
+  width: 280px;
+  background: #161b2e;
+  border: 1px solid var(--glass-border-hover);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  padding: 16px 16px 14px;
+  animation: coachIn 0.18s ease;
+}
+@keyframes coachIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.coachmark-arrow {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: #161b2e;
+  border: 1px solid var(--glass-border-hover);
+  transform: rotate(45deg);
+  z-index: -1;
+}
+.coachmark-close {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.coachmark-close:hover { color: var(--text-primary); }
+.coachmark-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 6px;
+  padding-right: 16px;
+  color: var(--text-primary);
+}
+.coachmark-body {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+.coachmark-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+}
+.coachmark-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.coachmark-check input { width: auto; cursor: pointer; margin: 0; }
+
 /* ── Project selector ────────────────────────────────────────────────────── */
 .project-selector {
   display: flex;

@@ -117,7 +117,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
         <div style={{ flex: 1 }}>
           {/* Engine selector */}
           <div className="section-title">Engine</div>
-          <div className="flex gap-3 mb-4">
+          <div className="flex gap-3 mb-4" data-tip-anchor="engine-select">
             {ENGINES.map(eng => {
               const disabled = eng.requiresCuda && !cudaEnabled
               return (
@@ -170,7 +170,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
           )}
 
           {/* Speed */}
-          <div className="field">
+          <div className="field" data-tip-anchor="voice-speed">
             <label>Speed — {speed.toFixed(2)}×</label>
             <input
               type="range" min="0.5" max="2.0" step="0.05"
@@ -191,7 +191,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
               placeholder="Type text to preview…"
             />
           </div>
-          <div className="flex gap-2 items-center">
+          <div className="flex gap-2 items-center" data-tip-anchor="preview-section">
             <button className="btn btn-secondary" onClick={handlePreview} disabled={previewing || !voice}>
               {previewing ? '⏳ Generating…' : '▶ Play Preview'}
             </button>

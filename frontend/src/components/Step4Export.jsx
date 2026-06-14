@@ -145,7 +145,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
         <div style={{ flex: 1 }}>
           <div className="section-title">Generate Files</div>
           <div className="flex gap-3 mb-6">
-            <div className="glass p-4" style={{ flex: 1, borderRadius: 'var(--radius-sm)' }}>
+            <div className="glass p-4" style={{ flex: 1, borderRadius: 'var(--radius-sm)' }} data-tip-anchor="export-epub">
               <div style={{ fontSize: 28, marginBottom: 8 }}>📖</div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>EPUB Ebook</div>
               <div className="text-sm text-muted mb-4">
@@ -156,7 +156,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
               </button>
             </div>
 
-            <div className="glass p-4" style={{ flex: 1, borderRadius: 'var(--radius-sm)' }}>
+            <div className="glass p-4" style={{ flex: 1, borderRadius: 'var(--radius-sm)' }} data-tip-anchor="generate-audio">
               <div style={{ fontSize: 28, marginBottom: 8 }}>🎧</div>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>Audiobook MP3</div>
               <div className="text-sm text-muted mb-4">
@@ -220,7 +220,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
         </div>
 
         {/* Right: Audiobookshelf */}
-        <div style={{ width: 280, flexShrink: 0 }}>
+        <div style={{ width: 280, flexShrink: 0 }} data-tip-anchor="abs-panel">
           <div className="section-title">Audiobookshelf Upload</div>
           <div className="glass p-4" style={{ borderRadius: 'var(--radius-sm)' }}>
             <div className="text-xs text-muted mb-3">
