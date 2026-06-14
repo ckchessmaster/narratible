@@ -57,15 +57,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
-          key: pip-gpu-${{ runner.os }}-cu121-kokoro-f5tts-transformers
-          restore-keys: pip-gpu-${{ runner.os }}-
+          key: pip-gpu-${{ runner.os }}-cu128-torch-torchaudio-kokoro-f5tts
+          restore-keys: pip-gpu-${{ runner.os }}-cu128-
 
       - name: Cache PyInstaller work directory
         uses: actions/cache@v4
         with:
           path: build
-          key: pyinstaller-${{ runner.os }}-${{ hashFiles('narratible.spec', 'desktop_app.py', 'backend/**/*.py') }}
-          restore-keys: pyinstaller-${{ runner.os }}-
+          key: pyinstaller-cu128-${{ runner.os }}-${{ hashFiles('narratible.spec', 'desktop_app.py', 'backend/**/*.py') }}
+          restore-keys: pyinstaller-cu128-${{ runner.os }}-
 
       - name: Build Frontend
         run: |
@@ -73,20 +73,47 @@ jobs:
           npm install
           npm run build
 
-      - name: Install Python Dependencies
+      - name: Install PyTorch (CUDA build)
         run: |
           python -m pip install --upgrade pip
+          # Install the CUDA-enabled torch/torchaudio FIRST so it is the build that
+          # gets frozen. requirements.txt would otherwise pull the +cpu wheel from
+          # PyPI as a transitive dependency, leaving CUDA permanently unavailable.
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+      - name: Install Python Dependencies
+        run: |
+          # Base deps. The CUDA torch installed above already satisfies the torch
+          # requirement, so these will NOT replace it with a +cpu wheel.
           pip install -r backend/requirements.txt
           pip install pyinstaller requests psutil uvicorn
 
       - name: Install GPU ML Components
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cu121
+          # kokoro and f5-tts are not in requirements.txt (commented out there).
           pip install kokoro f5-tts transformers accelerate bitsandbytes
+
+      - name: Verify CUDA-enabled PyTorch
+        shell: pwsh
+        run: |
+          # The runner has no GPU, so torch.cuda.is_available() is always False here.
+          # Instead assert this is a CUDA *build* (torch.version.cuda is set), which is
+          # what determines whether the shipped app can ever reach a GPU.
+          python -c "import torch, torchaudio, sys; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| cuda', torch.version.cuda); sys.exit(0 if torch.version.cuda else 1)"
+          if ($LASTEXITCODE -ne 0) { throw 'PyTorch is a CPU-only build (torch.version.cuda is None). Aborting to avoid shipping a non-GPU installer.' }
 
       - name: Compile PyInstaller Standalone App
         run: |
           python -m PyInstaller narratible.spec --noconfirm --workpath build\pyinstaller-work --distpath dist
+
+      - name: Verify CUDA libraries bundled in dist
+        shell: pwsh
+        run: |
+          $libDir = 'dist\narratible\_internal\torch\lib'
+          if (-not (Test-Path "$libDir\torch_cuda.dll")) {
+            throw "torch_cuda.dll not found in $libDir — the frozen build is CPU-only."
+          }
+          Write-Host 'Confirmed torch_cuda.dll present in dist.'
 
       - name: Compile Inno Setup Installer
         shell: pwsh
