@@ -25,6 +25,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
     if (!projectId || !isActive) return
     getProject(projectId).then(setMeta).catch(() => {})
     refreshExports()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshExports closes over projectId which is already in deps
   }, [projectId, isActive])
 
   useEffect(() => {

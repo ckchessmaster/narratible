@@ -1,7 +1,7 @@
-import React, { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { createProject, uploadPdf, parsePdf, cancelTask, pollTask } from '../api'
 
-export default function Step1Upload({ projectId, setProjectId, onNext, toast, cudaEnabled = true, hasCloudKey = false }) {
+export default function Step1Upload({ projectId, setProjectId, onNext, toast, cudaEnabled = true, hasCloudKey = false, debugMode = false }) {
   const [title, setTitle] = useState('')
   const [author, setAuthor] = useState('')
   const [cleaner, setCleaner] = useState('regex')
@@ -22,6 +22,8 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
 
   useEffect(() => {
     if (!setProjectId || !projectId) {
+      // Resetting all form state when the project is cleared — batched by React 18
+      /* eslint-disable react-hooks/set-state-in-effect */
       setTitle('')
       setAuthor('')
       setFile(null)
@@ -33,6 +35,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       setLlmOutput('')
       setTimeElapsed(0)
       setFinalTime(null)
+      /* eslint-enable react-hooks/set-state-in-effect */
     }
   }, [projectId, setProjectId])
 
@@ -189,6 +192,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
               value={title}
               onChange={e => setTitle(e.target.value)}
               disabled={busy}
+              autoComplete="off"
             />
           </div>
           <div className="field">
@@ -199,6 +203,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
               value={author}
               onChange={e => setAuthor(e.target.value)}
               disabled={busy}
+              autoComplete="off"
             />
           </div>
         </div>
@@ -232,7 +237,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
           <label>Text Cleanup Method</label>
           <div className="flex gap-3 mt-1" style={{ flexWrap: 'wrap' }}>
             {[
-              { value: 'regex', label: 'Heuristic (fast, offline)', desc: 'Regex rules — no API key or GPU needed', disabled: false },
+                          { value: 'regex', label: 'Heuristic (fast, offline)', desc: 'Regex rules — no API key or GPU needed', disabled: false },
               { value: 'llm', label: 'LLM (Gemini / OpenAI)', desc: hasCloudKey ? 'Best quality — uses your configured API key' : 'Requires a Gemini or OpenAI key in ⚙ Settings', disabled: false },
               { value: 'embedded', label: 'Embedded Local LLM', desc: cudaEnabled ? 'Runs locally — uses GPU VRAM' : 'Requires a CUDA-capable GPU', disabled: !cudaEnabled },
             ].map(opt => (
@@ -260,6 +265,55 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
                 </div>
               </label>
             ))}
+            {debugMode && (
+              <label
+                className="glass flex gap-3 p-3"
+                style={{
+                  flexBasis: '100%', cursor: busy ? 'not-allowed' : 'pointer',
+                  borderRadius: 'var(--radius-sm)', alignItems: 'flex-start',
+                }}
+              >
+                <input
+                  type="radio"
+                  name="cleaner"
+                  value="llm_chapters_only"
+                  checked={cleaner === 'llm_chapters_only' || cleaner === 'llm_chapters_only_embedded'}
+                  onChange={() => setCleaner('llm_chapters_only')}
+                  disabled={busy}
+                  style={{ marginTop: 3, width: 'auto' }}
+                />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 500, fontSize: 14 }}>LLM Chapter Review Only <span style={{ fontSize: 11, color: 'var(--accent-secondary)', fontWeight: 400 }}>(Debug)</span></div>
+                  <div className="text-xs text-muted mt-1">Runs LLM boundary review only — text cleanup uses regex. For testing chapter detection.</div>
+                  {(cleaner === 'llm_chapters_only' || cleaner === 'llm_chapters_only_embedded') && (
+                    <div className="flex gap-4 mt-2">
+                      <label className="flex items-center gap-1 text-xs cursor-pointer" style={{ fontWeight: 500 }}>
+                        <input
+                          type="radio"
+                          name="debug_provider"
+                          checked={cleaner === 'llm_chapters_only'}
+                          onChange={() => setCleaner('llm_chapters_only')}
+                          disabled={busy}
+                          style={{ width: 'auto' }}
+                        />
+                        Cloud (Gemini / OpenAI)
+                      </label>
+                      <label className="flex items-center gap-1 text-xs cursor-pointer" style={{ fontWeight: 500, opacity: cudaEnabled ? 1 : 0.45 }}>
+                        <input
+                          type="radio"
+                          name="debug_provider"
+                          checked={cleaner === 'llm_chapters_only_embedded'}
+                          onChange={() => setCleaner('llm_chapters_only_embedded')}
+                          disabled={busy || !cudaEnabled}
+                          style={{ width: 'auto' }}
+                        />
+                        Local LLM{!cudaEnabled ? ' (no GPU)' : ''}
+                      </label>
+                    </div>
+                  )}
+                </div>
+              </label>
+            )}
           </div>
         </div>
 

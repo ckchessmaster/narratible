@@ -26,6 +26,7 @@ class AppConfig(BaseModel):
     audiobookshelf_token: str = ""
     default_tts_engine: str = "edge-tts"
     selected_gpu_index: int = 0  # -1 = CPU; 0, 1, 2... = CUDA device index
+    debug_mode: bool = False
 
 def load_config() -> AppConfig:
     if CONFIG_FILE.exists():

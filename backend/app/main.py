@@ -25,7 +25,7 @@ from .projects import (
     _project_path,
 )
 from .parser import extract_structured_from_pdf
-from .cleaner import regex_clean_text, llm_clean_text
+from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters
 from .tts import synthesize_speech, get_available_voices
 from .epub import build_epub
 from .uploader import AudiobookshelfUploader
@@ -391,6 +391,66 @@ def _run_parse(project_id: str, task_id: str, cleaner: str):
         
         raw_path = _project_path(project_id) / "raw_text.txt"
         raw_path.write_text(raw_text, encoding="utf-8")
+
+        # Hybrid chapter review: refine layout-heuristic boundaries with LLM before cleaning.
+        # llm_chapters_only* bypass the TOC check so debug mode always runs the review.
+        _debug_cleaners = ("llm_chapters_only", "llm_chapters_only_embedded")
+        if cleaner in ("llm", "embedded") + _debug_cleaners and (
+            pdf_data.get("method") != "toc" or cleaner in _debug_cleaners
+        ):
+            review_provider: str = "gemini"
+            if cleaner == "embedded" or cleaner == "llm_chapters_only_embedded":
+                review_provider = "embedded"
+            else:
+                cfg = load_config()
+                lp = cfg.llm_provider
+                if lp == "local":
+                    review_provider = "embedded"
+                elif lp in ("gemini", "openai"):
+                    review_provider = lp
+                else:
+                    review_provider = "gemini" if cfg.gemini_api_key else "openai"
+            # Save lightweight heuristic snapshot for debug comparison (before LLM review)
+            if cleaner in _debug_cleaners:
+                debug_snapshot = [
+                    {
+                        "title": ch["title"],
+                        "confidence": ch.get("confidence", 1.0),
+                        "warnings": ch.get("warnings", []),
+                        "char_count": len(ch.get("raw_text", "")),
+                        "snippet": ch.get("raw_text", "")[:300].replace("\n", " ").strip(),
+                    }
+                    for ch in raw_chapters
+                ]
+                debug_file = _project_path(project_id) / "chapters_debug_comparison.json"
+                import json as _json
+                debug_file.write_text(
+                    _json.dumps({"method": pdf_data.get("method"), "chapters": debug_snapshot}, indent=2),
+                    encoding="utf-8",
+                )
+            def _review_cancel_check():
+                t = _get_task(task_id)
+                return t and t.get("is_cancelled", False)
+
+            def _review_progress(msg: str, pct: int):
+                _set_task(task_id, "running", msg, pct)
+
+            if cleaner in _debug_cleaners and pdf_data.get("method") == "toc":
+                _set_task(task_id, "running",
+                    "[Debug] PDF has an embedded TOC — in normal mode LLM review would be skipped. "
+                    "Running review anyway…", 15)
+
+            raw_chapters = llm_review_chapters(
+                raw_chapters,
+                provider=review_provider,
+                cancel_check=_review_cancel_check,
+                progress_callback=_review_progress,
+                prompt_save_path=(
+                    _project_path(project_id) / "chapters_debug_prompt.json"
+                    if cleaner in _debug_cleaners else None
+                ),
+            )
+
         _set_task(task_id, "running", "Cleaning text…", 30)
 
         cleaned_chapters = []
@@ -497,6 +557,26 @@ async def parse_pdf(
     _set_task(task_id, "running", "Queued…", 0)
     background_tasks.add_task(_run_parse, project_id, task_id, cleaner)
     return {"task_id": task_id}
+
+
+@app.get("/api/projects/{project_id}/debug-chapters")
+async def get_debug_chapters(project_id: str):
+    debug_file = _project_path(project_id) / "chapters_debug_comparison.json"
+    if not debug_file.exists():
+        raise HTTPException(status_code=404, detail="No debug comparison data for this project.")
+    import json as _json
+    with open(debug_file, "r", encoding="utf-8") as f:
+        return _json.load(f)
+
+
+@app.get("/api/projects/{project_id}/debug-prompt")
+async def get_debug_prompt(project_id: str):
+    prompt_file = _project_path(project_id) / "chapters_debug_prompt.json"
+    if not prompt_file.exists():
+        raise HTTPException(status_code=404, detail="No debug prompt data for this project.")
+    import json as _json
+    with open(prompt_file, "r", encoding="utf-8") as f:
+        return _json.load(f)
 
 
 # ── Chapters ──────────────────────────────────────────────────────────────────

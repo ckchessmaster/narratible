@@ -17,7 +17,7 @@ async function request(method, path, body, isFormData = false) {
         const j = JSON.parse(text)
         throw new Error(j.detail || j.message || res.statusText)
       } catch (e) {
-        if (e instanceof SyntaxError) throw new Error(text || res.statusText)
+        if (e instanceof SyntaxError) throw new Error(text || res.statusText, { cause: e })
         throw e
       }
     }
@@ -58,6 +58,8 @@ export const cancelTask = (projectId) => request('POST', `/projects/${projectId}
 // Chapters
 export const getChapters = (id) => request('GET', `/projects/${id}/chapters`)
 export const saveChapters = (id, chapters) => request('PUT', `/projects/${id}/chapters`, chapters)
+export const getDebugChapters = (id) => request('GET', `/projects/${id}/debug-chapters`)
+export const getDebugPrompt = (id) => request('GET', `/projects/${id}/debug-prompt`)
 
 // Cover
 export const uploadCover = (projectId, file) => {

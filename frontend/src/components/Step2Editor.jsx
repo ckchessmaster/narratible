@@ -1,34 +1,49 @@
 import { useState, useEffect, useRef } from 'react'
-import { getProject, updateProject, getChapters, saveChapters, uploadCover } from '../api'
+import { getProject, updateProject, getChapters, saveChapters, uploadCover, getDebugChapters, getDebugPrompt } from '../api'
 
-export default function Step2Editor({ projectId, isActive, onNext, onBack, toast }) {
+export default function Step2Editor({ projectId, isActive, onNext, onBack, toast, debugMode = false }) {
   const [meta, setMeta] = useState({ title: '', author: '', cover_image: null })
   const [chapters, setChapters] = useState([])
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [debugComparison, setDebugComparison] = useState(null)
+  const [showHeuristic, setShowHeuristic] = useState(false)
+  const [debugPrompt, setDebugPrompt] = useState(null)
+  const [showPromptModal, setShowPromptModal] = useState(false)
   const coverRef = useRef()
   const textareaRef = useRef()
 
   useEffect(() => {
     if (!projectId) {
+      // Resetting all state when the project is cleared — batched by React 18
+      /* eslint-disable react-hooks/set-state-in-effect */
       setMeta({ title: '', author: '', cover_image: null })
       setChapters([])
       setSelectedIdx(0)
       setLoading(true)
+      /* eslint-enable react-hooks/set-state-in-effect */
       return
     }
     if (!isActive) return // Don't fetch if not active
     
     setLoading(true)
-    Promise.all([getProject(projectId), getChapters(projectId)])
-      .then(([p, chs]) => {
+    Promise.all([
+      getProject(projectId),
+      getChapters(projectId),
+      debugMode ? getDebugChapters(projectId).catch(() => null) : Promise.resolve(null),
+      debugMode ? getDebugPrompt(projectId).catch(() => null) : Promise.resolve(null),
+    ])
+      .then(([p, chs, dbg, prompt]) => {
         setMeta({ title: p.title, author: p.author, cover_image: p.cover_image })
         setChapters(chs)
+        setDebugComparison(dbg ?? null)
+        setDebugPrompt(prompt ?? null)
+        if (!dbg) setShowHeuristic(false)
       })
       .catch(e => toast(e.message, 'error'))
       .finally(() => setLoading(false))
-  }, [projectId, isActive])
+  }, [projectId, isActive, toast, debugMode])
 
   const updateChapter = (idx, field, value) => {
     setChapters(prev => prev.map((ch, i) => i === idx ? { ...ch, [field]: value } : ch))
@@ -125,6 +140,11 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           <div className="step-desc">{chapters.length} chapter{chapters.length !== 1 ? 's' : ''} · Click a chapter to edit</div>
         </div>
         <div className="flex gap-2">
+          {debugPrompt && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowPromptModal(true)} title="View prompt sent to LLM">
+              🔬 View Prompt
+            </button>
+          )}
           <button className="btn btn-ghost btn-sm" data-tip-anchor="split-button" onClick={splitAtCursor} title="Split chapter at cursor position">
             ✂ Split Here
           </button>
@@ -138,6 +158,45 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           borderRight: '1px solid var(--glass-border)',
           overflowY: 'auto', padding: '12px 0',
         }} data-tip-anchor="chapter-list">
+          {/* Debug comparison tab toggle */}
+          {debugComparison && (
+            <div className="flex" style={{ borderBottom: '1px solid var(--glass-border)', marginBottom: 8, padding: '0 12px 8px' }}>
+              <button
+                className={`btn btn-sm ${!showHeuristic ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ flex: 1, fontSize: 11, padding: '3px 6px' }}
+                onClick={() => setShowHeuristic(false)}
+              >LLM Reviewed</button>
+              <button
+                className={`btn btn-sm ${showHeuristic ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ flex: 1, fontSize: 11, padding: '3px 6px', marginLeft: 4 }}
+                onClick={() => setShowHeuristic(true)}
+              >Heuristic</button>
+            </div>
+          )}
+
+          {showHeuristic && debugComparison ? (
+            // Read-only heuristic snapshot
+            <>
+              <div className="text-xs text-muted" style={{ padding: '0 12px 6px', fontStyle: 'italic' }}>
+                {debugComparison.method === 'toc' ? '📑 Embedded TOC' : '🔍 Layout heuristic'} · {debugComparison.chapters.length} chapters
+              </div>
+              {debugComparison.chapters.map((ch, i) => (
+                <div key={i} style={{ padding: '8px 12px', borderLeft: '2px solid transparent' }}>
+                  <div className="text-sm truncate" style={{ fontWeight: 500 }}>
+                    {ch.warnings?.length > 0 && <span style={{ fontSize: 10, marginRight: 3 }}>⚠️</span>}
+                    {ch.title || `Chapter ${i + 1}`}
+                  </div>
+                  <div className="text-xs text-muted">{ch.char_count?.toLocaleString()} chars · {Math.round((ch.confidence ?? 1) * 100)}% conf</div>
+                  {ch.snippet && (
+                    <div className="text-xs text-muted" style={{ marginTop: 2, fontStyle: 'italic', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                      {ch.snippet}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </>
+          ) : (
+          <>
           {chapters.map((ch, i) => (
             <div
               key={i}
@@ -172,6 +231,8 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
               >✕</button>
             </div>
           ))}
+          </>
+          )}
         </div>
 
         {/* Editor panel */}
@@ -184,6 +245,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
                   value={ch.title}
                   onChange={e => updateChapter(selectedIdx, 'title', e.target.value)}
                   placeholder="Chapter title"
+                  autoComplete="off"
                   style={{ fontWeight: 600, fontSize: 15 }}
                 />
               </div>
@@ -232,11 +294,11 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
 
           <div className="field">
             <label>Title</label>
-            <input type="text" value={meta.title} onChange={e => setMeta(m => ({ ...m, title: e.target.value }))} />
+            <input type="text" value={meta.title} onChange={e => setMeta(m => ({ ...m, title: e.target.value }))} autoComplete="off" />
           </div>
           <div className="field">
             <label>Author</label>
-            <input type="text" value={meta.author} onChange={e => setMeta(m => ({ ...m, author: e.target.value }))} />
+            <input type="text" value={meta.author} onChange={e => setMeta(m => ({ ...m, author: e.target.value }))} autoComplete="off" />
           </div>
 
           <div className="field">
@@ -258,6 +320,37 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           Continue to Voice →
         </button>
       </div>
+
+      {/* Debug prompt viewer modal */}
+      {showPromptModal && debugPrompt && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000,
+            background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+          onClick={() => setShowPromptModal(false)}
+        >
+          <div
+            className="glass"
+            style={{ width: '80vw', maxWidth: 860, maxHeight: '80vh', display: 'flex', flexDirection: 'column', borderRadius: 'var(--radius)', overflow: 'hidden' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4" style={{ borderBottom: '1px solid var(--glass-border)', flexShrink: 0 }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 15 }}>LLM Chapter Review Prompt</div>
+                <div className="text-xs text-muted mt-0.5">Provider: <code>{debugPrompt.provider}</code> · {debugPrompt.chapter_count} chapters</div>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowPromptModal(false)}>✕</button>
+            </div>
+            <div style={{ overflowY: 'auto', padding: 16, flex: 1 }}>
+              <div className="section-title" style={{ marginBottom: 6 }}>System Prompt</div>
+              <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'rgba(0,0,0,0.2)', borderRadius: 'var(--radius-sm)', padding: 12, marginBottom: 16 }}>{debugPrompt.system_prompt}</pre>
+              <div className="section-title" style={{ marginBottom: 6 }}>User Prompt (sent to model)</div>
+              <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'rgba(0,0,0,0.2)', borderRadius: 'var(--radius-sm)', padding: 12 }}>{debugPrompt.user_prompt}</pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

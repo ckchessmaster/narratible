@@ -25,6 +25,7 @@ export default function App() {
   const [toasts, setToasts] = useState([])
   const [cudaEnabled, setCudaEnabled] = useState(true)
   const [hasCloudKey, setHasCloudKey] = useState(false)
+  const [debugMode, setDebugMode] = useState(false)
   const { getActiveTips, dismiss, disableAll } = useTips()
   const wizardTips = getActiveTips(t => t.context === 'wizard' && t.step === step)
 
@@ -35,6 +36,7 @@ export default function App() {
       const selectedGpu = gpus.find(g => g.index === selectedIdx) ?? gpus[0]
       setCudaEnabled(selectedGpu?.cuda ?? true)
       setHasCloudKey(!!(cfg?.gemini_api_key || cfg?.openai_api_key))
+      setDebugMode(!!(cfg?.debug_mode))
     }).catch(() => {})
   }, [])
 
@@ -105,6 +107,7 @@ export default function App() {
             toast={toast}
             cudaEnabled={cudaEnabled}
             hasCloudKey={hasCloudKey}
+            debugMode={debugMode}
           />
         </div>
         <div style={{ display: step === 2 ? 'block' : 'none' }}>
@@ -114,6 +117,7 @@ export default function App() {
             onNext={next}
             onBack={back}
             toast={toast}
+            debugMode={debugMode}
           />
         </div>
         <div style={{ display: step === 3 ? 'block' : 'none' }}>

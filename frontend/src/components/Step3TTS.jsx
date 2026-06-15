@@ -22,6 +22,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
 
   // Switch away from CUDA engines if CUDA becomes unavailable
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!cudaEnabled) setEngine('edge-tts')
   }, [cudaEnabled])
 

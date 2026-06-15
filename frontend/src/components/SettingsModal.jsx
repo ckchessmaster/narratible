@@ -90,7 +90,6 @@ export default function SettingsModal({ onClose, toast }) {
       console.warn('Failed to load settings', e)
     })
     getSystemInfo().then(setSystemInfo).catch(e => console.warn('Failed to load system info', e))
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const set = (key, val) => setCfg(c => ({ ...c, [key]: val }))
@@ -327,15 +326,6 @@ export default function SettingsModal({ onClose, toast }) {
               const openaiActive = provider === 'openai'
               const openaiConfigured = !!(cfg.openai_api_key)
 
-              // ── Local ─────────────────────────────────────────────
-              const localOpen = openSections.has('local')
-              const localActive = provider === 'local'
-              const localDisabled = !cudaEnabled
-              const localConfigured = !!(cfg.huggingface_token)
-
-              // ── None ──────────────────────────────────────────────
-              const noneActive = provider === 'none'
-
               return (
                 <div style={{ marginTop: 4 }}>
 
@@ -377,7 +367,7 @@ export default function SettingsModal({ onClose, toast }) {
                                   ))}
                                 </select>
                               ) : (
-                                <input type="text" placeholder="gemini-2.5-flash" value={cfg.gemini_model || ''} onChange={e => set('gemini_model', e.target.value)} />
+                                <input type="text" placeholder="gemini-2.5-flash" value={cfg.gemini_model || ''} onChange={e => set('gemini_model', e.target.value)} autoComplete="off" />
                               )}
                               <div className="text-xs text-muted mt-1">Models auto-load when your key is saved.</div>
                             </div>
@@ -432,6 +422,7 @@ export default function SettingsModal({ onClose, toast }) {
                     placeholder="http://192.168.1.x:13378"
                     value={cfg.audiobookshelf_url}
                     onChange={e => set('audiobookshelf_url', e.target.value)}
+                    autoComplete="off"
                   />
                 </div>
 
@@ -513,6 +504,21 @@ export default function SettingsModal({ onClose, toast }) {
                     </div>
                   </div>
                 )}
+
+                <div className="section-title mt-4">Developer</div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div style={{ fontWeight: 500, fontSize: 14 }}>Debug Mode</div>
+                    <div className="text-xs text-muted mt-0.5">Exposes extra testing options during PDF import.</div>
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <div className="toggle-switch">
+                      <input type="checkbox" checked={cfg.debug_mode || false}
+                        onChange={e => set('debug_mode', e.target.checked)} />
+                      <span className="toggle-slider"></span>
+                    </div>
+                  </label>
+                </div>
 
                 <div className="section-title mt-4">Tooltips</div>
                 <div className="flex items-center justify-between gap-3" data-tip-anchor="settings-reset">
