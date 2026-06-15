@@ -390,6 +390,7 @@ async def upload_pdf(project_id: str, file: UploadFile = File(...)):
 def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] | None = None):
     modules = modules or []
     try:
+        meta = get_project(project_id)
         _set_task(task_id, "running", "Reading PDF…", 10, stage="Extracting text")
         pdf_path = _project_path(project_id) / "book.pdf"
         if not pdf_path.exists():
@@ -507,7 +508,10 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                         _set_task(task_id, "running", append_output=chunk_text)
 
                     cleaned_ch_text = llm_clean_text(
-                        ch["raw_text"], 
+                        regex_clean_text(
+                            ch["raw_text"],
+                            known_titles=[meta.title, ch_title],
+                        ),
                         provider=provider, 
                         progress_callback=_progress_cb, 
                         cancel_check=_cancel_check, 
@@ -535,7 +539,10 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                 _set_task(task_id, "running",
                     f"Cleaning chapter {i+1} of {total_ch}: '{ch_title}'…",
                     overall_prog, stage="Cleaning text")
-                cleaned_txt = regex_clean_text(ch["raw_text"])
+                cleaned_txt = regex_clean_text(
+                    ch["raw_text"],
+                    known_titles=[meta.title, ch_title],
+                )
                 cleaned_chapters.append({
                     "title": ch["title"],
                     "text": cleaned_txt,

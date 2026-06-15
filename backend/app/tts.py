@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from typing import Optional, Callable
 
+from .tts_text import prepare_text_for_tts, segment_text_for_tts
+
 logger = logging.getLogger(__name__)
 
 
@@ -157,14 +159,7 @@ async def synthesize_speech(
 
     voice_sample_path: path to a .wav reference file, required for f5-tts.
     """
-    # Strip footnote markers like [^1] and the footnote definitions at the bottom
-    import re
-    # Remove inline footnote markers
-    cleaned_text = re.sub(r'\[\^\d+\]', '', text)
-    # Remove footnote definitions at the bottom (e.g. [^1]: ...)
-    cleaned_text = re.sub(r'(?m)^\[\^\d+\]:.*$', '', cleaned_text).strip()
-
-    text = cleaned_text
+    text = prepare_text_for_tts(text, engine)
 
     logger.info(f"Synthesizing with {engine}, voice={voice}, speed={speed}")
 
@@ -248,11 +243,16 @@ async def synthesize_speech(
 
         def _infer_kokoro():
             global _kokoro_pipeline
-            generator = _kokoro_pipeline(
-                text, voice=voice, speed=speed, split_pattern=r"\n+"
-            )
-            segs = [audio for _, _, audio in generator]
-            return segs
+            audio_segments = []
+            for segment in segment_text_for_tts(text, engine="kokoro"):
+                generator = _kokoro_pipeline(
+                    segment.text, voice=voice, speed=speed, split_pattern=r"\n+"
+                )
+                audio_segments.extend(audio for _, _, audio in generator)
+                if segment.pause_after_ms:
+                    pause_samples = int(24000 * segment.pause_after_ms / 1000)
+                    audio_segments.append(np.zeros(pause_samples, dtype=np.float32))
+            return audio_segments
 
         segments = await loop.run_in_executor(None, _infer_kokoro)
 
@@ -446,13 +446,30 @@ async def _synthesize_f5tts(
                     "Using neutral fallback ref_text to keep F5-TTS duration sane."
                 )
 
-            wav, sr, _ = _f5tts_model.infer(
-                ref_file=ref_file,
-                ref_text=ref_text,
-                gen_text=text,
-                speed=speed,
-            )
-            return wav, sr
+            generated = []
+            sample_rate = None
+            segments = segment_text_for_tts(text, engine="f5-tts")
+            for idx, segment in enumerate(segments):
+                logger.info(
+                    f"F5-TTS synthesizing segment {idx + 1}/{len(segments)} "
+                    f"({len(segment.text)} chars)."
+                )
+                wav, sr, _ = _f5tts_model.infer(
+                    ref_file=ref_file,
+                    ref_text=ref_text,
+                    gen_text=segment.text,
+                    speed=speed,
+                )
+                sample_rate = sr
+                wav_arr = np.asarray(wav)
+                generated.append(wav_arr)
+                if segment.pause_after_ms:
+                    pause_samples = int(sr * segment.pause_after_ms / 1000)
+                    generated.append(np.zeros(pause_samples, dtype=wav_arr.dtype))
+
+            if not generated or sample_rate is None:
+                raise ValueError("F5-TTS produced no audio output.")
+            return np.concatenate(generated), sample_rate
         finally:
             if tmp_ref and os.path.exists(tmp_ref):
                 try:

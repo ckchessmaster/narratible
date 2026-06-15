@@ -11,6 +11,14 @@ $ErrorActionPreference = 'Continue'
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')
 Set-Location $repoRoot
 
+$backendVenvPython = Join-Path $repoRoot 'backend\.venv\Scripts\python.exe'
+$backendPython = if (Test-Path $backendVenvPython) {
+    '& "{0}"' -f $backendVenvPython
+}
+else {
+    'python'
+}
+
 function Invoke-Step {
     param(
         [string]$Name,
@@ -76,10 +84,10 @@ function Get-ChangedTestFiles {
 $steps = @()
 
 if ($Scope -eq 'backend' -or $Scope -eq 'full') {
-    $steps += Invoke-Step -Name 'Backend syntax check' -WorkingDirectory 'backend' -Command 'python -m compileall app run.py'
+    $steps += Invoke-Step -Name 'Backend syntax check' -WorkingDirectory 'backend' -Command "$backendPython -m compileall app run.py"
 
     if (Test-Path (Join-Path $repoRoot 'backend\tests')) {
-        $steps += Invoke-Step -Name 'Backend unit tests' -WorkingDirectory 'backend' -Command 'python -m pytest tests -q'
+        $steps += Invoke-Step -Name 'Backend unit tests' -WorkingDirectory 'backend' -Command "$backendPython -m pytest tests -q"
     }
 }
 

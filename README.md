@@ -81,6 +81,19 @@ The API is also available directly at **http://localhost:8000/docs** (Swagger UI
 | Kokoro-82M | Great | Fast (GPU) | Local model (auto-downloaded) |
 | F5-TTS Clone | Excellent | Moderate (GPU) | Your `.wav` voice sample |
 
+Local engines use narratible's audio-only text preparation layer before
+synthesis. This expands high-confidence speech forms such as scripture ranges
+(`Matthew 10:14-15` -> `Matthew 10, verses 14 through 15`), common
+abbreviations (`etc.` -> `et cetera`), and units (`55 mph` -> `55 miles per
+hour`) while preserving the original chapter text and EPUB output. Kokoro and
+F5-TTS also receive shorter speech segments with explicit pauses between
+sentences and paragraphs to improve long-form pacing.
+
+Edge-TTS may still pronounce unusual domain text more naturally because the
+hosted service has a larger proprietary text-normalization and prosody front
+end. Kokoro has a lighter local pipeline, and F5-TTS prioritizes voice cloning,
+so narratible adds these deterministic speech cues locally.
+
 ### Voice Cloning with F5-TTS
 1. Record a clean 10–15 second `.wav` clip of the voice you want to clone
 2. In Step 3, upload it via **Voice Samples → Upload Sample**

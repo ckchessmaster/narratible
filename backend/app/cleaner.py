@@ -6,6 +6,7 @@ from typing import Literal
 from openai import OpenAI
 from pydantic import BaseModel
 from .config import settings, get_device_string
+from .page_artifacts import remove_running_headers
 
 class CleanedTextResponse(BaseModel):
     main_text: str
@@ -129,7 +130,7 @@ def unload_llm():
         except ImportError:
             pass
 
-def regex_clean_text(text: str) -> str:
+def regex_clean_text(text: str, known_titles: list[str] | None = None) -> str:
     """
     Basic heuristic cleanup of text.
     - Removes excessive newlines
@@ -139,8 +140,8 @@ def regex_clean_text(text: str) -> str:
     # Fix hyphenated line breaks: word-\nword -> wordword
     text = re.sub(r'(\w+)-\n(\w+)', r'\1\2', text)
 
-    # Remove repetitive page numbers or standalone numbers on their own lines
-    text = re.sub(r'^\s*\d+\s*$', '', text, flags=re.MULTILINE)
+    # Remove repeated running headers/footers and floating page numbers.
+    text = remove_running_headers(text, known_titles=known_titles)
 
     # Condense multiple newlines
     text = re.sub(r'\n{3,}', '\n\n', text)
