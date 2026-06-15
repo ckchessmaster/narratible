@@ -1,15 +1,18 @@
 import { useState, useRef, useEffect } from 'react'
-import { createProject, uploadPdf, parsePdf, cancelTask, pollTask } from '../api'
+import { createProject, uploadPdf, parsePdf, cancelTask, pollTask, getParsingModules } from '../api'
 
 export default function Step1Upload({ projectId, setProjectId, onNext, toast, cudaEnabled = true, hasCloudKey = false, debugMode = false }) {
   const [title, setTitle] = useState('')
   const [author, setAuthor] = useState('')
   const [cleaner, setCleaner] = useState('regex')
+  const [parsingModules, setParsingModules] = useState([])
+  const [enabledModules, setEnabledModules] = useState([])
   const [file, setFile] = useState(null)
   const [dragOver, setDragOver] = useState(false)
   const [status, setStatus] = useState(null) // null | 'creating' | 'uploading' | 'parsing' | 'done'
   const [progress, setProgress] = useState(0)
   const [progressMsg, setProgressMsg] = useState('')
+  const [progressStage, setProgressStage] = useState('')
   const [taskError, setTaskError] = useState(null)
   const [currentProjId, setCurrentProjId] = useState(null)
   const [llmOutput, setLlmOutput] = useState('')
@@ -30,6 +33,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       setStatus(null)
       setProgress(0)
       setProgressMsg('')
+      setProgressStage('')
       setTaskError(null)
       setCurrentProjId(null)
       setLlmOutput('')
@@ -56,6 +60,18 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
     }
   }, [llmOutput])
 
+  useEffect(() => {
+    getParsingModules()
+      .then(mods => setParsingModules(mods ?? []))
+      .catch(e => console.warn('Failed to load parsing modules', e))
+  }, [])
+
+  const toggleModule = (id) => {
+    setEnabledModules(prev =>
+      prev.includes(id) ? prev.filter(m => m !== id) : [...prev, id]
+    )
+  }
+
   const handleDrop = (e) => {
     e.preventDefault()
     setDragOver(false)
@@ -80,7 +96,8 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
     try {
       setStatus('creating')
       setTaskError(null)
-      setProgress(5)
+      setProgress(3)
+      setProgressStage('Creating project')
       setProgressMsg('Creating project…')
       setLlmOutput('')
       setTimeElapsed(0)
@@ -91,18 +108,21 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       setCurrentProjId(proj.id)
 
       setStatus('uploading')
-      setProgress(20)
+      setProgress(6)
+      setProgressStage('Uploading PDF')
       setProgressMsg('Uploading PDF…')
       await uploadPdf(proj.id, file)
 
       setStatus('parsing')
-      setProgress(30)
+      setProgress(9)
+      setProgressStage('Starting parse')
       setProgressMsg('Starting parse…')
-      const { task_id } = await parsePdf(proj.id, cleaner)
+      const { task_id } = await parsePdf(proj.id, cleaner, enabledModules)
 
       await pollTask(task_id, (t) => {
-        setProgress(30 + Math.round(t.progress * 0.7))
-        setProgressMsg(t.message)
+        setProgress(t.progress)
+        setProgressStage(t.stage || '')
+        setProgressMsg(t.message || '')
         if (t.llm_output) setLlmOutput(t.llm_output)
       })
 
@@ -113,7 +133,9 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       setTimeout(onNext, 600)
     } catch (e) {
       setStatus(null)
-      if (e.message.includes('Gated Model Access') || e.message.includes('HuggingFace') || e.message.includes('cancel') || e.message.includes('abort')) {
+      if (e.cancelled) {
+        setTaskError(e.message || 'Processing cancelled.')
+      } else if (e.message.includes('Gated Model Access') || e.message.includes('HuggingFace') || e.message.includes('cancel') || e.message.includes('abort')) {
         setTaskError(e.message)
       } else {
         toast(e.message, 'error')
@@ -126,6 +148,8 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       try {
         await cancelTask(currentProjId)
         setStatus(null)
+        setProgressStage('')
+        setProgressMsg('')
         setTaskError("Processing cancelled.")
       } catch (err) {
         toast("Failed to cancel: " + err.message, "error")
@@ -317,12 +341,46 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
           </div>
         </div>
 
+        {/* Parsing modules */}
+        {parsingModules.length > 0 && (
+          <div className="field mt-4" data-tip-anchor="parsing-modules">
+            <label>Reading Enhancements</label>
+            <div className="flex gap-3 mt-1" style={{ flexWrap: 'wrap' }}>
+              {parsingModules.map(mod => (
+                <label
+                  key={mod.id}
+                  className="glass flex gap-3 p-3"
+                  style={{
+                    flex: 1, minWidth: 220, cursor: busy ? 'not-allowed' : 'pointer',
+                    borderRadius: 'var(--radius-sm)', alignItems: 'flex-start',
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={enabledModules.includes(mod.id)}
+                    onChange={() => !busy && toggleModule(mod.id)}
+                    disabled={busy}
+                    style={{ marginTop: 3, width: 'auto' }}
+                  />
+                  <div>
+                    <div style={{ fontWeight: 500, fontSize: 14 }}>{mod.name}</div>
+                    <div className="text-xs text-muted mt-1">{mod.description}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
         {(busy || status === 'done') && (
           <div className="mt-4">
-            <div className="flex justify-between text-sm text-secondary mb-2">
-              <span>{status === 'done' ? 'Parsing complete!' : progressMsg}</span>
+            <div className="flex justify-between text-sm text-secondary mb-1">
+              <span style={{ fontWeight: 600 }}>{status === 'done' ? 'Parsing complete!' : (progressStage || progressMsg)}</span>
               <span>{formatTime(status === 'done' ? finalTime ?? timeElapsed : timeElapsed)} {status !== 'done' && `• ${progress}%`}</span>
             </div>
+            {status !== 'done' && progressStage && progressMsg && progressMsg !== progressStage && (
+              <div className="text-xs text-muted mb-2">{progressMsg}</div>
+            )}
             <div className="progress-bar">
               <div className="progress-bar-fill" style={{ width: `${progress}%`, backgroundColor: status === 'done' ? 'var(--success)' : 'var(--accent-primary)' }} />
             </div>

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 import psutil
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +26,7 @@ from .projects import (
 )
 from .parser import extract_structured_from_pdf
 from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters
+from .parsing_modules import list_modules, apply_modules
 from .tts import synthesize_speech, get_available_voices
 from .epub import build_epub
 from .uploader import AudiobookshelfUploader
@@ -49,20 +50,28 @@ app.add_middleware(
 )
 
 # ── In-memory task status store ──────────────────────────────────────────────
-# Maps task_id -> {"status": "running"|"done"|"error", "message": str, "progress": 0-100, "is_cancelled": bool, "llm_output": str}
+# Maps task_id -> {"status": "running"|"done"|"error"|"cancelled", "stage": str, "message": str, "progress": 0-100, "is_cancelled": bool, "llm_output": str}
+# "stage" is the coarse phase shown as the primary status line (e.g. "Extracting
+# text", "Cleaning text"); "message" carries the finer detail shown beneath it.
 _tasks: dict[str, dict] = {}
 
 
-def _set_task(task_id: str, status: str, message: str = "", progress: int = 0, is_cancelled: bool = False, append_output: str = None):
+def _set_task(task_id: str, status: str, message: str = None, progress: int = None, is_cancelled: bool = False, append_output: str = None, stage: str = None):
     existing = _tasks.get(task_id, {})
     _is_cancelled = existing.get("is_cancelled", False) if not is_cancelled else is_cancelled
     _llm_output = existing.get("llm_output", "")
     if append_output:
         _llm_output += append_output
+    # Preserve prior stage/message/progress when a caller only updates a subset
+    # (e.g. streaming llm_output) so the displayed line never blanks out.
+    _stage = existing.get("stage", "") if stage is None else stage
+    _message = existing.get("message", "") if message is None else message
+    _progress = existing.get("progress", 0) if progress is None else progress
     _tasks[task_id] = {
-        "status": status, 
-        "message": message, 
-        "progress": progress, 
+        "status": status,
+        "stage": _stage,
+        "message": _message,
+        "progress": _progress,
         "is_cancelled": _is_cancelled,
         "llm_output": _llm_output
     }
@@ -378,14 +387,20 @@ async def upload_pdf(project_id: str, file: UploadFile = File(...)):
     return {"message": "PDF uploaded successfully.", "path": str(dest)}
 
 
-def _run_parse(project_id: str, task_id: str, cleaner: str):
+def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] | None = None):
+    modules = modules or []
     try:
-        _set_task(task_id, "running", "Extracting text and analyzing structure from PDF…", 10)
+        _set_task(task_id, "running", "Reading PDF…", 10, stage="Extracting text")
         pdf_path = _project_path(project_id) / "book.pdf"
         if not pdf_path.exists():
             raise FileNotFoundError("book.pdf not found. Upload a PDF first.")
 
-        pdf_data = extract_structured_from_pdf(pdf_path)
+        def _extract_progress(msg: str, frac: float):
+            # Map extraction fraction (0..1) into the 10–28 progress band.
+            pct = 10 + int(max(0.0, min(1.0, frac)) * 18)
+            _set_task(task_id, "running", msg, pct, stage="Extracting text")
+
+        pdf_data = extract_structured_from_pdf(pdf_path, progress_callback=_extract_progress)
         raw_text = pdf_data["raw_text"]
         raw_chapters = pdf_data["chapters"]
         
@@ -433,12 +448,12 @@ def _run_parse(project_id: str, task_id: str, cleaner: str):
                 return t and t.get("is_cancelled", False)
 
             def _review_progress(msg: str, pct: int):
-                _set_task(task_id, "running", msg, pct)
+                _set_task(task_id, "running", msg, pct, stage="Reviewing chapters")
 
             if cleaner in _debug_cleaners and pdf_data.get("method") == "toc":
                 _set_task(task_id, "running",
-                    "[Debug] PDF has an embedded TOC — in normal mode LLM review would be skipped. "
-                    "Running review anyway…", 15)
+                    "PDF has an embedded table of contents — normally chapter review "
+                    "would be skipped. Running it anyway…", 15, stage="Reviewing chapters")
 
             raw_chapters = llm_review_chapters(
                 raw_chapters,
@@ -451,7 +466,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str):
                 ),
             )
 
-        _set_task(task_id, "running", "Cleaning text…", 30)
+        _set_task(task_id, "running", "Cleaning text…", 30, stage="Cleaning text")
 
         cleaned_chapters = []
         full_cleaned_text = ""
@@ -474,40 +489,52 @@ def _run_parse(project_id: str, task_id: str, cleaner: str):
                 t = _get_task(task_id)
                 return t and t.get("is_cancelled", False)
                 
-            for i, ch in enumerate(raw_chapters):
-                if _cancel_check():
-                    break
+            try:
+                for i, ch in enumerate(raw_chapters):
+                    if _cancel_check():
+                        break
+                        
+                    ch_title = ch["title"]
                     
-                ch_title = ch["title"]
-                
-                def _progress_cb(msg: str, pct: int):
-                    # Localize progress over total chapters
-                    base_prog = 30 + int((i / len(raw_chapters)) * 50)
-                    overall_prog = base_prog + int((pct / 100) * (50 / len(raw_chapters)))
-                    _set_task(task_id, "running", f"Cleaning '{ch_title}' - {msg}", overall_prog)
+                    def _progress_cb(msg: str, pct: int):
+                        # Localize progress over total chapters
+                        base_prog = 30 + int((i / len(raw_chapters)) * 50)
+                        overall_prog = base_prog + int((pct / 100) * (50 / len(raw_chapters)))
+                        _set_task(task_id, "running", f"Cleaning '{ch_title}' — {msg}", overall_prog, stage="Cleaning text")
 
-                def _output_cb(chunk_text: str):
-                    # We just append whatever token/text we received directly
-                    _set_task(task_id, "running", append_output=chunk_text)
+                    def _output_cb(chunk_text: str):
+                        # We just append whatever token/text we received directly
+                        _set_task(task_id, "running", append_output=chunk_text)
 
-                cleaned_ch_text = llm_clean_text(
-                    ch["raw_text"], 
-                    provider=provider, 
-                    progress_callback=_progress_cb, 
-                    cancel_check=_cancel_check, 
-                    output_callback=_output_cb
-                )
-                
-                cleaned_chapters.append({
-                    "title": ch_title,
-                    "text": cleaned_ch_text,
-                    "audio_path": None,
-                    "confidence": ch.get("confidence", 1.0),
-                    "warnings": ch.get("warnings", [])
-                })
-                full_cleaned_text += cleaned_ch_text + "\n\n"
+                    cleaned_ch_text = llm_clean_text(
+                        ch["raw_text"], 
+                        provider=provider, 
+                        progress_callback=_progress_cb, 
+                        cancel_check=_cancel_check, 
+                        output_callback=_output_cb
+                    )
+                    
+                    cleaned_chapters.append({
+                        "title": ch_title,
+                        "text": cleaned_ch_text,
+                        "audio_path": None,
+                        "confidence": ch.get("confidence", 1.0),
+                        "warnings": ch.get("warnings", [])
+                    })
+                    full_cleaned_text += cleaned_ch_text + "\n\n"
+            except InterruptedError:
+                # User aborted mid-generation. Fall through so the model is
+                # unloaded from VRAM and the task is marked cancelled below.
+                logger.info("Embedded LLM cleaning interrupted by user cancel.")
         else:
-            for ch in raw_chapters:
+            total_ch = len(raw_chapters) or 1
+            for i, ch in enumerate(raw_chapters):
+                ch_title = ch["title"]
+                # Map regex cleaning across the 30–88 band so the bar keeps moving.
+                overall_prog = 30 + int((i / total_ch) * 58)
+                _set_task(task_id, "running",
+                    f"Cleaning chapter {i+1} of {total_ch}: '{ch_title}'…",
+                    overall_prog, stage="Cleaning text")
                 cleaned_txt = regex_clean_text(ch["raw_text"])
                 cleaned_chapters.append({
                     "title": ch["title"],
@@ -518,28 +545,39 @@ def _run_parse(project_id: str, task_id: str, cleaner: str):
                 })
                 full_cleaned_text += cleaned_txt + "\n\n"
 
-        # Unload the LLM from VRAM *after* all chapters are done parsing
-        if cleaner == "embedded":
+        # Unload the LLM from VRAM *after* all chapters are done parsing.
+        # Covers any path that may have loaded the embedded model — full embedded
+        # cleaning as well as the embedded chapter-review debug cleaner.
+        if cleaner in ("embedded", "llm_chapters_only_embedded"):
             from app.cleaner import unload_llm
             unload_llm()
 
         t = _get_task(task_id)
         if t and t.get("is_cancelled"):
-            _set_task(task_id, "error", "Task was cancelled.", t.get("progress", 0))
+            _set_task(task_id, "cancelled", "Processing cancelled.", t.get("progress", 0), stage="Cancelled")
             return
+
+        # Apply optional parsing modules (deterministic, offline text transforms)
+        # to each cleaned chapter, then rebuild the full text from the result.
+        if modules:
+            _set_task(task_id, "running", "Applying parsing modules…", 89, stage="Parsing modules")
+            full_cleaned_text = ""
+            for ch in cleaned_chapters:
+                ch["text"] = apply_modules(ch["text"], modules)
+                full_cleaned_text += ch["text"] + "\n\n"
 
         cleaned_path = _project_path(project_id) / "cleaned_text.txt"
         cleaned_path.write_text(full_cleaned_text.strip(), encoding="utf-8")
         
         # We no longer need to auto-split because we split natively!
-        _set_task(task_id, "running", "Saving chapters…", 90)
+        _set_task(task_id, "running", "Saving chapters…", 90, stage="Saving")
 
         chapters = cleaned_chapters
         save_chapters(project_id, chapters)
-        _set_task(task_id, "done", f"Parsed {len(chapters)} chapter(s) via {pdf_data.get('method', 'unknown')}.", 100)
+        _set_task(task_id, "done", f"Parsed {len(chapters)} chapter(s) via {pdf_data.get('method', 'unknown')}.", 100, stage="Done")
     except Exception as e:
         logger.exception("Parse task failed")
-        _set_task(task_id, "error", str(e), 0)
+        _set_task(task_id, "error", str(e), 0, stage="Error")
 
 
 @app.post("/api/projects/{project_id}/parse")
@@ -547,6 +585,7 @@ async def parse_pdf(
     project_id: str,
     background_tasks: BackgroundTasks,
     cleaner: str = "regex",
+    modules: list[str] = Query(default=[]),
 ):
     try:
         get_project(project_id)
@@ -554,9 +593,14 @@ async def parse_pdf(
         raise HTTPException(status_code=404, detail=str(e))
 
     task_id = f"parse-{project_id}"
-    _set_task(task_id, "running", "Queued…", 0)
-    background_tasks.add_task(_run_parse, project_id, task_id, cleaner)
+    _set_task(task_id, "running", "Queued…", 0, stage="Queued")
+    background_tasks.add_task(_run_parse, project_id, task_id, cleaner, modules)
     return {"task_id": task_id}
+
+
+@app.get("/api/parsing-modules")
+async def get_parsing_modules():
+    return list_modules()
 
 
 @app.get("/api/projects/{project_id}/debug-chapters")

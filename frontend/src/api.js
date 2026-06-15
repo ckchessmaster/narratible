@@ -50,8 +50,12 @@ export const uploadPdf = (projectId, file) => {
   return request('POST', `/projects/${projectId}/upload-pdf`, fd, true)
 }
 
-export const parsePdf = (projectId, cleaner = 'regex') =>
-  request('POST', `/projects/${projectId}/parse?cleaner=${cleaner}`)
+export const parsePdf = (projectId, cleaner = 'regex', modules = []) => {
+  const moduleParams = modules.map(m => `&modules=${encodeURIComponent(m)}`).join('')
+  return request('POST', `/projects/${projectId}/parse?cleaner=${cleaner}${moduleParams}`)
+}
+
+export const getParsingModules = () => request('GET', '/parsing-modules')
 
 export const cancelTask = (projectId) => request('POST', `/projects/${projectId}/cancel`)
 
@@ -108,6 +112,12 @@ export async function pollTask(taskId, onProgress, intervalMs = 1000) {
         const t = await getTask(taskId)
         onProgress(t)
         if (t.status === 'done') { clearInterval(iv); resolve(t) }
+        if (t.status === 'cancelled') {
+          clearInterval(iv)
+          const err = new Error(t.message || 'Processing cancelled.')
+          err.cancelled = true
+          reject(err)
+        }
         if (t.status === 'error') { clearInterval(iv); reject(new Error(t.message)) }
       } catch (e) { clearInterval(iv); reject(e) }
     }, intervalMs)

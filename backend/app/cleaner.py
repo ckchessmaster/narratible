@@ -147,6 +147,30 @@ def regex_clean_text(text: str) -> str:
 
     return text.strip()
 
+def _build_cancel_stopping_criteria(cancel_check):
+    """
+    Return a transformers StoppingCriteriaList that halts generation as soon as
+    cancel_check() returns True, or None when cancellation isn't wired up.
+
+    This lets an in-flight embedded LLM generation stop promptly (freeing GPU
+    activations) instead of running to completion after the user aborts.
+    """
+    if not cancel_check:
+        return None
+    try:
+        from transformers import StoppingCriteria, StoppingCriteriaList
+    except ImportError:
+        return None
+
+    class _CancelCriteria(StoppingCriteria):
+        def __call__(self, input_ids, scores, **kwargs):
+            try:
+                return bool(cancel_check())
+            except Exception:
+                return False
+
+    return StoppingCriteriaList([_CancelCriteria()])
+
 def llm_review_chapters(
     chapters: list[dict],
     provider: str,
@@ -235,7 +259,14 @@ def llm_review_chapters(
         '{"chapters": [{"title": "...", "section_type": "chapter", "note": null}]}'
     )
 
-    report(f"Reviewing {len(chapters)} chapter candidate(s) with {provider}…", 18)
+    # Friendly label for the status line — avoids exposing the raw internal
+    # provider keyword (e.g. "embedded"), which reads like a cut-off sentence.
+    _provider_label = {
+        "embedded": "the local model",
+        "gemini": "Gemini",
+        "openai": "OpenAI",
+    }.get(provider, provider)
+    report(f"Reviewing {len(chapters)} chapter candidate(s) with {_provider_label}…", 18)
 
     # Save prompt for debug inspection if a path was provided
     if prompt_save_path is not None:
@@ -339,7 +370,56 @@ def llm_review_chapters(
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": USER_PROMPT},
             ]
-            result = _cached_pipe(messages, max_new_tokens=1024, temperature=0.1, do_sample=True)
+            report(
+                f"Reviewing {len(chapters)} chapter(s) with the local model…",
+                24,
+            )
+
+            # Stream generated tokens so the status bar advances during the
+            # (otherwise opaque) single inference call. Ramp progress 24→26 as
+            # tokens arrive, leaving 27 for the post-merge "complete" report.
+            from transformers.generation.streamers import BaseStreamer
+
+            MAX_REVIEW_TOKENS = 1024
+
+            class _ReviewProgressStreamer(BaseStreamer):
+                def __init__(self):
+                    self.is_first = True
+                    self.count = 0
+
+                def put(self, value):
+                    if self.is_first:
+                        # First call carries the prompt tokens, not generation.
+                        self.is_first = False
+                        return
+                    try:
+                        n = value.numel() if hasattr(value, "numel") else len(value)
+                    except TypeError:
+                        n = 1
+                    self.count += n
+                    frac = min(1.0, self.count / MAX_REVIEW_TOKENS)
+                    report(
+                        f"Reviewing chapters with the local model… ({self.count} tokens)",
+                        24 + int(frac * 2),
+                    )
+
+                def end(self):
+                    pass
+
+            review_streamer = _ReviewProgressStreamer()
+            result = _cached_pipe(
+                messages,
+                max_new_tokens=MAX_REVIEW_TOKENS,
+                temperature=0.1,
+                do_sample=True,
+                streamer=review_streamer,
+                stopping_criteria=_build_cancel_stopping_criteria(cancel_check),
+            )
+
+            # If the user aborted mid-generation, bail out with the original
+            # boundaries rather than parsing a truncated response.
+            if cancel_check and cancel_check():
+                return chapters
             raw_out = result[0]["generated_text"][-1]["content"].strip()
 
             json_match = re.search(r'\{.*\}', raw_out, re.DOTALL)
@@ -388,7 +468,7 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
             progress_callback(msg, pct)
 
     # 1. Regex pre-pass
-    report("Running fast Regex pre-pass...", 5)
+    report("Running fast regex pre-pass…", 5)
     text_chunk = regex_clean_text(text_chunk)
 
     chunk_size_chars = getattr(cfg, "cloud_llm_chunk_size", 12000) if provider in ("gemini", "openai") else getattr(cfg, "llm_chunk_size", 5000)
@@ -512,7 +592,7 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
         }
 
         if getattr(cfg, "use_4bit_quantization", False):
-            report("Initializing 4-bit Quantization configs...", 26)
+            report("Initializing 4-bit quantization configs…", 26)
             from transformers import BitsAndBytesConfig
             pipe_kwargs["model_kwargs"] = {
                 "quantization_config": BitsAndBytesConfig(
@@ -552,11 +632,11 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
 
             if _cached_pipe is None or str(_cached_pipe_kwargs) != str(pipe_kwargs):
                 unload_llm()
-                report("Moving weights to GPU... (may take a moment)", 28)
+                report("Moving weights to GPU… (may take a moment)", 28)
                 _cached_pipe = pipeline(**pipe_kwargs)
                 _cached_pipe_kwargs = pipe_kwargs
             else:
-                report("Using cached LLM weights...", 28)
+                report("Using cached LLM weights…", 28)
 
             pipe = _cached_pipe
             
@@ -574,7 +654,7 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
                     raise InterruptedError("User cancelled LLM clean text operation.")
 
                 base_prog = 30 + int((i / len(chunks)) * 60)
-                report(f"Processing chunk {i+1}/{len(chunks)}...", base_prog)
+                report(f"Processing chunk {i+1}/{len(chunks)}…", base_prog)
                 
                 messages = [
                     {"role": "system", "content": SYSTEM_PROMPT},
@@ -589,8 +669,16 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
                     temperature=getattr(cfg, "llm_temperature", 0.1), 
                     repetition_penalty=1.2, 
                     do_sample=True,
-                    streamer=streamer
+                    streamer=streamer,
+                    stopping_criteria=_build_cancel_stopping_criteria(cancel_check)
                 )
+
+                # Generation may have been halted mid-way by an abort — stop now
+                # instead of processing the truncated chunk output.
+                if cancel_check and cancel_check():
+                    report("Processing cancelled.", 0)
+                    raise InterruptedError("User cancelled LLM clean text operation.")
+
                 out = result[0]['generated_text']
                 raw_out = out[-1]['content'].strip() if isinstance(out, list) else out.strip()
                 
@@ -639,7 +727,7 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
                 raise InterruptedError("User cancelled.")
 
             base_prog = 30 + int((i / len(chunks)) * 60)
-            report(f"Processing chunk {i+1}/{len(chunks)} via Gemini...", base_prog)
+            report(f"Processing chunk {i+1}/{len(chunks)} via Gemini…", base_prog)
             
             config = types.GenerateContentConfig(
                 temperature=getattr(cfg, "llm_temperature", 0.1),
@@ -668,7 +756,7 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
                             ) from api_err
                         if attempt < max_retries - 1:
                             wait = 2 ** attempt * 10
-                            report(f"Gemini rate limited, retrying in {wait}s... (attempt {attempt+1}/{max_retries})", base_prog)
+                            report(f"Gemini rate limited, retrying in {wait}s… (attempt {attempt+1}/{max_retries})", base_prog)
                             time.sleep(wait)
                             continue
                     raise
@@ -695,7 +783,7 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
                 raise InterruptedError("User cancelled.")
 
             base_prog = 30 + int((i / len(chunks)) * 60)
-            report(f"Processing chunk {i+1}/{len(chunks)} via OpenAI...", base_prog)
+            report(f"Processing chunk {i+1}/{len(chunks)} via OpenAI…", base_prog)
             response = client.beta.chat.completions.parse(
                 model="gpt-4o-mini",
                 temperature=getattr(cfg, "llm_temperature", 0.1),
@@ -708,10 +796,10 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
             res_obj = response.choices[0].message.parsed
             process_chunk_result(res_obj.main_text, res_obj.notes_text)
     else:
-        report(f"Provider '{provider}' not configured, falling back to regex...", 50)
+        report(f"Provider '{provider}' not configured, falling back to regex…", 50)
         return regex_clean_text(text_chunk)
 
-    report("Cleanup complete! Merging document...", 95)
+    report("Cleanup complete! Merging document…", 95)
     final_doc = "\n\n".join(cleaned_chunks)
     if all_notes:
         final_doc += "\n\n--- NOTES ---\n\n" + "\n\n".join(all_notes)

@@ -6,9 +6,14 @@ from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-def extract_structured_from_pdf(pdf_path: Path) -> Dict[str, Any]:
+def extract_structured_from_pdf(pdf_path: Path, progress_callback=None) -> Dict[str, Any]:
     """
     Extracts text and detects chapters using native TOC or layout analysis.
+
+    progress_callback, if provided, is called as ``callback(message, fraction)``
+    where ``fraction`` is a float in 0..1 describing how far extraction has
+    progressed. It lets long PDFs report movement instead of looking frozen.
+
     Returns: {
         "raw_text": "...",
         "chapters": [{"title": "...", "raw_text": "...", "confidence": 1.0, "warnings": []}],
@@ -23,16 +28,16 @@ def extract_structured_from_pdf(pdf_path: Path) -> Dict[str, Any]:
         
         if toc:
             logger.info("Found native TOC, extracting by bookmarks...")
-            return _extract_via_toc(doc, toc)
+            return _extract_via_toc(doc, toc, progress_callback=progress_callback)
             
         logger.info("No native TOC found, performing layout analysis...")
-        return _extract_via_layout(doc)
+        return _extract_via_layout(doc, progress_callback=progress_callback)
         
     except Exception as e:
         logger.error(f"Failed to parse PDF: {e}")
         raise
 
-def _extract_via_toc(doc: fitz.Document, toc: list) -> Dict[str, Any]:
+def _extract_via_toc(doc: fitz.Document, toc: list, progress_callback=None) -> Dict[str, Any]:
     chapters = []
     full_text = []
     
@@ -42,6 +47,7 @@ def _extract_via_toc(doc: fitz.Document, toc: list) -> Dict[str, Any]:
     if not bookmarks:
         bookmarks = toc # fallback to all if no level 1
         
+    total = len(bookmarks) or 1
     for i, b in enumerate(bookmarks):
         title = b[1]
         start_page = b[2] - 1 # 1-based to 0-based
@@ -53,7 +59,10 @@ def _extract_via_toc(doc: fitz.Document, toc: list) -> Dict[str, Any]:
         
         if start_page >= end_page and i + 1 == len(bookmarks):
             end_page = len(doc)
-            
+
+        if progress_callback:
+            progress_callback(f"Reading section {i+1} of {total}…", (i + 1) / total)
+
         chapter_text = []
         for page_num in range(start_page, end_page):
             chapter_text.append(doc[page_num].get_text())
@@ -222,11 +231,12 @@ def _assemble_chapters_from_blocks(page_blocks: list, median_size: float) -> Dic
     }
 
 
-def _extract_via_layout(doc: fitz.Document) -> Dict[str, Any]:
+def _extract_via_layout(doc: fitz.Document, progress_callback=None) -> Dict[str, Any]:
     font_sizes = []
 
     # Pass 1: Gather all blocks and find median font size, filter out tiny fonts (footnotes)
     page_blocks = []
+    total_pages = len(doc) or 1
     for page_num in range(len(doc)):
         page = doc[page_num]
         blocks = page.get_text("dict").get("blocks", [])
@@ -246,9 +256,18 @@ def _extract_via_layout(doc: fitz.Document) -> Dict[str, Any]:
                     avg_size = sum(block_fonts) / len(block_fonts) if block_fonts else 0
                     text_blocks.append({"text": block_text.strip(), "size": avg_size, "page": page_num})
         page_blocks.append(text_blocks)
+        if progress_callback:
+            # Reserve the last slice of the bar for boundary detection below.
+            progress_callback(
+                f"Analyzing page {page_num+1} of {total_pages}…",
+                ((page_num + 1) / total_pages) * 0.9,
+            )
 
     font_sizes.sort()
     median_size = font_sizes[len(font_sizes)//2] if font_sizes else 12.0
+
+    if progress_callback:
+        progress_callback("Detecting chapter boundaries…", 0.95)
 
     # Pass 2: Assemble chapters from blocks (testable pure helper).
     return _assemble_chapters_from_blocks(page_blocks, median_size)

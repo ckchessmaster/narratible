@@ -32,6 +32,11 @@ export const TIPS = [
     body: 'Heuristic is fast and offline. LLM gives the best quality (needs a key). Embedded runs locally on your GPU.',
   },
   {
+    id: 'w1-parsing-modules', context: 'wizard', step: 1, anchor: 'parsing-modules', placement: 'top',
+    title: 'Reading enhancements',
+    body: 'Optional add-ons that rewrite text so it reads correctly. The Bible expander turns references like “Ps 1:4” into “Psalms 1:4”.',
+  },
+  {
     id: 'w1-parse', context: 'wizard', step: 1, anchor: 'parse-button', placement: 'top',
     title: 'Parse your PDF',
     body: 'Drop a PDF above, then click Parse to extract and clean the text.',
