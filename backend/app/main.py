@@ -584,8 +584,45 @@ async def tts_preview(project_id: str, req: PreviewRequest):
     return FileResponse(preview_path, media_type="audio/mpeg", filename="preview.mp3")
 
 
-async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed: float, single_file: bool = False):
+def _sanitize_filename(name: str, fallback: str) -> str:
+    """Return a filesystem-safe version of *name*.
+
+    Spaces are replaced with underscores, characters that are not alphanumeric,
+    underscores, or hyphens are removed, consecutive underscores are collapsed,
+    and leading/trailing underscores/hyphens are stripped.  Falls back to
+    *fallback* when the result would be empty.
+    """
+    s = name.replace(" ", "_")
+    s = "".join(c for c in s if c.isalnum() or c in "_-")
+    while "__" in s:
+        s = s.replace("__", "_")
+    s = s.strip("_-")
+    return s or fallback
+
+
+def resolve_merge_format(audio_format: str):
+    """Map a requested merge format to its output extension and ffmpeg codec args.
+
+    MP3 chapters can be stream-copied into an MP3 container, but the MP4/M4B
+    muxer rejects raw MP3 streams, so M4B output must be re-encoded to AAC.
+    Unknown formats fall back to ``m4b``.
+
+    Returns a ``(fmt, codec_args)`` tuple.
+    """
+    fmt = (audio_format or "m4b").lower()
+    if fmt not in ("m4b", "mp3"):
+        fmt = "m4b"
+    if fmt == "mp3":
+        codec_args = ["-c", "copy"]
+    else:
+        codec_args = ["-c:a", "aac", "-b:a", "128k"]
+    return fmt, codec_args
+
+
+async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed: float,
+                   single_file: bool = False, audio_format: str = "m4b"):
     try:
+        meta = get_project(project_id)
         chapters = load_chapters(project_id)
         if not chapters:
             raise ValueError("No chapters found. Parse the PDF first.")
@@ -604,7 +641,8 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
             progress = int((i / len(chapters)) * 90)
             ch_title = ch.get("title", f"Chapter {i + 1}")
             _set_task(task_id, "running", f"Chapter {i + 1}/{len(chapters)}: {ch_title} — Synthesizing…", progress)
-            audio_path = exports_dir / f"chapter{i + 1:03d}.mp3"
+            safe_ch = _sanitize_filename(ch_title, f"chapter_{i + 1}")
+            audio_path = exports_dir / f"{i + 1:03d}_{safe_ch}.mp3"
             voice_sample = _find_voice_sample(project_id) if engine == "f5-tts" else None
 
             def _tts_progress_cb(msg: str, _pct: int = 0, _task_id: str = task_id, _base: int = progress):
@@ -637,14 +675,19 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 for audio_path in audio_files:
                     f.write(f"file '{audio_path.name}'\n")
 
-            merged_path = exports_dir / "audiobook.m4b"  # or .mp3
+            fmt, codec_args = resolve_merge_format(audio_format)
+            safe_book = _sanitize_filename(meta.title, "audiobook")
+            merged_path = exports_dir / f"{safe_book}.{fmt}"
             try:
                 subprocess.run(
-                    [ffmpeg_exe, "-y", "-f", "concat", "-safe", "0", "-i", str(list_path), "-c", "copy", str(merged_path)],
-                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    [ffmpeg_exe, "-y", "-f", "concat", "-safe", "0", "-i", str(list_path),
+                     *codec_args, str(merged_path)],
+                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
                 )
                 # optionally clean up individual chapters
                 list_path.unlink(missing_ok=True)
+            except subprocess.CalledProcessError as e:
+                logger.warning(f"FFmpeg failed to merge audio: {e}\nstderr: {e.stderr}")
             except Exception as e:
                 logger.warning(f"FFmpeg failed to merge audio: {e}")
 
@@ -663,6 +706,7 @@ async def synthesize_book(
     voice: str = "en-US-AriaNeural",
     speed: float = 1.0,
     single_file: bool = False,
+    audio_format: str = "m4b",
 ):
     try:
         get_project(project_id)
@@ -671,7 +715,7 @@ async def synthesize_book(
 
     task_id = f"tts-{project_id}"
     _set_task(task_id, "running", "Queued…", 0)
-    background_tasks.add_task(_run_tts, project_id, task_id, engine, voice, speed, single_file)
+    background_tasks.add_task(_run_tts, project_id, task_id, engine, voice, speed, single_file, audio_format)
     return {"task_id": task_id}
 
 

@@ -74,8 +74,8 @@ export const ttsPreview = (projectId, text, engine, voice, speed) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, engine, voice, speed }),
   })
-export const synthesizeBook = (projectId, engine, voice, speed, singleFile = false) =>
-  request('POST', `/projects/${projectId}/tts/synthesize?engine=${engine}&voice=${voice}&speed=${speed}&single_file=${singleFile}`)
+export const synthesizeBook = (projectId, engine, voice, speed, singleFile = false, audioFormat = 'm4b') =>
+  request('POST', `/projects/${projectId}/tts/synthesize?engine=${engine}&voice=${voice}&speed=${speed}&single_file=${singleFile}&audio_format=${audioFormat}`)
 
 // Voice samples
 export const uploadVoiceSample = (projectId, file) => {

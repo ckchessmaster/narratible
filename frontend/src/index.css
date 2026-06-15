@@ -219,6 +219,40 @@ label {
   transform: translateX(18px);
 }
 
+/* ── Segmented toggle (left/right text switch) ────────────────────────────── */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-glass-hover);
+  overflow: hidden;
+}
+.segmented-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .2s, color .2s;
+}
+.segmented-btn + .segmented-btn {
+  border-left: 1px solid var(--glass-border);
+}
+.segmented-btn:hover:not(:disabled):not(.is-active) {
+  color: var(--text-primary);
+}
+.segmented-btn.is-active {
+  background: var(--accent-primary);
+  color: #fff;
+}
+.segmented-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Range input ──────────────────────────────────────────────────────────── */
 input[type="range"] {
   -webkit-appearance: none;

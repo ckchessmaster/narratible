@@ -83,6 +83,11 @@ export const TIPS = [
     body: 'Synthesize audio using the voice from Step 3. Optionally merge everything into one file (needs FFmpeg).',
   },
   {
+    id: 'w4-audio-format', context: 'wizard', step: 4, anchor: 'audio-format-toggle', placement: 'top',
+    title: 'M4B vs MP3',
+    body: 'M4B is the audiobook standard — re-encoded to AAC, with the best player support (chapters, bookmarks, resume). MP3 is a universally compatible single track, stream-copied so it merges faster. Pick MP3 for maximum compatibility, M4B for a proper audiobook.',
+  },
+  {
     id: 'w4-abs', context: 'wizard', step: 4, anchor: 'abs-panel', placement: 'left',
     title: 'Download or upload',
     body: 'Download files from the list, or upload them straight to your Audiobookshelf server (configure it in Settings → Integrations).',

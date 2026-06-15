@@ -9,6 +9,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
   const [synthesizing, setSynthesizing] = useState(false)
   const [taskProgress, setTaskProgress] = useState(null)
   const [singleAudio, setSingleAudio] = useState(false)
+  const [audioFormat, setAudioFormat] = useState('m4b')
   const [libraries, setLibraries] = useState([])
   const [selectedLib, setSelectedLib] = useState('')
   const [selectedFiles, setSelectedFiles] = useState([])
@@ -71,7 +72,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
     setSynthesizing(true)
     setTaskProgress({ status: 'running', message: 'Queued…', progress: 0 })
     try {
-      const { task_id } = await synthesizeBook(projectId, meta.tts_engine, meta.tts_voice, meta.tts_speed, singleAudio)
+      const { task_id } = await synthesizeBook(projectId, meta.tts_engine, meta.tts_voice, meta.tts_speed, singleAudio, audioFormat)
       await pollTask(task_id, t => {
         if (synthesizeSessionRef.current !== session) return
         setTaskProgress(t)
@@ -166,6 +167,31 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
                 <input type="checkbox" checked={singleAudio} onChange={e => setSingleAudio(e.target.checked)} disabled={synthesizing} />
                 Merge into single audio file (requires FFmpeg)
               </label>
+              {singleAudio && (
+                <div className="flex items-center gap-2 mb-3 text-sm" data-tip-anchor="audio-format-toggle">
+                  <span className="text-muted">Format:</span>
+                  <div className="segmented" role="group" aria-label="Merged audio format">
+                    <button
+                      type="button"
+                      className={`segmented-btn${audioFormat === 'm4b' ? ' is-active' : ''}`}
+                      onClick={() => setAudioFormat('m4b')}
+                      disabled={synthesizing}
+                      aria-pressed={audioFormat === 'm4b'}
+                    >
+                      M4B
+                    </button>
+                    <button
+                      type="button"
+                      className={`segmented-btn${audioFormat === 'mp3' ? ' is-active' : ''}`}
+                      onClick={() => setAudioFormat('mp3')}
+                      disabled={synthesizing}
+                      aria-pressed={audioFormat === 'mp3'}
+                    >
+                      MP3
+                    </button>
+                  </div>
+                </div>
+              )}
               <button className="btn btn-primary w-full" onClick={handleSynthesize} disabled={synthesizing}>
                 {synthesizing ? '⏳ Synthesizing…' : '🎙 Generate Audio'}
               </button>
