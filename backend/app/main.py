@@ -27,7 +27,7 @@ from .projects import (
 from .parser import extract_structured_from_pdf
 from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters
 from .parsing_modules import list_modules, apply_modules
-from .tts import synthesize_speech, get_available_voices
+from .tts import synthesize_speech, get_available_voices, compose_tts_text
 from .epub import build_epub
 from .uploader import AudiobookshelfUploader
 
@@ -744,7 +744,8 @@ def resolve_merge_format(audio_format: str):
 
 
 async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed: float,
-                   single_file: bool = False, audio_format: str = "m4b"):
+                   single_file: bool = False, audio_format: str = "m4b",
+                   read_headings: bool = True):
     try:
         meta = get_project(project_id)
         chapters = load_chapters(project_id)
@@ -773,7 +774,7 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 _set_task(_task_id, "running", msg, _base)
 
             await synthesize_speech(
-                text=ch.get("text", ""),
+                text=compose_tts_text(ch_title, ch.get("text", ""), read_headings),
                 output_path=audio_path,
                 engine=engine,
                 voice=voice,
@@ -831,6 +832,7 @@ async def synthesize_book(
     speed: float = 1.0,
     single_file: bool = False,
     audio_format: str = "m4b",
+    read_headings: bool = True,
 ):
     try:
         get_project(project_id)
@@ -839,7 +841,7 @@ async def synthesize_book(
 
     task_id = f"tts-{project_id}"
     _set_task(task_id, "running", "Queued…", 0)
-    background_tasks.add_task(_run_tts, project_id, task_id, engine, voice, speed, single_file, audio_format)
+    background_tasks.add_task(_run_tts, project_id, task_id, engine, voice, speed, single_file, audio_format, read_headings)
     return {"task_id": task_id}
 
 

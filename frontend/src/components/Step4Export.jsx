@@ -73,7 +73,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
     setSynthesizing(true)
     setTaskProgress({ status: 'running', message: 'Queued…', progress: 0 })
     try {
-      const { task_id } = await synthesizeBook(projectId, meta.tts_engine, meta.tts_voice, meta.tts_speed, singleAudio, audioFormat)
+      const { task_id } = await synthesizeBook(projectId, meta.tts_engine, meta.tts_voice, meta.tts_speed, singleAudio, audioFormat, meta.tts_read_headings ?? true)
       await pollTask(task_id, t => {
         if (synthesizeSessionRef.current !== session) return
         setTaskProgress(t)

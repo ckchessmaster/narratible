@@ -26,6 +26,7 @@ class ProjectMetadata(BaseModel):
     tts_engine: str = "edge-tts"
     tts_voice: str = "en-US-AriaNeural"
     tts_speed: float = 1.0
+    tts_read_headings: bool = True
 
 
 def _project_path(project_id: str) -> Path:

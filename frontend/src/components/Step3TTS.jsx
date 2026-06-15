@@ -13,6 +13,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
   const [voices, setVoices] = useState([])
   const [voice, setVoice] = useState('en-US-AriaNeural')
   const [speed, setSpeed] = useState(1.0)
+  const [readHeadings, setReadHeadings] = useState(true)
   const [previewText, setPreviewText] = useState('Welcome to narratible. This is a preview of the selected voice.')
   const [previewing, setPreviewing] = useState(false)
   const [voiceSamples, setVoiceSamples] = useState([])
@@ -92,7 +93,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
 
   const handleNext = async () => {
     try {
-      await updateProject(projectId, { tts_engine: engine, tts_voice: voice, tts_speed: speed })
+      await updateProject(projectId, { tts_engine: engine, tts_voice: voice, tts_speed: speed, tts_read_headings: readHeadings })
       onNext()
     } catch (e) {
       toast(e.message, 'error')
@@ -179,6 +180,22 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
             />
             <div className="flex justify-between text-xs text-muted mt-1">
               <span>0.5× slow</span><span>1.0× normal</span><span>2.0× fast</span>
+            </div>
+          </div>
+
+          {/* Read chapter headings */}
+          <div className="field" data-tip-anchor="read-headings">
+            <label className="flex gap-2 items-center" style={{ cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={readHeadings}
+                onChange={e => setReadHeadings(e.target.checked)}
+                style={{ width: 'auto' }}
+              />
+              <span>Read chapter headings aloud</span>
+            </label>
+            <div className="text-xs text-muted mt-1">
+              Speaks each chapter's title before its content during synthesis.
             </div>
           </div>
 

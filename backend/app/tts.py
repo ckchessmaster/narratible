@@ -1,9 +1,39 @@
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
+
+
+def compose_tts_text(title: str, body: str, read_headings: bool = True) -> str:
+    """Combine a chapter heading with its body text for synthesis.
+
+    When ``read_headings`` is True the chapter ``title`` is spoken before the
+    body. To avoid reading the heading twice, the title is only prepended when
+    the body doesn't already start with it (compared case-insensitively and
+    ignoring whitespace differences). A blank line separates the heading from
+    the body so engines insert a natural pause, and sentence-ending punctuation
+    is added to the heading when missing.
+    """
+    body = body or ""
+    title = (title or "").strip()
+    if not read_headings or not title:
+        return body
+
+    def _normalize(s: str) -> str:
+        return re.sub(r"\s+", " ", s).strip().casefold()
+
+    norm_title = _normalize(title)
+    norm_body_start = _normalize(body)[: len(norm_title)]
+    if norm_title and norm_body_start == norm_title:
+        return body
+
+    heading = title if title[-1] in ".!?:" else f"{title}."
+    if not body.strip():
+        return heading
+    return f"{heading}\n\n{body}"
 
 _torchaudio_shim_installed = False
 

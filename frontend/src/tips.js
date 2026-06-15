@@ -71,6 +71,11 @@ export const TIPS = [
     body: 'Choose a voice and adjust the narration speed to taste.',
   },
   {
+    id: 'w3-read-headings', context: 'wizard', step: 3, anchor: 'read-headings', placement: 'top',
+    title: 'Read chapter headings',
+    body: 'When on, each chapter’s title is spoken before its content. Turn it off if your text already includes the headings.',
+  },
+  {
     id: 'w3-preview', context: 'wizard', step: 3, anchor: 'preview-section', placement: 'top',
     title: 'Preview before you commit',
     body: 'Generate a quick sample to hear the voice. For F5-TTS, upload a 5–15s WAV clip in the Voice Samples panel.',
