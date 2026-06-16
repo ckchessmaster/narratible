@@ -148,6 +148,27 @@ def test_soft_hyphen_split_with_space_is_joined():
     )
 
 
+def test_remove_running_headers_embedded_page_numbers():
+    from app.page_artifacts import remove_running_headers
+
+    text = """Taking God’s Demand for Delight
+Seriously
+D
+
+o these two things really go together? Fighting and joy? 
+
+Why I Wrote This Book 35 The Call to Fight for Joy in God 35 the world, and people loved the darkness rather than the light because their deeds were evil” (John 3:19). Here the issue of salvation is loving or hating the light.
+
+Why I Wrote This Book 37 The Call to Fight for Joy in God 37 you were called” (6:12). Faith is something that must be fought for, if it is to thrive and survive."""
+
+    result = remove_running_headers(text)
+    
+    # We expect the text body lines to be preserved and fused.
+    assert "Why I Wrote This Book" not in result
+    assert "the world, and people loved the darkness" in result
+    assert "you were called” (6:12). Faith is something" in result
+
+
 def test_soft_hyphen_split_across_page_gap_is_joined():
     text = "The sweet-\n\nest thing in all my life has been the longing."
     assert fix_soft_hyphenation(text) == (

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { getVoices, ttsPreview,
-         ttsDebugText, uploadVoiceSample, listVoiceSamples, updateProject } from '../api'
+         ttsDebugText, uploadVoiceSample, listVoiceSamples, deleteVoiceSample, updateProject } from '../api'
 
 const ENGINES = [
   { value: 'edge-tts', label: 'Edge-TTS', desc: 'Free · Microsoft voices · Online', requiresCuda: false },
@@ -101,6 +101,17 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
       const res = await listVoiceSamples(projectId)
       setVoiceSamples(res.voices)
       toast('Voice sample uploaded!', 'success')
+    } catch (e) {
+      toast(e.message, 'error')
+    }
+    e.target.value = ''
+  }
+
+  const handleSampleDelete = async (filename) => {
+    try {
+      await deleteVoiceSample(projectId, filename)
+      setVoiceSamples(samples => samples.filter(sample => sample !== filename))
+      toast('Voice sample removed.', 'success')
     } catch (e) {
       toast(e.message, 'error')
     }
@@ -289,7 +300,17 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
               <div className="mt-2">
                 {voiceSamples.map(s => (
                   <div key={s} className="text-xs text-secondary flex items-center gap-1 mt-1">
-                    🎤 <span className="truncate">{s}</span>
+                    🎤 <span className="truncate" title={s} style={{ flex: 1 }}>{s}</span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => handleSampleDelete(s)}
+                      title={`Remove ${s}`}
+                      aria-label={`Remove ${s}`}
+                      style={{ padding: '2px 7px', fontSize: 12, flexShrink: 0 }}
+                    >
+                      ×
+                    </button>
                   </div>
                 ))}
               </div>

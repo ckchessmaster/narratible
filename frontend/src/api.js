@@ -92,6 +92,8 @@ export const uploadVoiceSample = (projectId, file) => {
   return request('POST', `/projects/${projectId}/voices/upload`, fd, true)
 }
 export const listVoiceSamples = (projectId) => request('GET', `/projects/${projectId}/voices`)
+export const deleteVoiceSample = (projectId, filename) =>
+  request('DELETE', `/projects/${projectId}/voices/${encodeURIComponent(filename)}`)
 
 // Exports
 export const exportEpub = (projectId) =>

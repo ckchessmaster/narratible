@@ -36,6 +36,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="narratible API", version="0.1.0")
+VOICE_SAMPLE_SUFFIXES = {".wav", ".mp3", ".flac"}
 
 # In packaged mode, allow all origins so the local static frontend can fetch from the backend
 cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -615,7 +616,7 @@ async def get_parsing_modules():
 async def get_debug_chapters(project_id: str):
     debug_file = _project_path(project_id) / "chapters_debug_comparison.json"
     if not debug_file.exists():
-        raise HTTPException(status_code=404, detail="No debug comparison data for this project.")
+        return None
     import json as _json
     with open(debug_file, "r", encoding="utf-8") as f:
         return _json.load(f)
@@ -625,7 +626,7 @@ async def get_debug_chapters(project_id: str):
 async def get_debug_prompt(project_id: str):
     prompt_file = _project_path(project_id) / "chapters_debug_prompt.json"
     if not prompt_file.exists():
-        raise HTTPException(status_code=404, detail="No debug prompt data for this project.")
+        return None
     import json as _json
     with open(prompt_file, "r", encoding="utf-8") as f:
         return _json.load(f)
@@ -700,14 +701,14 @@ async def tts_preview(project_id: str, req: PreviewRequest):
 
     preview_path = _project_path(project_id) / "preview.mp3"
     try:
-        voice_sample = _find_voice_sample(project_id) if req.engine == "f5-tts" else None
+        voice_samples_dir = _voices_dir(project_id) if req.engine == "f5-tts" else None
         await synthesize_speech(
             text=req.text[:500],
             output_path=preview_path,
             engine=req.engine,
             voice=req.voice,
             speed=req.speed,
-            voice_sample_path=voice_sample,
+            voice_samples_dir=voice_samples_dir,
             enabled_modules=meta.enabled_modules,
         )
     except Exception as e:
@@ -808,7 +809,7 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
             _set_task(task_id, "running", f"Chapter {i + 1}/{len(chapters)}: {ch_title} — Synthesizing…", progress)
             safe_ch = _sanitize_filename(ch_title, f"chapter_{i + 1}")
             audio_path = exports_dir / f"{i + 1:03d}_{safe_ch}.mp3"
-            voice_sample = _find_voice_sample(project_id) if engine == "f5-tts" else None
+            voice_samples_dir = _voices_dir(project_id) if engine == "f5-tts" else None
 
             def _tts_progress_cb(msg: str, _pct: int = 0, _task_id: str = task_id, _base: int = progress):
                 _set_task(_task_id, "running", msg, _base)
@@ -819,7 +820,7 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 engine=engine,
                 voice=voice,
                 speed=speed,
-                voice_sample_path=voice_sample,
+                voice_samples_dir=voice_samples_dir,
                 progress_cb=_tts_progress_cb,
                 enabled_modules=meta.enabled_modules,
             )
@@ -886,7 +887,17 @@ async def synthesize_book(
     return {"task_id": task_id}
 
 
-# ── Voice Sample Upload (for XTTS cloning) ────────────────────────────────────
+# ── Voice Sample Upload (for F5-TTS cloning) ──────────────────────────────────
+
+def _voices_dir(project_id: str) -> Path:
+    return _project_path(project_id) / "voices"
+
+
+def _resolve_voice_sample_path(project_id: str, filename: str) -> Path:
+    sample_name = Path(filename or "").name
+    if not sample_name or sample_name != filename or Path(sample_name).suffix.lower() not in VOICE_SAMPLE_SUFFIXES:
+        raise HTTPException(status_code=400, detail="Invalid voice sample filename.")
+    return _voices_dir(project_id) / sample_name
 
 @app.post("/api/projects/{project_id}/voices/upload")
 async def upload_voice_sample(project_id: str, file: UploadFile = File(...)):
@@ -896,12 +907,12 @@ async def upload_voice_sample(project_id: str, file: UploadFile = File(...)):
         raise HTTPException(status_code=404, detail=str(e))
 
     suffix = Path(file.filename).suffix.lower() if file.filename else ".wav"
-    if suffix not in (".wav", ".mp3", ".flac"):
+    if suffix not in VOICE_SAMPLE_SUFFIXES:
         raise HTTPException(status_code=400, detail="Voice sample must be WAV, MP3, or FLAC.")
 
-    voices_dir = _project_path(project_id) / "voices"
+    voices_dir = _voices_dir(project_id)
     voices_dir.mkdir(exist_ok=True)
-    dest = voices_dir / (file.filename or f"sample{suffix}")
+    dest = voices_dir / (Path(file.filename).name if file.filename else f"sample{suffix}")
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
     return {"message": "Voice sample uploaded.", "filename": dest.name}
@@ -914,10 +925,24 @@ async def list_voice_samples(project_id: str):
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    voices_dir = _project_path(project_id) / "voices"
+    voices_dir = _voices_dir(project_id)
     if not voices_dir.exists():
         return {"voices": []}
-    return {"voices": [f.name for f in voices_dir.iterdir() if f.is_file()]}
+    return {"voices": sorted(f.name for f in voices_dir.iterdir() if f.is_file() and f.suffix.lower() in VOICE_SAMPLE_SUFFIXES)}
+
+
+@app.delete("/api/projects/{project_id}/voices/{filename}")
+async def delete_voice_sample(project_id: str, filename: str):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    sample_path = _resolve_voice_sample_path(project_id, filename)
+    if not sample_path.exists() or not sample_path.is_file():
+        raise HTTPException(status_code=404, detail="Voice sample not found.")
+    sample_path.unlink()
+    return {"message": "Voice sample removed.", "filename": sample_path.name}
 
 
 # ── Export ────────────────────────────────────────────────────────────────────
@@ -1041,20 +1066,6 @@ async def get_task_status(task_id: str):
     if task_id not in _tasks:
         raise HTTPException(status_code=404, detail="Task not found.")
     return _tasks[task_id]
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _find_voice_sample(project_id: str) -> Path | None:
-    """Return the first voice sample found in the project's voices/ dir, or None."""
-    voices_dir = _project_path(project_id) / "voices"
-    if not voices_dir.exists():
-        return None
-    for ext in (".wav", ".mp3", ".flac"):
-        matches = list(voices_dir.glob(f"*{ext}"))
-        if matches:
-            return matches[0]
-    return None
 
 
 # ── Static Frontend Serving (PyInstaller Packaged) ────────────────────────────

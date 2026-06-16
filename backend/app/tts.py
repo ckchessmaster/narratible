@@ -151,6 +151,7 @@ async def synthesize_speech(
     voice: str = "en-US-AriaNeural",
     speed: float = 1.0,
     voice_sample_path: Optional[Path] = None,
+    voice_samples_dir: Optional[Path] = None,
     progress_cb: Optional[Callable[[str, int], None]] = None,
     enabled_modules: Optional[list[str]] = None,
 ):
@@ -159,6 +160,7 @@ async def synthesize_speech(
     All ML engines are imported lazily so the app starts without them.
 
     voice_sample_path: path to a .wav reference file, required for f5-tts.
+    voice_samples_dir: directory containing multiple voice samples for f5-tts; auto-selects best one.
     """
     text = prepare_text_for_tts(text, engine, enabled_modules=enabled_modules)
 
@@ -263,7 +265,7 @@ async def synthesize_speech(
         sf.write(str(output_path), final_audio, 24000)
 
     elif engine == "f5-tts":
-        await _synthesize_f5tts(text, output_path, speed, voice_sample_path, progress_cb)
+        await _synthesize_f5tts(text, output_path, speed, voice_sample_path, voice_samples_dir, progress_cb)
 
     else:
         raise NotImplementedError(f"TTS engine '{engine}' is not implemented.")
@@ -274,12 +276,14 @@ async def _synthesize_f5tts(
     output_path: Path,
     speed: float = 1.0,
     voice_sample_path: Optional[Path] = None,
+    voice_samples_dir: Optional[Path] = None,
     progress_cb: Optional[Callable[[str, int], None]] = None,
 ):
     """
     Voice cloning via F5-TTS (https://github.com/SWivid/F5-TTS).
     Downloads the F5-TTS model on first run (~800 MB).
     voice_sample_path: a short (~5-15s) WAV/MP3 reference clip to clone from.
+    voice_samples_dir: directory containing multiple voice samples; auto-selects best one.
     """
     global _f5tts_model
     try:
@@ -310,6 +314,17 @@ async def _synthesize_f5tts(
             f"F5-TTS or a dependency failed to load ({e}). Run: pip install f5-tts"
         ) from e
 
+    # Auto-select best sample from directory if provided
+    if voice_samples_dir and voice_samples_dir.exists() and (voice_sample_path is None or not voice_sample_path.exists()):
+        candidates = sorted(
+            p for p in voice_samples_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in (".wav", ".mp3", ".flac")
+        )
+        if candidates:
+            # Pick longest sample (proxy for highest quality/clarity)
+            voice_sample_path = max(candidates, key=lambda p: p.stat().st_size)
+            logger.info(f"Auto-selected voice sample: {voice_sample_path.name}")
+    
     if voice_sample_path is None or not voice_sample_path.exists():
         raise ValueError(
             "F5-TTS requires a voice sample. Upload a .wav file in Step 3 first."
@@ -345,6 +360,11 @@ async def _synthesize_f5tts(
         _f5tts_model = F5TTS(device=device)
         logger.info(f"F5-TTS loaded on {device}")
 
+    from .config import load_config
+
+    cfg = load_config()
+    max_ref_seconds = getattr(cfg, "f5_ref_max_seconds", 10)
+
     logger.info(f"F5-TTS cloning from {voice_sample_path}")
 
     # F5-TTS inference — runs in a thread to avoid blocking the event loop
@@ -374,13 +394,11 @@ async def _synthesize_f5tts(
         import os
         from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
-        MAX_REF_SECONDS = 10
-
         audio_arr, orig_sr = sf.read(str(voice_sample_path), dtype="float32")
         if audio_arr.ndim > 1:
             audio_arr = audio_arr.mean(axis=1)
 
-        max_samples = int(MAX_REF_SECONDS * orig_sr)
+        max_samples = int(max_ref_seconds * orig_sr)
         was_clipped = len(audio_arr) > max_samples
         clipped = audio_arr[:max_samples] if was_clipped else audio_arr
 
@@ -430,7 +448,7 @@ async def _synthesize_f5tts(
                 )[0].strip()
                 logger.info(
                     f"Pre-transcribed reference "
-                    f"({'~' + str(MAX_REF_SECONDS) + 's clip' if was_clipped else 'full'}): "
+                    f"({'~' + str(max_ref_seconds) + 's clip' if was_clipped else 'full'}): "
                     f"{ref_text!r}"
                 )
             except Exception as exc:

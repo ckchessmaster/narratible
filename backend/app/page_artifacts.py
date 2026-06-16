@@ -55,6 +55,8 @@ def remove_running_headers(text: str, known_titles: list[str] | None = None) -> 
         if title and _normalize_key(title)
     }
     lines = text.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    lines = _split_embedded_headers(lines, known_keys)
+    
     candidates: dict[int, _ArtifactCandidate] = {}
     counts: dict[str, int] = {}
 
@@ -115,14 +117,14 @@ def _candidate_for_line(line: str) -> _ArtifactCandidate | None:
 def _looks_like_header_text(text: str) -> bool:
     if _looks_like_attribution_or_reference_line(text):
         return False
-    if not 3 <= len(text) <= 90:
+    if not 3 <= len(text) <= 120:
         return False
     if _REFERENCE_RE.search(text):
         return False
     if text.endswith((".", "!", "?", ":", ";")):
         return False
     words = text.split()
-    if not 2 <= len(words) <= 12:
+    if not 2 <= len(words) <= 20:
         return False
     alpha_chars = sum(1 for ch in text if ch.isalpha())
     if alpha_chars < 3:
@@ -219,6 +221,8 @@ def _normalize_key(text: str) -> str:
     ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
     ascii_text = ascii_text.lower()
     ascii_text = re.sub(r"[^a-z0-9]+", " ", ascii_text)
+    # Strip standalone digits out so "Title 35" and "Title 37" yield the same key
+    ascii_text = re.sub(r"\b\d+\b", " ", ascii_text)
     return re.sub(r"\s+", " ", ascii_text).strip()
 
 
@@ -248,6 +252,49 @@ def _rebuild_without_artifacts(lines: list[str], removals: set[int]) -> str:
 
     return re.sub(r"\n{3,}", "\n\n", "\n".join(rebuilt)).strip()
 
+
+def _split_embedded_headers(lines: list[str], known_keys: set[str]) -> list[str]:
+    """Split embedded running headers that OCR has prepended to paragraph lines."""
+    splits: dict[int, tuple[str, str, str]] = {}
+    counts: dict[str, int] = {}
+
+    for idx, line in enumerate(lines):
+        split = _embedded_header_split(line)
+        if split is None:
+            continue
+        prefix, suffix, key = split
+        splits[idx] = (prefix, suffix, key)
+        counts[key] = counts.get(key, 0) + 1
+
+    result = []
+    for idx, line in enumerate(lines):
+        split = splits.get(idx)
+        if split is not None:
+            prefix, suffix, key = split
+            if counts.get(key, 0) >= 2 or key in known_keys:
+                result.append(prefix)
+                result.append(suffix)
+                continue
+        result.append(line)
+    return result
+
+
+def _embedded_header_split(line: str) -> tuple[str, str, str] | None:
+    if not 30 < len(line) < 1000:
+        return None
+
+    matches = list(re.finditer(r"\b[1-9]\d{0,3}\b", line[:120]))
+    for match in reversed(matches):
+        prefix = line[:match.end()].strip()
+        suffix = line[match.end():]
+        if not suffix.startswith(" ") or not suffix.strip():
+            continue
+
+        body = re.sub(r"\b\d+\b", "", prefix).strip()
+        if _looks_like_header_text(body):
+            return prefix, suffix.strip(), _normalize_key(prefix)
+
+    return None
 
 def _next_kept_nonempty(lines: list[str], removals: set[int], start: int) -> int | None:
     for idx in range(start, len(lines)):

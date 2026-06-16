@@ -1,9 +1,8 @@
 {
-    "chat.tools.terminal.autoApprove": {
-        "backend\\.venv\\Scripts\\python.exe -m compileall": true,
-        "backend\\.venv\\Scripts\\python.exe backend\\tests\\": true,
-        "docker build": true,
-        "npm run lint": true,
-        "npm run build": true
-    }
+  "chat.tools.terminal.autoApprove": {
+    "/.*run-test-validation\\.ps1/": true,
+    "/docker build.*/": true,
+    "/npm run (lint|build)/": true,
+    ".*\\.venv\\\\Scripts\\\\python -m pytest.*": true
+  }
 }
