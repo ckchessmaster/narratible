@@ -19,7 +19,7 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - projects_data:/app/projects   # persists all project files
-      - config_data:/root             # persists ~/.narratible_config.json
+      - config_data:/root             # persists config and ~/.narratible/voice_library
     ports:
       - "8000:8000"   # optional — for direct API access / Swagger UI
     deploy:

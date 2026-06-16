@@ -83,7 +83,38 @@ export const ttsPreview = (projectId, text, engine, voice, speed) =>
 export const ttsDebugText = (projectId, text, engine, voice, speed) =>
   request('POST', `/projects/${projectId}/tts/debug-text`, { text, engine, voice, speed })
 export const synthesizeBook = (projectId, engine, voice, speed, singleFile = false, audioFormat = 'm4b', readHeadings = true) =>
-  request('POST', `/projects/${projectId}/tts/synthesize?engine=${engine}&voice=${voice}&speed=${speed}&single_file=${singleFile}&audio_format=${audioFormat}&read_headings=${readHeadings}`)
+  request('POST', `/projects/${projectId}/tts/synthesize?engine=${encodeURIComponent(engine)}&voice=${encodeURIComponent(voice)}&speed=${speed}&single_file=${singleFile}&audio_format=${encodeURIComponent(audioFormat)}&read_headings=${readHeadings}`)
+
+// Voice library
+export const listLibraryVoices = () => request('GET', '/voice-library')
+export const createLibraryVoice = ({ name, notes, speed, temperature, file }) => {
+  const fd = new FormData()
+  fd.append('name', name)
+  fd.append('notes', notes || '')
+  fd.append('speed', speed ?? 1.0)
+  fd.append('temperature', temperature ?? 0.7)
+  fd.append('file', file)
+  return request('POST', '/voice-library', fd, true)
+}
+export const updateLibraryVoice = (id, updates) => request('PATCH', `/voice-library/${encodeURIComponent(id)}`, updates)
+export const deleteLibraryVoice = (id) => request('DELETE', `/voice-library/${encodeURIComponent(id)}`)
+export const testDraftLibraryVoice = ({ text, speed, temperature, file }) => {
+  const fd = new FormData()
+  fd.append('text', text)
+  fd.append('speed', speed ?? 1.0)
+  fd.append('temperature', temperature ?? 0.7)
+  fd.append('file', file)
+  return fetch(`${BASE}/voice-library/test-draft`, {
+    method: 'POST',
+    body: fd,
+  })
+}
+export const testLibraryVoice = (id, text) =>
+  fetch(`${BASE}/voice-library/${encodeURIComponent(id)}/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
 
 // Voice samples
 export const uploadVoiceSample = (projectId, file) => {

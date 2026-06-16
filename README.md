@@ -68,7 +68,7 @@ Open **http://localhost**.
 
 > First build is ~6 GB (PyTorch CUDA + kokoro + f5-tts). Subsequent builds use the cache.
 
-Project files persist in Docker named volumes (`projects_data`, `config_data`).  
+Project files, config, and the Voice Library persist in Docker named volumes (`projects_data`, `config_data`).  
 The API is also available directly at **http://localhost:8000/docs** (Swagger UI).
 
 ---
@@ -94,11 +94,13 @@ hosted service has a larger proprietary text-normalization and prosody front
 end. Kokoro has a lighter local pipeline, and F5-TTS prioritizes voice cloning,
 so narratible adds these deterministic speech cues locally.
 
-### Voice Cloning with F5-TTS
-1. Record a clean 10–15 second `.wav` clip of the voice you want to clone
-2. In Step 3, upload it via **Voice Samples → Upload Sample**
-3. Select **F5-TTS Clone** as the engine
-4. The model weights (~800 MB) download automatically on first use
+### Voice Library with F5-TTS
+1. Record a clean 10-15 second `.wav` clip of the voice you want to clone.
+2. Open **Voice Library**, create a reusable voice, and test it before saving or using it.
+3. In Step 3, select **Voice Library** as the engine and choose a saved voice.
+4. The model weights (~800 MB) download automatically on first use.
+
+Saved voices persist in the app data directory (`~/.narratible/voice_library` for local and Docker runs, `%APPDATA%\narratible\voice_library` for packaged Windows builds).
 
 ### Optional: LLM Text Cleanup
 For better text extraction from complex PDFs, add an API key in **⚙ Settings**:

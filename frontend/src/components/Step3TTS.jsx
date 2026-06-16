@@ -1,14 +1,14 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { getVoices, ttsPreview,
-         ttsDebugText, uploadVoiceSample, listVoiceSamples, deleteVoiceSample, updateProject } from '../api'
+         ttsDebugText, listLibraryVoices, updateProject } from '../api'
 
 const ENGINES = [
   { value: 'edge-tts', label: 'Edge-TTS', desc: 'Free · Microsoft voices · Online', requiresCuda: false },
   { value: 'kokoro',   label: 'Kokoro-82M', desc: 'Local · Fast · GPU accelerated', requiresCuda: true },
-  { value: 'f5-tts',  label: 'F5-TTS Clone', desc: 'Voice cloning · Uses your uploaded sample · GPU', requiresCuda: true },
+  { value: 'f5-tts',  label: 'Voice Library', desc: 'Reusable cloned voices · GPU', requiresCuda: true },
 ]
 
-export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, cudaEnabled = true }) {
+export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, cudaEnabled = true, onOpenVoiceLibrary, voiceLibraryRevision = 0 }) {
   const [engine, setEngine] = useState('edge-tts')
   const [voices, setVoices] = useState([])
   const [voice, setVoice] = useState('en-US-AriaNeural')
@@ -18,10 +18,24 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
   const [previewing, setPreviewing] = useState(false)
   const [debuggingText, setDebuggingText] = useState(false)
   const [ttsDebug, setTtsDebug] = useState(null)
-  const [voiceSamples, setVoiceSamples] = useState([])
+  const [libraryVoices, setLibraryVoices] = useState([])
   const [loadingVoices, setLoadingVoices] = useState(false)
+  const [loadingLibraryVoices, setLoadingLibraryVoices] = useState(false)
   const audioRef = useRef()
-  const sampleInputRef = useRef()
+
+  const refreshLibraryVoices = useCallback(async () => {
+    setLoadingLibraryVoices(true)
+    try {
+      const res = await listLibraryVoices()
+      const savedVoices = res.voices || []
+      setLibraryVoices(savedVoices)
+      setVoice(current => savedVoices.some(saved => saved.id === current) ? current : (savedVoices[0]?.id || ''))
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setLoadingLibraryVoices(false)
+    }
+  }, [toast])
 
   // Switch away from CUDA engines if CUDA becomes unavailable
   useEffect(() => {
@@ -31,6 +45,10 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
 
   // Load voices when engine changes
   useEffect(() => {
+    if (engine === 'f5-tts') {
+      const timer = setTimeout(refreshLibraryVoices, 0)
+      return () => clearTimeout(timer)
+    }
     let active = true
     setTimeout(() => {
       if (active) setLoadingVoices(true)
@@ -47,13 +65,11 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine])
 
-  // Load voice samples
   useEffect(() => {
-    if (!projectId || !isActive) return
-    listVoiceSamples(projectId)
-      .then(res => setVoiceSamples(res.voices))
-      .catch(() => {})
-  }, [projectId, isActive])
+    if (!isActive || engine !== 'f5-tts') return
+    const timer = setTimeout(refreshLibraryVoices, 0)
+    return () => clearTimeout(timer)
+  }, [engine, isActive, refreshLibraryVoices, voiceLibraryRevision])
 
   const handlePreview = async () => {
     if (!previewText.trim()) return
@@ -93,31 +109,11 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
     }
   }
 
-  const handleSampleUpload = async (e) => {
-    const f = e.target.files[0]
-    if (!f) return
-    try {
-      await uploadVoiceSample(projectId, f)
-      const res = await listVoiceSamples(projectId)
-      setVoiceSamples(res.voices)
-      toast('Voice sample uploaded!', 'success')
-    } catch (e) {
-      toast(e.message, 'error')
-    }
-    e.target.value = ''
-  }
-
-  const handleSampleDelete = async (filename) => {
-    try {
-      await deleteVoiceSample(projectId, filename)
-      setVoiceSamples(samples => samples.filter(sample => sample !== filename))
-      toast('Voice sample removed.', 'success')
-    } catch (e) {
-      toast(e.message, 'error')
-    }
-  }
-
   const handleNext = async () => {
+    if (engine === 'f5-tts' && !voice) {
+      toast('Create or select a library voice first.', 'error')
+      return
+    }
     try {
       await updateProject(projectId, { tts_engine: engine, tts_voice: voice, tts_speed: speed, tts_read_headings: readHeadings })
       onNext()
@@ -130,6 +126,19 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
   const filteredVoices = voices.filter(v =>
     !v.locale || v.locale.startsWith('en')
   )
+  const selectedLibraryVoice = libraryVoices.find(savedVoice => savedVoice.id === voice)
+
+  const handleLibraryVoiceChange = (voiceId) => {
+    setVoice(voiceId)
+    const selected = libraryVoices.find(savedVoice => savedVoice.id === voiceId)
+    if (selected) setSpeed(selected.speed ?? 1.0)
+  }
+
+  useEffect(() => {
+    if (engine !== 'f5-tts' || !selectedLibraryVoice) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSpeed(selectedLibraryVoice.speed ?? 1.0)
+  }, [engine, selectedLibraryVoice])
 
   return (
     <div className="step-card">
@@ -176,24 +185,23 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
             })}
           </div>
 
-          {/* Voice selector — hidden for f5-tts since it uses uploaded sample */}
+          {/* Voice selector */}
+          {engine === 'f5-tts' && (
+            <div className="glass p-3 mb-4" style={{ borderRadius: 'var(--radius-sm)' }}>
+              <div className="text-sm" style={{ fontWeight: 600 }}>Voice Library mode</div>
+              <div className="text-xs text-muted mt-1">
+                Select a saved voice from the Voice Library panel, or create and test new voices from the library page.
+              </div>
+            </div>
+          )}
           {engine !== 'f5-tts' && (
             <div className="field">
-              <label>Voice {loadingVoices && <span className="text-muted">(loading…)</span>}</label>
+              <label>Voice {loadingVoices && <span className="text-muted">(loading...)</span>}</label>
               <select value={voice} onChange={e => setVoice(e.target.value)} disabled={loadingVoices}>
                 {(filteredVoices.length ? filteredVoices : voices).map(v => (
                   <option key={v.id} value={v.id}>{v.name}</option>
                 ))}
               </select>
-            </div>
-          )}
-          {engine === 'f5-tts' && (
-            <div className="glass p-3 mb-4" style={{ borderRadius: 'var(--radius-sm)', borderColor: 'rgba(99,102,241,0.3)' }}>
-              <div className="text-sm" style={{ fontWeight: 500 }}>🎤 Voice Cloning Mode</div>
-              <div className="text-xs text-muted mt-1">
-                Upload a <strong>.wav</strong> voice sample (5–15 seconds, clear speech, no music)
-                in the panel on the right. F5-TTS will clone that voice for all chapters.
-              </div>
             </div>
           )}
 
@@ -204,8 +212,10 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
               type="range" min="0.5" max="2.0" step="0.05"
               value={speed} onChange={e => setSpeed(parseFloat(e.target.value))}
             />
-            <div className="flex justify-between text-xs text-muted mt-1">
-              <span>0.5× slow</span><span>1.0× normal</span><span>2.0× fast</span>
+            <div className="range-ticks text-xs text-muted">
+              <span className="range-tick range-tick-start">0.5× slow</span>
+              <span className="range-tick" style={{ left: '33.333%' }}>1.0× normal</span>
+              <span className="range-tick range-tick-end">2.0× fast</span>
             </div>
           </div>
 
@@ -277,42 +287,36 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
           )}
         </div>
 
-        {/* Right: Voice samples + synthesis */}
+        {/* Right: Voice library summary */}
         <div style={{ width: 260, flexShrink: 0 }}>
-          {/* Voice samples */}
-          <div className="section-title">Voice Samples</div>
-          <div className="glass p-3 mb-4" style={{ borderRadius: 'var(--radius-sm)' }}>
-            <div className="text-xs text-muted mb-2">
-              {engine === 'f5-tts'
-                ? <span style={{ color: 'var(--accent-primary)' }}>⚠ Required for F5-TTS cloning. Upload a 5–15s WAV clip.</span>
-                : 'Upload .wav samples for F5-TTS voice cloning (optional for other engines).'}
-            </div>
-            <input
-              ref={sampleInputRef}
-              type="file" accept=".wav,.mp3,.flac"
-              style={{ display: 'none' }}
-              onChange={handleSampleUpload}
-            />
-            <button className="btn btn-ghost btn-sm w-full" onClick={() => sampleInputRef.current.click()}>
-              + Upload Sample
-            </button>
-            {voiceSamples.length > 0 && (
-              <div className="mt-2">
-                {voiceSamples.map(s => (
-                  <div key={s} className="text-xs text-secondary flex items-center gap-1 mt-1">
-                    🎤 <span className="truncate" title={s} style={{ flex: 1 }}>{s}</span>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => handleSampleDelete(s)}
-                      title={`Remove ${s}`}
-                      aria-label={`Remove ${s}`}
-                      style={{ padding: '2px 7px', fontSize: 12, flexShrink: 0 }}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
+          <div className="section-title">Voice Library</div>
+          <div className="glass p-3 mb-4" style={{ borderRadius: 'var(--radius-sm)' }} data-tip-anchor="voice-library-select">
+            {engine === 'f5-tts' ? (
+              <>
+                <label>Library voice {loadingLibraryVoices && <span className="text-muted">(loading...)</span>}</label>
+                <select
+                  value={voice}
+                  onChange={e => handleLibraryVoiceChange(e.target.value)}
+                  disabled={loadingLibraryVoices || libraryVoices.length === 0}
+                >
+                  {libraryVoices.length === 0 ? (
+                    <option value="">No saved voices</option>
+                  ) : libraryVoices.map(savedVoice => (
+                    <option key={savedVoice.id} value={savedVoice.id}>{savedVoice.name}</option>
+                  ))}
+                </select>
+                <div className="text-xs text-muted mt-1 mb-3">
+                  {selectedLibraryVoice
+                    ? 'This saved voice will be used for previews and full audiobook generation.'
+                    : 'Create a saved voice before using Voice Library generation.'}
+                </div>
+                <button type="button" className="btn btn-ghost btn-sm w-full" onClick={onOpenVoiceLibrary} data-tip-anchor="voice-library-manage">
+                  Open Voice Library
+                </button>
+              </>
+            ) : (
+              <div className="text-xs text-muted">
+                Switch the engine to Voice Library to use reusable cloned voices created from reference clips.
               </div>
             )}
           </div>
@@ -321,7 +325,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
 
       <div className="step-nav">
         <button className="btn btn-ghost" onClick={onBack}>← Back</button>
-        <button className="btn btn-primary btn-lg" onClick={handleNext}>
+        <button className="btn btn-primary btn-lg" onClick={handleNext} disabled={engine === 'f5-tts' && !voice}>
           Continue to Export →
         </button>
       </div>

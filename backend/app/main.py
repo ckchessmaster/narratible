@@ -2,13 +2,15 @@ import logging
 import shutil
 import os
 import sys
+import tempfile
 from pathlib import Path
 import psutil
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from .config import AppConfig, load_config, save_config, get_device_string
@@ -31,6 +33,15 @@ from .tts import synthesize_speech, get_available_voices, compose_tts_text
 from .tts_text import prepare_text_for_tts, segment_text_for_tts
 from .epub import build_epub
 from .uploader import AudiobookshelfUploader
+from .voices import (
+    create_library_voice,
+    delete_library_voice,
+    get_library_voice,
+    get_library_voice_preview_path,
+    get_library_voice_sample_path,
+    list_library_voices,
+    update_library_voice,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -690,6 +701,27 @@ class PreviewRequest(BaseModel):
     engine: str = "edge-tts"
     voice: str = "en-US-AriaNeural"
     speed: float = 1.0
+    temperature: float | None = None
+
+
+class VoiceLibraryUpdateRequest(BaseModel):
+    name: str | None = None
+    reference_text: str | None = None
+    notes: str | None = None
+    speed: float | None = None
+    temperature: float | None = None
+
+
+class VoiceLibraryTestRequest(BaseModel):
+    text: str
+    speed: float | None = None
+
+
+def _resolve_f5_voice_reference(project_id: str, voice: str):
+    if voice and voice != "__uploaded__":
+        library_voice = get_library_voice(voice)
+        return get_library_voice_sample_path(voice), None, library_voice.reference_text, library_voice.temperature
+    return None, _voices_dir(project_id), None, None
 
 
 @app.post("/api/projects/{project_id}/tts/preview")
@@ -701,16 +733,27 @@ async def tts_preview(project_id: str, req: PreviewRequest):
 
     preview_path = _project_path(project_id) / "preview.mp3"
     try:
-        voice_samples_dir = _voices_dir(project_id) if req.engine == "f5-tts" else None
+        voice_sample_path = None
+        voice_reference_text = None
+        voice_samples_dir = None
+        voice_temperature = req.temperature
+        if req.engine == "f5-tts":
+            voice_sample_path, voice_samples_dir, voice_reference_text, saved_temperature = _resolve_f5_voice_reference(project_id, req.voice)
+            voice_temperature = voice_temperature if voice_temperature is not None else saved_temperature
         await synthesize_speech(
             text=req.text[:500],
             output_path=preview_path,
             engine=req.engine,
             voice=req.voice,
             speed=req.speed,
+            temperature=voice_temperature if voice_temperature is not None else 0.7,
+            voice_sample_path=voice_sample_path,
+            voice_reference_text=voice_reference_text,
             voice_samples_dir=voice_samples_dir,
             enabled_modules=meta.enabled_modules,
         )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.exception("TTS preview failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -747,6 +790,109 @@ async def tts_debug_text(project_id: str, req: PreviewRequest):
             for idx, segment in enumerate(segments)
         ],
     }
+
+
+# ── Voice Library ────────────────────────────────────────────────────────────
+
+@app.get("/api/voice-library")
+async def api_list_voice_library():
+    return {"voices": list_library_voices()}
+
+
+@app.post("/api/voice-library")
+async def api_create_voice_library_item(
+    name: str = Form(...),
+    reference_text: str = Form(""),
+    notes: str = Form(""),
+    speed: float = Form(1.0),
+    temperature: float = Form(0.7),
+    file: UploadFile = File(...),
+):
+    try:
+        voice = create_library_voice(name, reference_text, notes, speed, temperature, file.filename or "reference.wav", file.file)
+        return voice
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.patch("/api/voice-library/{voice_id}")
+async def api_update_voice_library_item(voice_id: str, req: VoiceLibraryUpdateRequest):
+    try:
+        return update_library_voice(voice_id, req.model_dump())
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/voice-library/{voice_id}")
+async def api_delete_voice_library_item(voice_id: str):
+    try:
+        delete_library_voice(voice_id)
+        return {"message": "Voice removed.", "id": voice_id}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/voice-library/test-draft")
+async def api_test_voice_library_draft(
+    text: str = Form(...),
+    speed: float = Form(1.0),
+    temperature: float = Form(0.7),
+    file: UploadFile = File(...),
+):
+    suffix = Path(file.filename).suffix.lower() if file.filename else ".wav"
+    if suffix not in VOICE_SAMPLE_SUFFIXES:
+        raise HTTPException(status_code=400, detail="Reference audio must be WAV, MP3, or FLAC.")
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="narratible_voice_test_"))
+    sample_path = temp_dir / f"reference{suffix}"
+    preview_path = temp_dir / "voice-preview.mp3"
+    try:
+        with open(sample_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        await synthesize_speech(
+            text=text[:500],
+            output_path=preview_path,
+            engine="f5-tts",
+            voice="draft",
+            speed=speed,
+            temperature=temperature,
+            voice_sample_path=sample_path,
+        )
+    except Exception as e:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.exception("Draft voice library test failed")
+        raise HTTPException(status_code=500, detail=str(e))
+    return FileResponse(
+        preview_path,
+        media_type="audio/mpeg",
+        filename="voice-preview.mp3",
+        background=BackgroundTask(lambda: shutil.rmtree(temp_dir, ignore_errors=True)),
+    )
+
+
+@app.post("/api/voice-library/{voice_id}/test")
+async def api_test_voice_library_item(voice_id: str, req: VoiceLibraryTestRequest):
+    try:
+        voice = get_library_voice(voice_id)
+        preview_path = get_library_voice_preview_path(voice_id)
+        await synthesize_speech(
+            text=req.text[:500],
+            output_path=preview_path,
+            engine="f5-tts",
+            voice=voice.id,
+            speed=req.speed if req.speed is not None else voice.speed,
+            temperature=voice.temperature,
+            voice_sample_path=get_library_voice_sample_path(voice_id),
+            voice_reference_text=voice.reference_text,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Voice library test failed")
+        raise HTTPException(status_code=500, detail=str(e))
+    return FileResponse(preview_path, media_type="audio/mpeg", filename="voice-preview.mp3")
 
 
 def _sanitize_filename(name: str, fallback: str) -> str:
@@ -809,7 +955,12 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
             _set_task(task_id, "running", f"Chapter {i + 1}/{len(chapters)}: {ch_title} — Synthesizing…", progress)
             safe_ch = _sanitize_filename(ch_title, f"chapter_{i + 1}")
             audio_path = exports_dir / f"{i + 1:03d}_{safe_ch}.mp3"
-            voice_samples_dir = _voices_dir(project_id) if engine == "f5-tts" else None
+            voice_sample_path = None
+            voice_reference_text = None
+            voice_samples_dir = None
+            voice_temperature = None
+            if engine == "f5-tts":
+                voice_sample_path, voice_samples_dir, voice_reference_text, voice_temperature = _resolve_f5_voice_reference(project_id, voice)
 
             def _tts_progress_cb(msg: str, _pct: int = 0, _task_id: str = task_id, _base: int = progress):
                 _set_task(_task_id, "running", msg, _base)
@@ -820,6 +971,9 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 engine=engine,
                 voice=voice,
                 speed=speed,
+                temperature=voice_temperature if voice_temperature is not None else 0.7,
+                voice_sample_path=voice_sample_path,
+                voice_reference_text=voice_reference_text,
                 voice_samples_dir=voice_samples_dir,
                 progress_cb=_tts_progress_cb,
                 enabled_modules=meta.enabled_modules,
@@ -878,6 +1032,8 @@ async def synthesize_book(
 ):
     try:
         get_project(project_id)
+        if engine == "f5-tts":
+            _resolve_f5_voice_reference(project_id, voice)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

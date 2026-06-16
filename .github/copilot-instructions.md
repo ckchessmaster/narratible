@@ -11,16 +11,16 @@ Agent guidance for this repository. Keep changes small and aligned with the curr
 - Current backend API surface is minimal (health endpoint only) while several modules are scaffolds.
 
 Primary docs:
-- [README.md](README.md)
-- [implementation_plan.md](implementation_plan.md)
-- [frontend/README.md](frontend/README.md)
+- [README.md](../README.md)
+- implementation_plan.md (roadmap, if present)
+- [frontend/README.md](../frontend/README.md)
 
 ## Quick Start Commands
 
 Backend:
 1. cd backend
 2. pip install -r requirements.txt
-3. python run.py
+3. .\.venv\Scripts\python.exe run.py
 
 Frontend:
 1. cd frontend
@@ -30,25 +30,28 @@ Frontend:
 Useful checks:
 - Frontend lint: cd frontend && npm run lint
 - Frontend production build: cd frontend && npm run build
+- Backend tests: cd backend && .\.venv\Scripts\python.exe -m pytest tests
+- Backend compile check: cd backend && .\.venv\Scripts\python.exe -m compileall app
 
 ## Architecture Boundaries
 
 Backend:
-- Entry point: [backend/run.py](backend/run.py)
-- FastAPI app: [backend/app/main.py](backend/app/main.py)
-- Config persistence: [backend/app/config.py](backend/app/config.py)
+- Entry point: [backend/run.py](../backend/run.py)
+- FastAPI app: [backend/app/main.py](../backend/app/main.py)
+- Config persistence: [backend/app/config.py](../backend/app/config.py)
 - Processing modules (used by future API routes):
-  - [backend/app/parser.py](backend/app/parser.py)
-  - [backend/app/cleaner.py](backend/app/cleaner.py)
-  - [backend/app/tts.py](backend/app/tts.py)
+  - [backend/app/parser.py](../backend/app/parser.py)
+  - [backend/app/cleaner.py](../backend/app/cleaner.py)
+  - [backend/app/tts.py](../backend/app/tts.py)
 
 Frontend:
-- App entry: [frontend/src/main.jsx](frontend/src/main.jsx)
-- Current wizard UI: [frontend/src/App.jsx](frontend/src/App.jsx)
+- App entry: [frontend/src/main.jsx](../frontend/src/main.jsx)
+- Current wizard UI: [frontend/src/App.jsx](../frontend/src/App.jsx)
 
 ## Conventions For AI Agents
 
 - Treat implementation_plan.md as a roadmap, not guaranteed current behavior.
+- Always use the backend virtualenv interpreter for backend commands and tests: backend/.venv/Scripts/python.exe.
 - Verify behavior from code before adding features or tests.
 - Preserve async patterns in backend processing functions.
 - Keep frontend changes consistent with existing React function-component style.

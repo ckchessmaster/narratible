@@ -353,3 +353,72 @@
     border-right-color: var(--border);
   }
 }
+
+/* ── Voice library ──────────────────────────────────────────────────────── */
+.btn-ghost.is-active {
+  background: rgba(99,102,241,0.16);
+  color: var(--accent-primary);
+  border-color: rgba(99,102,241,0.38);
+}
+
+.voice-library-page {
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.voice-library-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+.voice-library-sidebar {
+  min-width: 0;
+}
+
+.voice-editor {
+  min-width: 0;
+}
+
+.voice-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(240px, 320px);
+  gap: 18px;
+}
+
+.voice-list {
+  display: grid;
+  gap: 10px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.voice-list-item {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 11px 12px;
+  text-align: left;
+  color: inherit;
+  border-radius: var(--radius-sm);
+}
+
+.voice-list-item.is-selected {
+  border-color: rgba(99,102,241,0.5);
+  background: rgba(99,102,241,0.12);
+}
+
+.voice-name {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+@media (max-width: 820px) {
+  .voice-library-layout,
+  .voice-editor-grid {
+    grid-template-columns: 1fr;
+  }
+}

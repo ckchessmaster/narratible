@@ -274,6 +274,26 @@ input[type="range"]::-webkit-slider-thumb {
   box-shadow: 0 0 8px var(--accent-glow);
 }
 
+.range-ticks {
+  position: relative;
+  height: 18px;
+  margin-top: 4px;
+}
+.range-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.range-tick-start {
+  left: 0;
+  transform: none;
+}
+.range-tick-end {
+  right: 0;
+  transform: none;
+}
+
 /* ── Progress bar ─────────────────────────────────────────────────────────── */
 .progress-bar {
   width: 100%;

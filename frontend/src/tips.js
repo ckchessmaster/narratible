@@ -63,12 +63,17 @@ export const TIPS = [
   {
     id: 'w3-engine', context: 'wizard', step: 3, anchor: 'engine-select', placement: 'bottom',
     title: 'Pick an engine',
-    body: 'Edge-TTS is free and online. Kokoro and F5-TTS run locally on a GPU (F5-TTS clones an uploaded voice).',
+    body: 'Edge-TTS is free and online. Kokoro and Voice Library generation run locally on a GPU.',
   },
   {
     id: 'w3-voice', context: 'wizard', step: 3, anchor: 'voice-speed', placement: 'top',
     title: 'Voice & speed',
-    body: 'Choose a voice and adjust the narration speed to taste.',
+    body: 'Choose a voice and adjust the narration speed to taste. Voice Library selections come from saved reusable voices.',
+  },
+  {
+    id: 'w3-library-select', context: 'wizard', step: 3, anchor: 'voice-library-select', placement: 'top',
+    title: 'Saved voices',
+    body: 'Pick a saved library voice here. Create and test new voices from the Manage button or the header.',
   },
   {
     id: 'w3-read-headings', context: 'wizard', step: 3, anchor: 'read-headings', placement: 'top',
@@ -78,7 +83,24 @@ export const TIPS = [
   {
     id: 'w3-preview', context: 'wizard', step: 3, anchor: 'preview-section', placement: 'top',
     title: 'Preview before you commit',
-    body: 'Generate a quick sample to hear the voice. For F5-TTS, upload a 5–15s WAV clip in the Voice Samples panel.',
+    body: 'Generate a quick sample to hear the selected voice before using it for every chapter.',
+  },
+
+  // ── Voice Library ─────────────────────────────────────────────────────
+  {
+    id: 'vl-create', context: 'voice-library', anchor: 'voice-library-create', placement: 'right',
+    title: 'Create once',
+    body: 'Save a clean reference clip here so the voice can be reused across future projects. Speed and temperature are saved with the voice.',
+  },
+  {
+    id: 'vl-test', context: 'voice-library', anchor: 'voice-library-test', placement: 'left',
+    title: 'Test in isolation',
+    body: 'Use short sample text to tune and compare voices before selecting one in the TTS step.',
+  },
+  {
+    id: 'vl-list', context: 'voice-library', anchor: 'voice-library-list', placement: 'top',
+    title: 'Manage saved voices',
+    body: 'Pick a saved voice from this list, or start a new one. The main panel always edits the current voice.',
   },
 
   // ── Wizard · Step 4 (Export) ──────────────────────────────────────────

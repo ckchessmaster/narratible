@@ -26,6 +26,12 @@ def test_edge_keeps_service_side_normalization_available():
     ) == "Matthew 10:14-15 says some stuff etc."
 
 
+def test_f5_applies_narratible_pronunciation_hint_only_to_f5():
+    assert prepare_text_for_tts("Welcome to narratible.", "f5-tts") == "Welcome to narratable."
+    assert prepare_text_for_tts("Welcome to narratible.", "kokoro") == "Welcome to narratible."
+    assert prepare_text_for_tts("Welcome to narratible.", "edge-tts") == "Welcome to narratible."
+
+
 def test_scripture_book_abbreviation_and_single_verse_expand():
     assert prepare_text_for_tts(
         "Ps 1:4", "f5-tts", enabled_modules=["bible"]

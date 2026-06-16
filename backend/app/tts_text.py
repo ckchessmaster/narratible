@@ -55,6 +55,8 @@ def prepare_text_for_tts(
     text = apply_tts_modules(text, enabled_modules, engine)
     text = expand_common_abbreviations(text)
     text = expand_units(text)
+    if engine == "f5-tts":
+        text = apply_f5_pronunciation_hints(text)
     text = normalize_pacing_text(text)
     return _restore_non_prose(text, protected)
 
@@ -112,6 +114,11 @@ def expand_units(text: str) -> str:
         )
     text = re.sub(r"(?P<num>\d+(?:\.\d+)?)\s*%", r"\g<num> percent", text)
     return text
+
+
+def apply_f5_pronunciation_hints(text: str) -> str:
+    """Apply narrow spelling hints for words F5-TTS mispronounces."""
+    return re.sub(r"\bnarratible\b", "narratable", text, flags=re.IGNORECASE)
 
 
 def segment_text_for_tts(text: str, engine: str = "edge-tts") -> list[TTSSegment]:

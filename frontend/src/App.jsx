@@ -7,6 +7,7 @@ import Step2Editor from './components/Step2Editor'
 import Step3TTS from './components/Step3TTS'
 import Step4Export from './components/Step4Export'
 import SettingsModal from './components/SettingsModal'
+import VoiceLibraryPage from './components/VoiceLibraryPage'
 import Coachmark from './components/Coachmark'
 import useTips from './useTips'
 
@@ -22,12 +23,16 @@ export default function App() {
   const [maxStep, setMaxStep] = useState(1)
   const [projectId, setProjectId] = useState(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [view, setView] = useState('wizard')
+  const [voiceLibraryRevision, setVoiceLibraryRevision] = useState(0)
   const [toasts, setToasts] = useState([])
   const [cudaEnabled, setCudaEnabled] = useState(true)
   const [hasCloudKey, setHasCloudKey] = useState(false)
   const [debugMode, setDebugMode] = useState(false)
   const { getActiveTips, dismiss, disableAll } = useTips()
   const wizardTips = getActiveTips(t => t.context === 'wizard' && t.step === step)
+  const voiceLibraryTips = getActiveTips(t => t.context === 'voice-library')
+  const activeTips = view === 'voice-library' ? voiceLibraryTips : wizardTips
 
   const refreshHardwareState = useCallback(() => {
     Promise.all([getSystemInfo(), getSettings()]).then(([info, cfg]) => {
@@ -64,15 +69,15 @@ export default function App() {
         <nav className="stepper">
           {STEPS.map((s, i) => {
             const n = i + 1
-            const isActive = step === n
-            const isDone = step > n
-            const isReachable = n <= maxStep && n !== step
+            const isActive = view === 'wizard' && step === n
+            const isDone = view === 'wizard' && step > n
+            const isReachable = n <= maxStep && (view !== 'wizard' || n !== step)
             return (
               <div
                 key={n}
                 className="step-item"
                 style={{ cursor: isReachable ? 'pointer' : 'default' }}
-                onClick={() => isReachable && setStep(n)}
+                onClick={() => { if (isReachable) { setView('wizard'); setStep(n) } }}
               >
                 {i > 0 && <div className="step-connector" />}
                 <div className={`step-num ${isActive ? 'active' : isDone ? 'done' : ''}`}>
@@ -85,8 +90,15 @@ export default function App() {
         </nav>
 
         <div style={{ display: "flex", gap: "0.5rem" }}>
+          <button
+            className={`btn btn-ghost btn-sm${view === 'voice-library' ? ' is-active' : ''}`}
+            data-tip-anchor="voice-library-button"
+            onClick={() => setView('voice-library')}
+          >
+            Voice Library
+          </button>
           {(step > 1 || projectId) && (
-            <button className="btn btn-ghost btn-sm" onClick={() => { if (projectId) cancelTask(projectId).catch(() => {}); setProjectId(null); setStep(1); setMaxStep(1); }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => { if (projectId) cancelTask(projectId).catch(() => {}); setProjectId(null); setStep(1); setMaxStep(1); setView('wizard') }}>
               ↺ Clear Project
             </button>
           )}
@@ -98,51 +110,63 @@ export default function App() {
 
       {/* Main */}
       <main className="main">
-        <div style={{ display: step === 1 ? 'block' : 'none' }}>
-          <Step1Upload
-            projectId={projectId}
-            setProjectId={setProjectId}
-            isActive={step === 1}
-            onNext={next}
+        {view === 'voice-library' ? (
+          <VoiceLibraryPage
+            onBack={() => setView('wizard')}
             toast={toast}
-            cudaEnabled={cudaEnabled}
-            hasCloudKey={hasCloudKey}
-            debugMode={debugMode}
+            onChanged={() => setVoiceLibraryRevision(value => value + 1)}
           />
-        </div>
-        <div style={{ display: step === 2 ? 'block' : 'none' }}>
-          <Step2Editor
-            projectId={projectId}
-            isActive={step === 2}
-            onNext={next}
-            onBack={back}
-            toast={toast}
-            debugMode={debugMode}
-          />
-        </div>
-        <div style={{ display: step === 3 ? 'block' : 'none' }}>
-          <Step3TTS
-            projectId={projectId}
-            isActive={step === 3}
-            onNext={next}
-            onBack={back}
-            toast={toast}
-            cudaEnabled={cudaEnabled}
-          />
-        </div>
-        <div style={{ display: step === 4 ? 'block' : 'none' }}>
-          <Step4Export
-            projectId={projectId}
-            isActive={step === 4}
-            onBack={back}
-            toast={toast}
-          />
-        </div>
+        ) : (
+          <>
+            <div style={{ display: step === 1 ? 'block' : 'none' }}>
+              <Step1Upload
+                projectId={projectId}
+                setProjectId={setProjectId}
+                isActive={step === 1}
+                onNext={next}
+                toast={toast}
+                cudaEnabled={cudaEnabled}
+                hasCloudKey={hasCloudKey}
+                debugMode={debugMode}
+              />
+            </div>
+            <div style={{ display: step === 2 ? 'block' : 'none' }}>
+              <Step2Editor
+                projectId={projectId}
+                isActive={step === 2}
+                onNext={next}
+                onBack={back}
+                toast={toast}
+                debugMode={debugMode}
+              />
+            </div>
+            <div style={{ display: step === 3 ? 'block' : 'none' }}>
+              <Step3TTS
+                projectId={projectId}
+                isActive={step === 3}
+                onNext={next}
+                onBack={back}
+                toast={toast}
+                cudaEnabled={cudaEnabled}
+                onOpenVoiceLibrary={() => setView('voice-library')}
+                voiceLibraryRevision={voiceLibraryRevision}
+              />
+            </div>
+            <div style={{ display: step === 4 ? 'block' : 'none' }}>
+              <Step4Export
+                projectId={projectId}
+                isActive={step === 4}
+                onBack={back}
+                toast={toast}
+              />
+            </div>
+          </>
+        )}
       </main>
 
       {/* First-time-user coach-mark tips (hidden while Settings modal is open) */}
       {!showSettings && (
-        <Coachmark tips={wizardTips} onDismiss={dismiss} onDisableAll={disableAll} zIndex={150} />
+        <Coachmark tips={activeTips} onDismiss={dismiss} onDisableAll={disableAll} zIndex={150} />
       )}
 
       {/* Settings modal */}
