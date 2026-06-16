@@ -152,6 +152,7 @@ async def synthesize_speech(
     speed: float = 1.0,
     voice_sample_path: Optional[Path] = None,
     progress_cb: Optional[Callable[[str, int], None]] = None,
+    enabled_modules: Optional[list[str]] = None,
 ):
     """
     Synthesize text to speech using the selected engine.
@@ -159,7 +160,7 @@ async def synthesize_speech(
 
     voice_sample_path: path to a .wav reference file, required for f5-tts.
     """
-    text = prepare_text_for_tts(text, engine)
+    text = prepare_text_for_tts(text, engine, enabled_modules=enabled_modules)
 
     logger.info(f"Synthesizing with {engine}, voice={voice}, speed={speed}")
 

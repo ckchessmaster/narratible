@@ -14,7 +14,9 @@ from app.tts_text import prepare_text_for_tts, segment_text_for_tts  # noqa: E40
 
 def test_local_expands_scripture_range_and_etc():
     assert prepare_text_for_tts(
-        "Matthew 10:14-15 says some stuff etc.", "kokoro"
+        "Matthew 10:14-15 says some stuff etc.",
+        "kokoro",
+        enabled_modules=["bible"],
     ) == "Matthew 10, verses 14 through 15 says some stuff et cetera."
 
 
@@ -25,13 +27,50 @@ def test_edge_keeps_service_side_normalization_available():
 
 
 def test_scripture_book_abbreviation_and_single_verse_expand():
-    assert prepare_text_for_tts("Ps 1:4", "f5-tts") == "Psalms 1, verse 4"
+    assert prepare_text_for_tts(
+        "Ps 1:4", "f5-tts", enabled_modules=["bible"]
+    ) == "Psalms chapter 1, verse 4"
+
+
+def test_scripture_does_not_expand_when_bible_module_disabled():
+    assert prepare_text_for_tts("Ps 1:4", "f5-tts") == "Ps 1:4"
 
 
 def test_comma_separated_verses_expand():
-    assert prepare_text_for_tts("Matthew 10:14,15", "kokoro") == (
+    assert prepare_text_for_tts(
+        "Matthew 10:14,15", "kokoro", enabled_modules=["bible"]
+    ) == (
         "Matthew 10, verses 14 and 15"
     )
+
+
+def test_f5_normalizes_ligature_and_uses_enabled_bible_tts_transform():
+    text = (
+        "O God, you are my God;\n"
+        "earnestly I seek you;\n"
+        "my soul thirsts for you;\n"
+        "my ﬂesh faints for you,\n"
+        "as in a dry and weary land\n"
+        "where there is no water.\n\n"
+        "Psalms 63:1"
+    )
+
+    prepared = prepare_text_for_tts(text, "f5-tts", enabled_modules=["bible"])
+
+    assert "my flesh faints for you" in prepared
+    assert "ﬂ" not in prepared
+    assert "Psalms chapter 63, verse 1" in prepared
+
+
+def test_f5_ligature_normalization_is_not_module_gated():
+    text = "my ﬂesh faints for you.\n\nPsalms 63:1"
+
+    prepared = prepare_text_for_tts(text, "f5-tts")
+
+    assert "my flesh faints for you" in prepared
+    assert "ﬂ" not in prepared
+    assert "Psalms 63:1" in prepared
+    assert "Psalms chapter 63" not in prepared
 
 
 def test_units_expand_in_numeric_context():
@@ -70,6 +109,25 @@ def test_f5_segments_long_text():
     segments = segment_text_for_tts(long_sentence, "f5-tts")
     assert len(segments) > 1
     assert all(len(segment.text) <= 420 for segment in segments)
+
+
+def test_f5_merges_short_spoken_scripture_reference_segment():
+    text = (
+        "O God, you are my God;\n"
+        "earnestly I seek you;\n"
+        "my soul thirsts for you;\n"
+        "my ﬂesh faints for you,\n"
+        "as in a dry and weary land\n"
+        "where there is no water.\n\n"
+        "Psalms 63:1"
+    )
+    prepared = prepare_text_for_tts(text, "f5-tts", enabled_modules=["bible"])
+
+    segments = segment_text_for_tts(prepared, "f5-tts")
+
+    assert len(segments) == 1
+    assert "my flesh faints for you" in segments[0].text
+    assert "Psalms chapter 63, verse 1" in segments[0].text
 
 
 if __name__ == "__main__":

@@ -26,8 +26,9 @@ from .projects import (
 )
 from .parser import extract_structured_from_pdf
 from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters
-from .parsing_modules import list_modules, apply_modules
+from .parsing_modules import list_modules, apply_modules, normalize_module_ids
 from .tts import synthesize_speech, get_available_voices, compose_tts_text
+from .tts_text import prepare_text_for_tts, segment_text_for_tts
 from .epub import build_epub
 from .uploader import AudiobookshelfUploader
 
@@ -388,9 +389,9 @@ async def upload_pdf(project_id: str, file: UploadFile = File(...)):
 
 
 def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] | None = None):
-    modules = modules or []
+    modules = normalize_module_ids(modules)
     try:
-        meta = get_project(project_id)
+        meta = update_project(project_id, {"enabled_modules": modules})
         _set_task(task_id, "running", "Reading PDF…", 10, stage="Extracting text")
         pdf_path = _project_path(project_id) / "book.pdf"
         if not pdf_path.exists():
@@ -693,7 +694,7 @@ class PreviewRequest(BaseModel):
 @app.post("/api/projects/{project_id}/tts/preview")
 async def tts_preview(project_id: str, req: PreviewRequest):
     try:
-        get_project(project_id)
+        meta = get_project(project_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -707,12 +708,44 @@ async def tts_preview(project_id: str, req: PreviewRequest):
             voice=req.voice,
             speed=req.speed,
             voice_sample_path=voice_sample,
+            enabled_modules=meta.enabled_modules,
         )
     except Exception as e:
         logger.exception("TTS preview failed")
         raise HTTPException(status_code=500, detail=str(e))
 
     return FileResponse(preview_path, media_type="audio/mpeg", filename="preview.mp3")
+
+
+@app.post("/api/projects/{project_id}/tts/debug-text")
+async def tts_debug_text(project_id: str, req: PreviewRequest):
+    try:
+        meta = get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    source_text = req.text[:500]
+    prepared_text = prepare_text_for_tts(
+        source_text,
+        req.engine,
+        enabled_modules=meta.enabled_modules,
+    )
+    segments = segment_text_for_tts(prepared_text, req.engine)
+    return {
+        "engine": req.engine,
+        "enabled_modules": meta.enabled_modules,
+        "source_text": source_text,
+        "prepared_text": prepared_text,
+        "segments": [
+            {
+                "index": idx + 1,
+                "text": segment.text,
+                "char_count": len(segment.text),
+                "pause_after_ms": segment.pause_after_ms,
+            }
+            for idx, segment in enumerate(segments)
+        ],
+    }
 
 
 def _sanitize_filename(name: str, fallback: str) -> str:
@@ -788,6 +821,7 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 speed=speed,
                 voice_sample_path=voice_sample,
                 progress_cb=_tts_progress_cb,
+                enabled_modules=meta.enabled_modules,
             )
             audio_files.append(audio_path)
             chapters[i]["audio_path"] = str(audio_path)

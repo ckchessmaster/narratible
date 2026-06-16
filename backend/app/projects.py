@@ -5,7 +5,7 @@ import logging
 import sys
 import os
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,7 @@ class ProjectMetadata(BaseModel):
     tts_voice: str = "en-US-AriaNeural"
     tts_speed: float = 1.0
     tts_read_headings: bool = True
+    enabled_modules: list[str] = Field(default_factory=list)
 
 
 def _project_path(project_id: str) -> Path:

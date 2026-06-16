@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from typing import Dict, Any
 
+from .page_artifacts import looks_like_small_text_content_line
+
 logger = logging.getLogger(__name__)
 
 def extract_structured_from_pdf(pdf_path: Path, progress_callback=None) -> Dict[str, Any]:
@@ -180,8 +182,9 @@ def _assemble_chapters_from_blocks(page_blocks: list, median_size: float) -> Dic
             text = b["text"]
             size = b["size"]
 
-            # Skip obvious footnotes or headers/footers (very small text)
-            if size < median_size * 0.8:
+            # Skip obvious footnotes or headers/footers (very small text), but
+            # keep meaningful small centered attribution/reference lines.
+            if size < median_size * 0.8 and not _should_keep_small_text_block(text):
                 continue
 
             is_heading = False
@@ -231,6 +234,10 @@ def _assemble_chapters_from_blocks(page_blocks: list, median_size: float) -> Dic
     }
 
 
+def _should_keep_small_text_block(text: str) -> bool:
+    return looks_like_small_text_content_line(text)
+
+
 def _extract_via_layout(doc: fitz.Document, progress_callback=None) -> Dict[str, Any]:
     font_sizes = []
 
@@ -244,14 +251,24 @@ def _extract_via_layout(doc: fitz.Document, progress_callback=None) -> Dict[str,
         for b in blocks:
             if "lines" in b:
                 block_text = ""
+                block_lines = []
                 block_fonts = []
                 for line in b["lines"]:
+                    line_parts = []
                     for span in line["spans"]:
-                        text = span["text"].strip()
-                        if text:
-                            block_text += text + " "
+                        raw_text = span["text"]
+                        if raw_text.strip():
+                            line_parts.append(raw_text)
                             block_fonts.append(span["size"])
                             font_sizes.append(span["size"])
+                    line_text = "".join(line_parts).strip()
+                    if line_text:
+                        block_lines.append(line_text)
+                if block_lines:
+                    if any(looks_like_small_text_content_line(line) for line in block_lines):
+                        block_text = "\n".join(block_lines)
+                    else:
+                        block_text = " ".join(block_lines)
                 if block_text.strip():
                     avg_size = sum(block_fonts) / len(block_fonts) if block_fonts else 0
                     text_blocks.append({"text": block_text.strip(), "size": avg_size, "page": page_num})

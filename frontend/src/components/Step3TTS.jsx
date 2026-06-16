@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { getVoices, ttsPreview,
-         uploadVoiceSample, listVoiceSamples, updateProject } from '../api'
+         ttsDebugText, uploadVoiceSample, listVoiceSamples, updateProject } from '../api'
 
 const ENGINES = [
   { value: 'edge-tts', label: 'Edge-TTS', desc: 'Free · Microsoft voices · Online', requiresCuda: false },
@@ -16,6 +16,8 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
   const [readHeadings, setReadHeadings] = useState(true)
   const [previewText, setPreviewText] = useState('Welcome to narratible. This is a preview of the selected voice.')
   const [previewing, setPreviewing] = useState(false)
+  const [debuggingText, setDebuggingText] = useState(false)
+  const [ttsDebug, setTtsDebug] = useState(null)
   const [voiceSamples, setVoiceSamples] = useState([])
   const [loadingVoices, setLoadingVoices] = useState(false)
   const audioRef = useRef()
@@ -75,6 +77,19 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
       toast(e.message, 'error')
     } finally {
       setPreviewing(false)
+    }
+  }
+
+  const handleDebugText = async () => {
+    if (!previewText.trim()) return
+    setDebuggingText(true)
+    try {
+      const data = await ttsDebugText(projectId, previewText, engine, voice, speed)
+      setTtsDebug(data)
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setDebuggingText(false)
     }
   }
 
@@ -213,8 +228,42 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
             <button className="btn btn-secondary" onClick={handlePreview} disabled={previewing || !voice}>
               {previewing ? '⏳ Generating…' : '▶ Play Preview'}
             </button>
+            <button className="btn btn-ghost" onClick={handleDebugText} disabled={debuggingText || !previewText.trim()}>
+              {debuggingText ? 'Inspecting…' : 'Debug Text'}
+            </button>
             <audio ref={audioRef} style={{ flex: 1 }} controls />
           </div>
+          {ttsDebug && (
+            <div className="glass p-3 mt-3" style={{ borderRadius: 'var(--radius-sm)' }} data-tip-anchor="tts-debug-text">
+              <div className="flex justify-between items-center mb-2">
+                <div className="text-sm" style={{ fontWeight: 600 }}>TTS converted text</div>
+                <div className="text-xs text-muted">
+                  {ttsDebug.engine} · {(ttsDebug.enabled_modules || []).length ? ttsDebug.enabled_modules.join(', ') : 'no modules'}
+                </div>
+              </div>
+              <textarea
+                rows={6}
+                readOnly
+                value={ttsDebug.prepared_text || ''}
+                style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 12 }}
+              />
+              <div className="text-xs text-muted mt-2">
+                {ttsDebug.segments?.length || 0} segment{ttsDebug.segments?.length === 1 ? '' : 's'}
+              </div>
+              {ttsDebug.segments?.length > 0 && (
+                <div className="mt-2" style={{ display: 'grid', gap: 6 }}>
+                  {ttsDebug.segments.map(segment => (
+                    <details key={segment.index} className="glass p-2" style={{ borderRadius: 'var(--radius-sm)' }}>
+                      <summary className="text-xs" style={{ cursor: 'pointer', fontWeight: 600 }}>
+                        Segment {segment.index} · {segment.char_count} chars · pause {segment.pause_after_ms}ms
+                      </summary>
+                      <pre className="text-xs mt-2" style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{segment.text}</pre>
+                    </details>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Right: Voice samples + synthesis */}

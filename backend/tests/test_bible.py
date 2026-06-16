@@ -9,8 +9,8 @@ from pathlib import Path
 # Ensure the backend root (containing the ``app`` package) is importable.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.parsing_modules.bible import transform  # noqa: E402
-from app.parsing_modules import apply_modules, list_modules  # noqa: E402
+from app.parsing_modules.bible import tts_transform, transform  # noqa: E402
+from app.parsing_modules import apply_modules, apply_tts_modules, list_modules  # noqa: E402
 
 
 def test_basic_abbreviation_expands():
@@ -75,11 +75,27 @@ def test_apply_modules_ignores_unknown_and_empty():
     assert apply_modules("Ps 1:4", ["does-not-exist"]) == "Ps 1:4"
 
 
+def test_bible_tts_transform_expands_scripture_for_local_engines():
+    assert tts_transform("Ps 1:4", "kokoro") == "Psalms 1, verse 4"
+    assert tts_transform("Psalms 63:1", "f5-tts") == (
+        "Psalms chapter 63, verse 1"
+    )
+
+
+def test_apply_tts_modules_respects_enabled_modules():
+    assert apply_tts_modules("Ps 1:4", [], "f5-tts") == "Ps 1:4"
+    assert apply_tts_modules("Ps 1:4", ["does-not-exist"], "f5-tts") == "Ps 1:4"
+    assert apply_tts_modules("Ps 1:4", ["bible"], "f5-tts") == (
+        "Psalms chapter 1, verse 4"
+    )
+
+
 def test_list_modules_exposes_bible():
     ids = [m["id"] for m in list_modules()]
     assert "bible" in ids
     bible = next(m for m in list_modules() if m["id"] == "bible")
     assert "transform" not in bible  # callable must not leak to the API
+    assert "tts_transform" not in bible
 
 
 if __name__ == "__main__":

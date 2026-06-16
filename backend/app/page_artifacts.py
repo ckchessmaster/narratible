@@ -8,15 +8,15 @@ import unicodedata
 
 
 _STANDALONE_PAGE_RE = re.compile(
-    r"^\s*(?:p(?:age)?\.?\s*)?(?:\d{1,4}|[ivxlcdm]{1,8})\s*$",
+    r"^\s*(?:p(?:age)?\.?\s*)?(?:\d{1,4}|[ivxlcdm]{2,8})\s*$",
     re.IGNORECASE,
 )
 _LEADING_PAGE_RE = re.compile(
-    r"^\s*(?:p(?:age)?\.?\s*)?(?:\d{1,4}|[ivxlcdm]{1,8})\s+(?P<body>.+?)\s*$",
+    r"^\s*(?:p(?:age)?\.?\s*)?(?:\d{1,4}|[ivxlcdm]{2,8})\s+(?P<body>.+?)\s*$",
     re.IGNORECASE,
 )
 _TRAILING_PAGE_RE = re.compile(
-    r"^\s*(?P<body>.+?)\s+(?:p(?:age)?\.?\s*)?(?:\d{1,4}|[ivxlcdm]{1,8})\s*$",
+    r"^\s*(?P<body>.+?)\s+(?:p(?:age)?\.?\s*)?(?:\d{1,4}|[ivxlcdm]{2,8})\s*$",
     re.IGNORECASE,
 )
 _REFERENCE_RE = re.compile(
@@ -85,6 +85,9 @@ def _candidate_for_line(line: str) -> _ArtifactCandidate | None:
     if not stripped:
         return None
 
+    if _looks_like_attribution_or_reference_line(stripped):
+        return None
+
     if _STANDALONE_PAGE_RE.match(stripped):
         return _ArtifactCandidate(key="", has_page_marker=True)
 
@@ -110,6 +113,8 @@ def _candidate_for_line(line: str) -> _ArtifactCandidate | None:
 
 
 def _looks_like_header_text(text: str) -> bool:
+    if _looks_like_attribution_or_reference_line(text):
+        return False
     if not 3 <= len(text) <= 90:
         return False
     if _REFERENCE_RE.search(text):
@@ -126,11 +131,86 @@ def _looks_like_header_text(text: str) -> bool:
 
 
 def _looks_like_repeated_title_line(text: str) -> bool:
+    if _looks_like_attribution_or_reference_line(text):
+        return False
     if not _ALL_CAPS_RE.match(text):
         return False
     if _REFERENCE_RE.search(text):
         return False
     return len(text.split()) >= 2
+
+
+def _looks_like_attribution_or_reference_line(text: str) -> bool:
+    return looks_like_attribution_or_reference_line(text)
+
+
+def looks_like_attribution_or_reference_line(text: str) -> bool:
+    """Return True for epigraph/source/scripture attribution lines.
+
+    These lines are meaningful book content even when they are repeated,
+    centered, all-caps, or smaller than body text.
+    """
+    return (
+        _looks_like_author_attribution_line(text)
+        or _looks_like_verse_reference_line(text)
+    )
+
+
+def looks_like_small_text_content_line(text: str) -> bool:
+    """Return True for meaningful small-font content to keep in layout parsing."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines:
+        return any(
+            looks_like_attribution_or_reference_line(line)
+            or _looks_like_source_title_line(line)
+            for line in lines
+        )
+    return looks_like_attribution_or_reference_line(text) or _looks_like_source_title_line(text)
+
+
+def _looks_like_author_attribution_line(text: str) -> bool:
+    stripped = text.strip().rstrip("0123456789").strip()
+    # Author attributions in epigraphs often extract as spaced initials plus a
+    # surname: C. S. LEWIS, C S LEWIS, G. K. CHESTERTON.
+    if re.fullmatch(
+        r"(?:[A-Z]\.??\s+){1,4}[A-Z][A-Z'.-]{2,}(?:\s+[A-Z][A-Z'.-]{2,}){0,3}",
+        stripped,
+    ):
+        return True
+
+    normalized = stripped.replace(".", " ")
+    tokens = [token for token in normalized.split() if token]
+    if 4 <= len(tokens) <= 16 and all(re.fullmatch(r"[A-Z]", token) for token in tokens):
+        return True
+    return False
+
+
+def _looks_like_verse_reference_line(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text.strip()).upper()
+    compact = compact.replace(".", "")
+    # Preserve common centered scripture/poetry attribution lines. The spaced
+    # form catches OCR like "P S A L M 6 3 : 1" while leaving prose alone.
+    if re.fullmatch(r"PSALM\d{1,3}(?::?\d{1,3})?", compact):
+        return True
+    if re.fullmatch(r"PSALMS\d{1,3}(?::?\d{1,3})?", compact):
+        return True
+    return False
+
+
+def _looks_like_source_title_line(text: str) -> bool:
+    stripped = text.strip()
+    if re.search(r"\s+\d+$", stripped):
+        return False
+    without_note = stripped.rstrip("0123456789").strip()
+    if without_note.endswith((".", "!", "?", ":", ";")):
+        return False
+    words = without_note.split()
+    if not 2 <= len(words) <= 8:
+        return False
+    if any(re.search(r"[,;:]", word) for word in words):
+        return False
+    titled = sum(1 for word in words if word[:1].isupper())
+    return titled >= max(2, len(words) - 1)
 
 
 def _normalize_key(text: str) -> str:

@@ -130,6 +130,20 @@ def unload_llm():
         except ImportError:
             pass
 
+def fix_soft_hyphenation(text: str) -> str:
+    """Join words split by PDF line/page-break hyphenation.
+
+    Examples: ``begin- ning`` -> ``beginning`` and
+    ``sweet-\n\nest`` -> ``sweetest``.
+    """
+    letter = r"[^\W\d_]"
+    return re.sub(
+        rf"\b({letter}{{2,}})-\s+({letter}{{2,}})\b",
+        r"\1\2",
+        text,
+    )
+
+
 def regex_clean_text(text: str, known_titles: list[str] | None = None) -> str:
     """
     Basic heuristic cleanup of text.
@@ -137,8 +151,7 @@ def regex_clean_text(text: str, known_titles: list[str] | None = None) -> str:
     - Fixes hyphenated line-breaks
     - Attempts to strip page numbers
     """
-    # Fix hyphenated line breaks: word-\nword -> wordword
-    text = re.sub(r'(\w+)-\n(\w+)', r'\1\2', text)
+    text = fix_soft_hyphenation(text)
 
     # Remove repeated running headers/footers and floating page numbers.
     text = remove_running_headers(text, known_titles=known_titles)
@@ -290,6 +303,7 @@ def llm_review_chapters(
             logger.warning("Could not save debug prompt: %s", _e)
 
     try:
+        reviewed: ChapterReviewResponse | None = None
         if provider == "gemini" and cfg.gemini_api_key:
             from google import genai
             from google.genai import types
@@ -305,7 +319,10 @@ def llm_review_chapters(
                 contents=USER_PROMPT,
                 config=config,
             )
-            reviewed = ChapterReviewResponse.model_validate_json(response.text.strip())
+            response_text = (response.text or "").strip()
+            if not response_text:
+                raise ValueError("Gemini returned an empty chapter review response.")
+            reviewed = ChapterReviewResponse.model_validate_json(response_text)
 
         elif provider == "openai" and cfg.openai_api_key:
             client = OpenAI(api_key=cfg.openai_api_key)
@@ -319,6 +336,8 @@ def llm_review_chapters(
                 response_format=ChapterReviewResponse,
             )
             reviewed = response.choices[0].message.parsed
+            if reviewed is None:
+                raise ValueError("OpenAI returned an empty chapter review response.")
 
         elif provider == "embedded":
             import os
@@ -432,6 +451,9 @@ def llm_review_chapters(
             logger.warning("llm_review_chapters: provider '%s' not usable, skipping review.", provider)
             return chapters
 
+        if reviewed is None:
+            return chapters
+
         # Validate response length matches
         if len(reviewed.chapters) != len(chapters):
             logger.warning(
@@ -496,10 +518,11 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
             "1. Output the cleaned main text inside <text>...</text> tags.\n"
             "2. Identify any footnotes and margin notes, and output them inside <notes>...</notes> tags.\n"
             "3. Strip entirely any running headers, footers, and floating page numbers.\n"
-            "4. Fix OCR errors: Reconstruct mangled or fragmented words (e.g., 'T E R T U L L I A N' -> 'TERTULLIAN'). Correct obvious typos caused by bad scanning.\n"
-            "5. Format all major structural headings (e.g., Chapters, Prefaces, Introductions, Prologues, Epilogues) by prefixing them with a Markdown '# ' (e.g., '# Chapter 1', '# Introduction').\n"
-            "6. NEVER include any conversational preamble, summary, or analysis. DO NOT output 'Here is the cleaned text'.\n"
-            "7. DO NOT omit, summarize, or truncate any text. Do not use placeholders like '...(rest of text)'. You MUST output the full text unaltered except for the requested formatting.\n\n"
+            "4. Preserve epigraph, poetry, scripture, and source attribution lines such as 'C. S. LEWIS', 'Till We Have Faces', 'PSALM 63:1', and spaced OCR forms like 'P S A L M 6 3 : 1'. Do not treat them as headers/footers.\n"
+            "5. Fix OCR errors: Reconstruct mangled or fragmented words (e.g., 'T E R T U L L I A N' -> 'TERTULLIAN'). Correct obvious typos caused by bad scanning.\n"
+            "6. Format all major structural headings (e.g., Chapters, Prefaces, Introductions, Prologues, Epilogues) by prefixing them with a Markdown '# ' (e.g., '# Chapter 1', '# Introduction').\n"
+            "7. NEVER include any conversational preamble, summary, or analysis. DO NOT output 'Here is the cleaned text'.\n"
+            "8. DO NOT omit, summarize, or truncate any text. Do not use placeholders like '...(rest of text)'. You MUST output the full text unaltered except for the requested formatting.\n\n"
             "Here is the text:\n\n"
             + chunk_text
         )
@@ -719,7 +742,8 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
             return (
                 "Please clean the following text extracted from a PDF. Ensure basic line breaks are fixed. "
                 "Output the cleaned text into `main_text`. Output any footnotes/margin notes into `notes_text`. "
-                "Strip running headers/footers/page numbers.\nFix OCR errors: Reconstruct mangled or fragmented words (e.g., 'T E R T U L L I A N' -> 'TERTULLIAN'). Catch obvious spelling errors.\n\n"
+                "Strip running headers/footers/page numbers, but preserve epigraph, poetry, scripture, and source attribution lines such as 'C. S. LEWIS', 'Till We Have Faces', 'PSALM 63:1', and spaced OCR forms like 'P S A L M 6 3 : 1'.\n"
+                "Fix OCR errors: Reconstruct mangled or fragmented words (e.g., 'T E R T U L L I A N' -> 'TERTULLIAN'). Catch obvious spelling errors.\n\n"
                 "Here is the text:\n\n" + chunk_text
             )
             
@@ -762,10 +786,13 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
                             continue
                     raise
             try:
-                res_obj = CleanedTextResponse.model_validate_json(response.text.strip())
+                response_text = (response.text or "").strip()
+                if not response_text:
+                    raise ValueError("Gemini returned an empty cleanup response.")
+                res_obj = CleanedTextResponse.model_validate_json(response_text)
                 process_chunk_result(res_obj.main_text, res_obj.notes_text)
             except Exception:
-                main_text, notes_text = parse_output(response.text.strip())
+                main_text, notes_text = parse_output((response.text or "").strip())
                 process_chunk_result(main_text, notes_text)
             
     elif provider == "openai" and cfg.openai_api_key:
@@ -775,7 +802,8 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
             return (
                 "Please clean the following text extracted from a PDF. Ensure basic line breaks are fixed. "
                 "Output the cleaned text into `main_text`. Output any footnotes/margin notes into `notes_text`. "
-                "Strip running headers/footers/page numbers.\nFix OCR errors: Reconstruct mangled or fragmented words (e.g., 'T E R T U L L I A N' -> 'TERTULLIAN'). Catch obvious spelling errors.\n\n"
+                "Strip running headers/footers/page numbers, but preserve epigraph, poetry, scripture, and source attribution lines such as 'C. S. LEWIS', 'Till We Have Faces', 'PSALM 63:1', and spaced OCR forms like 'P S A L M 6 3 : 1'.\n"
+                "Fix OCR errors: Reconstruct mangled or fragmented words (e.g., 'T E R T U L L I A N' -> 'TERTULLIAN'). Catch obvious spelling errors.\n\n"
                 "Here is the text:\n\n" + chunk_text
             )
 
@@ -795,6 +823,8 @@ def llm_clean_text(text_chunk: str, provider: str = "gemini", progress_callback=
                 response_format=CleanedTextResponse,
             )
             res_obj = response.choices[0].message.parsed
+            if res_obj is None:
+                raise ValueError("OpenAI returned an empty cleanup response.")
             process_chunk_result(res_obj.main_text, res_obj.notes_text)
     else:
         report(f"Provider '{provider}' not configured, falling back to regex…", 50)

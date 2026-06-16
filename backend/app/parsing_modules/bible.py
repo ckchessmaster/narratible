@@ -115,6 +115,18 @@ def _build_lookup(books: dict[str, list[str]]) -> dict[str, str]:
 _LOOKUP = _build_lookup(BOOKS)
 
 
+def _build_book_lookup() -> dict[str, str]:
+    lookup: dict[str, str] = {}
+    for canonical, abbrevs in BOOKS.items():
+        lookup[_normalize(canonical)] = canonical
+        for abbrev in abbrevs:
+            lookup[_normalize(abbrev)] = canonical
+    return lookup
+
+
+_BOOK_LOOKUP = _build_book_lookup()
+
+
 def _to_subpattern(abbrev: str) -> str:
     """Turn an abbreviation into a regex fragment that allows flexible spacing.
 
@@ -148,3 +160,60 @@ def transform(text: str) -> str:
         return _LOOKUP.get(_normalize(match.group(1) or ""), match.group(0))
 
     return _PATTERN.sub(_replace, text)
+
+
+def tts_transform(text: str, engine: str = "edge-tts") -> str:
+    """Return Bible-reference text phrased for audio synthesis."""
+    if engine not in {"kokoro", "f5-tts"}:
+        return text
+
+    text = transform(text)
+    return expand_scripture_references(text, explicit_chapter=(engine == "f5-tts"))
+
+
+def expand_scripture_references(text: str, explicit_chapter: bool = False) -> str:
+    """Expand scripture chapter:verse references into spoken phrasing."""
+    reference_pattern = re.compile(
+        rf"\b(?P<book>{_book_pattern()})\.?\s+"
+        r"(?P<chapter>\d{1,3})\s*:\s*"
+        r"(?P<verses>\d{1,3}(?:\s*(?:[-\u2013\u2014]|,)\s*\d{1,3})*)",
+        re.IGNORECASE,
+    )
+
+    def replace(match: re.Match) -> str:
+        book = _BOOK_LOOKUP.get(_normalize(match.group("book") or ""), match.group("book").strip())
+        chapter = match.group("chapter")
+        verses = _speak_verses(match.group("verses"))
+        if explicit_chapter:
+            return f"{book} chapter {chapter}, {verses}"
+        return f"{book} {chapter}, {verses}"
+
+    return reference_pattern.sub(replace, text)
+
+
+def _book_pattern() -> str:
+    names = set(BOOKS.keys())
+    for abbrevs in BOOKS.values():
+        names.update(abbrevs)
+    parts = sorted((_to_subpattern(name) for name in names), key=len, reverse=True)
+    return "|".join(parts)
+
+
+def _speak_verses(verses: str) -> str:
+    normalized = re.sub(r"\s+", "", verses)
+    if re.fullmatch(r"\d+", normalized):
+        return f"verse {normalized}"
+
+    range_match = re.fullmatch(r"(\d+)[-\u2013\u2014](\d+)", normalized)
+    if range_match:
+        start, end = range_match.groups()
+        return f"verses {start} through {end}"
+
+    comma_parts = re.fullmatch(r"\d+(?:,\d+)+", normalized)
+    if comma_parts:
+        parts = normalized.split(",")
+        if len(parts) == 2:
+            return f"verses {parts[0]} and {parts[1]}"
+        return f"verses {', '.join(parts[:-1])}, and {parts[-1]}"
+
+    return "verses " + normalized.replace("-", " through ")

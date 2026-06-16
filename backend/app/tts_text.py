@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import unicodedata
 
-from .parsing_modules.bible import BOOKS, transform as expand_bible_book_names
+from .parsing_modules import apply_tts_modules
 
 
 LOCAL_TTS_ENGINES = {"kokoro", "f5-tts"}
@@ -30,7 +31,11 @@ def strip_tts_artifacts(text: str) -> str:
     return text.strip()
 
 
-def prepare_text_for_tts(text: str, engine: str = "edge-tts") -> str:
+def prepare_text_for_tts(
+    text: str,
+    engine: str = "edge-tts",
+    enabled_modules: list[str] | None = None,
+) -> str:
     """Return speech-friendly text for synthesis.
 
     The original project/chapter text is left untouched. For Edge we only do
@@ -45,13 +50,18 @@ def prepare_text_for_tts(text: str, engine: str = "edge-tts") -> str:
     if engine not in LOCAL_TTS_ENGINES:
         return normalize_pacing_text(text)
 
+    text = normalize_tts_unicode(text)
     text, protected = _protect_non_prose(text)
-    text = expand_bible_book_names(text)
-    text = expand_scripture_references(text)
+    text = apply_tts_modules(text, enabled_modules, engine)
     text = expand_common_abbreviations(text)
     text = expand_units(text)
     text = normalize_pacing_text(text)
     return _restore_non_prose(text, protected)
+
+
+def normalize_tts_unicode(text: str) -> str:
+    """Normalize compatibility glyphs that local TTS tokenizers may drop."""
+    return unicodedata.normalize("NFKC", text)
 
 
 def normalize_pacing_text(text: str) -> str:
@@ -62,25 +72,6 @@ def normalize_pacing_text(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"(?<!\d)([.!?])(?=[A-Z0-9])", r"\1 ", text)
     return text.strip()
-
-
-def expand_scripture_references(text: str) -> str:
-    """Expand scripture chapter:verse references into spoken phrasing."""
-    book_pattern = _build_book_pattern()
-    reference_pattern = re.compile(
-        rf"\b(?P<book>{book_pattern})\.?\s+"
-        r"(?P<chapter>\d{1,3})\s*:\s*"
-        r"(?P<verses>\d{1,3}(?:\s*(?:[-\u2013\u2014]|,)\s*\d{1,3})*)",
-        re.IGNORECASE,
-    )
-
-    def replace(match: re.Match) -> str:
-        book = _canonical_book(match.group("book"))
-        chapter = match.group("chapter")
-        verses = _speak_verses(match.group("verses"))
-        return f"{book} {chapter}, {verses}"
-
-    return reference_pattern.sub(replace, text)
 
 
 def expand_common_abbreviations(text: str) -> str:
@@ -152,11 +143,11 @@ def segment_text_for_tts(text: str, engine: str = "edge-tts") -> list[TTSSegment
                 pause = sentence_pause_ms
             segments.append(TTSSegment(piece, pause))
 
+    if engine == "f5-tts":
+        return _merge_short_reference_segments(segments, max_chars)
     return segments
 
 
-_BOOK_PATTERN_CACHE: str | None = None
-_BOOK_LOOKUP_CACHE: dict[str, str] | None = None
 _NON_PROSE_RE = re.compile(
     r"(?:https?://|www\.)\S+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}"
 )
@@ -177,57 +168,6 @@ def _restore_non_prose(text: str, protected: dict[str, str]) -> str:
     for placeholder, original in protected.items():
         text = text.replace(placeholder, original)
     return text
-
-
-def _build_book_pattern() -> str:
-    global _BOOK_PATTERN_CACHE
-    if _BOOK_PATTERN_CACHE is None:
-        names = set(BOOKS.keys())
-        for abbrevs in BOOKS.values():
-            names.update(abbrevs)
-        parts = sorted((_book_to_pattern(name) for name in names), key=len, reverse=True)
-        _BOOK_PATTERN_CACHE = "|".join(parts)
-    return _BOOK_PATTERN_CACHE
-
-
-def _book_to_pattern(name: str) -> str:
-    return r"\s*".join(re.escape(part) for part in name.split())
-
-
-def _canonical_book(book: str) -> str:
-    global _BOOK_LOOKUP_CACHE
-    if _BOOK_LOOKUP_CACHE is None:
-        lookup: dict[str, str] = {}
-        for canonical, abbrevs in BOOKS.items():
-            lookup[_normalize_book_key(canonical)] = canonical
-            for abbrev in abbrevs:
-                lookup[_normalize_book_key(abbrev)] = canonical
-        _BOOK_LOOKUP_CACHE = lookup
-    return _BOOK_LOOKUP_CACHE.get(_normalize_book_key(book), book.strip())
-
-
-def _normalize_book_key(book: str) -> str:
-    return re.sub(r"\s+", "", book.strip().lower().rstrip("."))
-
-
-def _speak_verses(verses: str) -> str:
-    normalized = re.sub(r"\s+", "", verses)
-    if re.fullmatch(r"\d+", normalized):
-        return f"verse {normalized}"
-
-    range_match = re.fullmatch(r"(\d+)[-\u2013\u2014](\d+)", normalized)
-    if range_match:
-        start, end = range_match.groups()
-        return f"verses {start} through {end}"
-
-    comma_parts = re.fullmatch(r"\d+(?:,\d+)+", normalized)
-    if comma_parts:
-        parts = normalized.split(",")
-        if len(parts) == 2:
-            return f"verses {parts[0]} and {parts[1]}"
-        return f"verses {', '.join(parts[:-1])}, and {parts[-1]}"
-
-    return "verses " + normalized.replace("-", " through ")
 
 
 def _split_sentences(paragraph: str) -> list[str]:
@@ -271,3 +211,34 @@ def _split_long_sentence(sentence: str, max_chars: int) -> list[str]:
     if current:
         chunks.append(" ".join(current))
     return chunks
+
+
+def _merge_short_reference_segments(
+    segments: list[TTSSegment],
+    max_chars: int,
+) -> list[TTSSegment]:
+    merged: list[TTSSegment] = []
+    for segment in segments:
+        if (
+            merged
+            and _looks_like_spoken_scripture_reference(segment.text)
+            and len(merged[-1].text) + len(segment.text) + 2 <= max_chars
+        ):
+            previous = merged[-1]
+            merged[-1] = TTSSegment(
+                f"{previous.text}\n\n{segment.text}",
+                segment.pause_after_ms,
+            )
+        else:
+            merged.append(segment)
+    return merged
+
+
+def _looks_like_spoken_scripture_reference(text: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"(?:[1-3]\s+)?[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,3} "
+            r"chapter \d{1,3}, verses? .+",
+            text.strip(),
+        )
+    )

@@ -80,6 +80,8 @@ export const ttsPreview = (projectId, text, engine, voice, speed) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, engine, voice, speed }),
   })
+export const ttsDebugText = (projectId, text, engine, voice, speed) =>
+  request('POST', `/projects/${projectId}/tts/debug-text`, { text, engine, voice, speed })
 export const synthesizeBook = (projectId, engine, voice, speed, singleFile = false, audioFormat = 'm4b', readHeadings = true) =>
   request('POST', `/projects/${projectId}/tts/synthesize?engine=${engine}&voice=${voice}&speed=${speed}&single_file=${singleFile}&audio_format=${audioFormat}&read_headings=${readHeadings}`)
 

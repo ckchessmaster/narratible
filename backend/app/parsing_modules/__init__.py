@@ -5,10 +5,20 @@ chapter at parse time (after cleaning). Modules are registered in ``MODULES``
 and selected per-project via the parse endpoint.
 """
 
-from . import bible
+from . import bible, prose_reflow
 
 # id -> module descriptor. ``transform`` is a callable ``str -> str``.
+# ``tts_transform`` is optional and receives ``(text, engine)``.
 MODULES: dict[str, dict] = {
+    "prose_reflow": {
+        "id": "prose_reflow",
+        "name": "Prose Reflow",
+        "description": (
+            "Joins PDF-wrapped prose lines while preserving likely verse, "
+            "lists, citations, and epigraph attributions."
+        ),
+        "transform": prose_reflow.transform,
+    },
     "bible": {
         "id": "bible",
         "name": "Bible Reference Expander",
@@ -17,6 +27,7 @@ MODULES: dict[str, dict] = {
             "correctly, e.g. 'Ps 1:4' becomes 'Psalms 1:4'."
         ),
         "transform": bible.transform,
+        "tts_transform": bible.tts_transform,
     },
 }
 
@@ -29,6 +40,14 @@ def list_modules() -> list[dict]:
     ]
 
 
+def normalize_module_ids(module_ids: list[str] | None) -> list[str]:
+    """Return known module ids in registry order, dropping stale/unknown ids."""
+    if not module_ids:
+        return []
+    enabled = set(module_ids)
+    return [module_id for module_id in MODULES if module_id in enabled]
+
+
 def apply_modules(text: str, module_ids: list[str]) -> str:
     """Apply the enabled modules to ``text`` in registry order.
 
@@ -36,8 +55,17 @@ def apply_modules(text: str, module_ids: list[str]) -> str:
     """
     if not module_ids:
         return text
-    enabled = set(module_ids)
-    for module_id, module in MODULES.items():
-        if module_id in enabled:
+    for module_id in normalize_module_ids(module_ids):
+        module = MODULES[module_id]
+        if module.get("transform"):
             text = module["transform"](text)
+    return text
+
+
+def apply_tts_modules(text: str, module_ids: list[str] | None, engine: str) -> str:
+    """Apply enabled modules' audio-only transforms in registry order."""
+    for module_id in normalize_module_ids(module_ids):
+        tts_transform = MODULES[module_id].get("tts_transform")
+        if tts_transform:
+            text = tts_transform(text, engine)
     return text
