@@ -63,6 +63,8 @@ export const cancelTask = (projectId) => request('POST', `/projects/${projectId}
 // Chapters
 export const getChapters = (id) => request('GET', `/projects/${id}/chapters`)
 export const saveChapters = (id, chapters) => request('PUT', `/projects/${id}/chapters`, chapters)
+export const updateChapter = (projectId, chapterId, updates) =>
+  request('PATCH', `/projects/${projectId}/chapters/${encodeURIComponent(chapterId)}`, updates)
 export const getDebugChapters = (id) => request('GET', `/projects/${id}/debug-chapters`)
 export const getDebugPrompt = (id) => request('GET', `/projects/${id}/debug-prompt`)
 export const getCleaningEval = (id) => request('GET', `/projects/${id}/cleaning-eval`)
@@ -92,8 +94,12 @@ export const ttsPreview = (projectId, text, engine, voice, speed) =>
   })
 export const ttsDebugText = (projectId, text, engine, voice, speed) =>
   request('POST', `/projects/${projectId}/tts/debug-text`, { text, engine, voice, speed })
-export const synthesizeBook = (projectId, engine, voice, speed, singleFile = false, audioFormat = 'm4b', readHeadings = true) =>
-  request('POST', `/projects/${projectId}/tts/synthesize?engine=${encodeURIComponent(engine)}&voice=${encodeURIComponent(voice)}&speed=${speed}&single_file=${singleFile}&audio_format=${encodeURIComponent(audioFormat)}&read_headings=${readHeadings}`)
+export const synthesizeBook = (projectId, engine, voice, speed, singleFile = false, audioFormat = 'm4b', readHeadings = true, force = false) =>
+  request('POST', `/projects/${projectId}/tts/synthesize?engine=${encodeURIComponent(engine)}&voice=${encodeURIComponent(voice)}&speed=${speed}&single_file=${singleFile}&audio_format=${encodeURIComponent(audioFormat)}&read_headings=${readHeadings}&force=${force}`)
+export const synthesizeChapter = (projectId, chapterId, force = false) =>
+  request('POST', `/projects/${projectId}/chapters/${encodeURIComponent(chapterId)}/tts?force=${force}`)
+export const chapterAudioUrl = (projectId, chapterId) =>
+  `${BASE}/projects/${projectId}/chapters/${encodeURIComponent(chapterId)}/audio`
 
 // Voice library
 export const listLibraryVoices = () => request('GET', '/voice-library')

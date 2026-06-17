@@ -4,9 +4,11 @@ import shutil
 import logging
 import sys
 import os
+import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +24,21 @@ class ProjectMetadata(BaseModel):
     id: str
     title: str
     author: str = ""
+    created_at: str = Field(default_factory=lambda: _utc_now())
+    updated_at: str = Field(default_factory=lambda: _utc_now())
+    current_step: str = "upload"
+    source_pdf: dict[str, str] | None = None
     cover_image: Optional[str] = None  # relative path inside project dir
     tts_engine: str = "edge-tts"
     tts_voice: str = "en-US-AriaNeural"
     tts_speed: float = 1.0
     tts_read_headings: bool = True
     enabled_modules: list[str] = Field(default_factory=list)
+    chapter_count: int = 0
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _project_path(project_id: str) -> Path:
@@ -36,6 +47,54 @@ def _project_path(project_id: str) -> Path:
 
 def _metadata_path(project_id: str) -> Path:
     return _project_path(project_id) / "metadata.json"
+
+
+def source_pdf_path(project_id: str) -> Path:
+    return _project_path(project_id) / "source" / "original.pdf"
+
+
+def audio_dir(project_id: str) -> Path:
+    return _project_path(project_id) / "audio"
+
+
+def artifact_dir(project_id: str) -> Path:
+    return _project_path(project_id) / "artifacts"
+
+
+def project_file(project_id: str, relative_path: str | None) -> Path | None:
+    if not relative_path:
+        return None
+    path = Path(relative_path)
+    if path.is_absolute():
+        return path
+    return _project_path(project_id) / path
+
+
+def _write_json_atomic(path: Path, data: Any):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+
+
+def chapter_text_hash(title: str, text: str) -> str:
+    """Hash the text that can affect synthesized chapter audio."""
+    payload = f"{title or ''}\0{text or ''}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def tts_settings_hash(*, engine: str, voice: str, speed: float, read_headings: bool, enabled_modules: list[str] | None = None) -> str:
+    settings = {
+        "engine": engine,
+        "voice": voice,
+        "speed": round(float(speed), 3),
+        "read_headings": bool(read_headings),
+        "enabled_modules": sorted(enabled_modules or []),
+    }
+    return hashlib.sha256(json.dumps(settings, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def list_projects() -> list[ProjectMetadata]:
@@ -65,10 +124,14 @@ def create_project(title: str, author: str = "") -> ProjectMetadata:
     project_id = str(uuid.uuid4())
     project_dir = _project_path(project_id)
     project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "source").mkdir(exist_ok=True)
+    (project_dir / "artifacts").mkdir(exist_ok=True)
+    (project_dir / "audio").mkdir(exist_ok=True)
     (project_dir / "voices").mkdir(exist_ok=True)
     (project_dir / "exports").mkdir(exist_ok=True)
 
-    meta = ProjectMetadata(id=project_id, title=title, author=author)
+    now = _utc_now()
+    meta = ProjectMetadata(id=project_id, title=title, author=author, created_at=now, updated_at=now)
     _save_metadata(meta)
     logger.info(f"Created project {project_id}: {title}")
     return meta
@@ -76,8 +139,17 @@ def create_project(title: str, author: str = "") -> ProjectMetadata:
 
 def update_project(project_id: str, updates: dict) -> ProjectMetadata:
     meta = get_project(project_id)
-    updated = meta.model_copy(update=updates)
+    clean_updates = {key: value for key, value in updates.items() if key not in {"id", "created_at"}}
+    tts_keys = {"tts_engine", "tts_voice", "tts_speed", "tts_read_headings", "enabled_modules"}
+    tts_settings_changed = any(
+        key in clean_updates and getattr(meta, key) != clean_updates[key]
+        for key in tts_keys
+    )
+    clean_updates["updated_at"] = _utc_now()
+    updated = meta.model_copy(update=clean_updates)
     _save_metadata(updated)
+    if tts_settings_changed:
+        mark_tts_stale_for_settings(project_id, updated)
     return updated
 
 
@@ -90,8 +162,7 @@ def delete_project(project_id: str):
 
 
 def _save_metadata(meta: ProjectMetadata):
-    with open(_metadata_path(meta.id), "w", encoding="utf-8") as f:
-        json.dump(meta.model_dump(), f, indent=4)
+    _write_json_atomic(_metadata_path(meta.id), meta.model_dump())
 
 
 # ── Chapter helpers ────────────────────────────────────────────────────────────
@@ -113,8 +184,116 @@ def load_chapters(project_id: str) -> list[dict]:
 
 
 def save_chapters(project_id: str, chapters: list[dict]):
-    with open(_chapters_path(project_id), "w", encoding="utf-8") as f:
-        json.dump(chapters, f, indent=4, ensure_ascii=False)
+    previous = load_chapters(project_id)
+    normalized = normalize_chapters(chapters, previous)
+    _write_json_atomic(_chapters_path(project_id), normalized)
+    if _metadata_path(project_id).exists():
+        update_project(project_id, {"chapter_count": len(normalized)})
+
+
+def update_chapter(project_id: str, chapter_id: str, updates: dict) -> dict:
+    chapters = load_chapters(project_id)
+    for index, chapter in enumerate(chapters):
+        if str(chapter.get("id", index)) == chapter_id:
+            allowed = {key: updates[key] for key in ("title", "text", "order") if key in updates}
+            chapters[index] = {**chapter, **allowed}
+            save_chapters(project_id, chapters)
+            return load_chapters(project_id)[index]
+    raise FileNotFoundError(f"Chapter '{chapter_id}' not found.")
+
+
+def normalize_chapters(chapters: list[dict], previous: list[dict] | None = None) -> list[dict]:
+    previous = previous or []
+    previous_by_id = {ch.get("id"): ch for ch in previous if ch.get("id")}
+    normalized = []
+    now = _utc_now()
+
+    for index, chapter in enumerate(chapters):
+        prior = previous_by_id.get(chapter.get("id")) or (previous[index] if index < len(previous) else {})
+        title = chapter.get("title") or f"Chapter {index + 1}"
+        text = chapter.get("text") or ""
+        text_hash = chapter_text_hash(title, text)
+        old_hash = prior.get("text_hash")
+        chapter_id = chapter.get("id") or prior.get("id") or str(uuid.uuid4())
+        tts = dict(chapter.get("tts") or prior.get("tts") or {})
+        legacy_audio_path = chapter.get("audio_path") or prior.get("audio_path")
+        if legacy_audio_path and not tts.get("audio_path"):
+            tts["audio_path"] = legacy_audio_path
+        if not tts.get("status"):
+            tts["status"] = "complete" if tts.get("audio_path") else "not_generated"
+        if not tts.get("text_hash") and tts.get("status") == "complete":
+            tts["text_hash"] = old_hash or text_hash
+        if old_hash and old_hash != text_hash:
+            if tts.get("audio_path"):
+                tts["status"] = "stale"
+                tts["error"] = None
+            else:
+                tts["status"] = "not_generated"
+        tts.setdefault("audio_path", None)
+        tts.setdefault("text_hash", None)
+        tts.setdefault("settings_hash", None)
+        tts.setdefault("engine", None)
+        tts.setdefault("voice", None)
+        tts.setdefault("updated_at", None)
+        tts.setdefault("error", None)
+
+        normalized.append({
+            **chapter,
+            "id": chapter_id,
+            "order": index + 1,
+            "title": title,
+            "text": text,
+            "text_hash": text_hash,
+            "updated_at": now if old_hash != text_hash else chapter.get("updated_at") or prior.get("updated_at") or now,
+            "tts": tts,
+            "audio_path": tts.get("audio_path"),
+        })
+    return normalized
+
+
+def chapter_audio_current(chapter: dict, settings_hash: str, project_id: str | None = None) -> bool:
+    tts = chapter.get("tts") or {}
+    audio_path = tts.get("audio_path")
+    if not (
+        tts.get("status") == "complete"
+        and tts.get("text_hash") == chapter.get("text_hash")
+        and tts.get("settings_hash") == settings_hash
+        and audio_path
+    ):
+        return False
+    if project_id is None:
+        return True
+    resolved = project_file(project_id, audio_path)
+    return bool(resolved and resolved.exists())
+
+
+def mark_tts_stale_for_settings(project_id: str, meta: ProjectMetadata):
+    chapters = load_chapters(project_id)
+    if not chapters:
+        return
+    current_settings_hash = tts_settings_hash(
+        engine=meta.tts_engine,
+        voice=meta.tts_voice,
+        speed=meta.tts_speed,
+        read_headings=meta.tts_read_headings,
+        enabled_modules=meta.enabled_modules,
+    )
+    changed = False
+    now = _utc_now()
+    for chapter in chapters:
+        tts = chapter.get("tts") or {}
+        if (
+            tts.get("audio_path")
+            and tts.get("status") == "complete"
+            and tts.get("settings_hash") != current_settings_hash
+        ):
+            tts["status"] = "stale"
+            tts["updated_at"] = now
+            tts["error"] = None
+            chapter["tts"] = tts
+            changed = True
+    if changed:
+        _write_json_atomic(_chapters_path(project_id), chapters)
 
 
 def load_cleaning_eval(project_id: str) -> dict | None:
@@ -126,8 +305,7 @@ def load_cleaning_eval(project_id: str) -> dict | None:
 
 
 def save_cleaning_eval(project_id: str, evaluation: dict):
-    with open(_cleaning_eval_path(project_id), "w", encoding="utf-8") as f:
-        json.dump(evaluation, f, indent=4, ensure_ascii=False)
+    _write_json_atomic(_cleaning_eval_path(project_id), evaluation)
 
 
 def auto_split_chapters(text: str) -> list[dict]:

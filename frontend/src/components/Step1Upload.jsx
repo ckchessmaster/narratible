@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { createProject, uploadPdf, parsePdf, cancelTask, pollTask, getParsingModules, getCleaningProfiles } from '../api'
 
-export default function Step1Upload({ projectId, setProjectId, onNext, toast, cudaEnabled = true, hasCloudKey = false, debugMode = false }) {
+export default function Step1Upload({ projectId, setProjectId, onNext, toast, cudaEnabled = true, hasCloudKey = false, debugMode = false, onProjectChanged }) {
   const [title, setTitle] = useState('')
   const [author, setAuthor] = useState('')
   const [cleaner, setCleaner] = useState('regex')
@@ -111,6 +111,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       const proj = await createProject(title.trim(), author.trim())
       setProjectId(proj.id)
       setCurrentProjId(proj.id)
+      onProjectChanged?.()
 
       setStatus('uploading')
       setProgress(6)
@@ -135,6 +136,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       setProgress(100)
       setFinalTime(timeElapsed)
       toast('PDF parsed successfully!', 'success')
+      onProjectChanged?.()
       setTimeout(onNext, 600)
     } catch (e) {
       setStatus(null)

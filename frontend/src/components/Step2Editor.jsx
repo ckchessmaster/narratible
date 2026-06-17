@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { getProject, updateProject, getChapters, saveChapters, uploadCover, getDebugChapters, getDebugPrompt, getCleaningEval, saveCleaningEval, getCleaningProfiles, redoCleaningChunk, applyCleaningVariant, batchRedoCleaning, getCleaningReport } from '../api'
 
 export default function Step2Editor({ projectId, isActive, onNext, onBack, toast, debugMode = false }) {
@@ -6,6 +6,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   const [chapters, setChapters] = useState([])
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [saving, setSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState('saved')
   const [loading, setLoading] = useState(true)
   const [debugComparison, setDebugComparison] = useState(null)
   const [showHeuristic, setShowHeuristic] = useState(false)
@@ -21,6 +22,8 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   const [showPromptModal, setShowPromptModal] = useState(false)
   const coverRef = useRef()
   const textareaRef = useRef()
+  const dirtyRef = useRef(false)
+  const dirtyVersionRef = useRef(0)
 
   useEffect(() => {
     if (!projectId) {
@@ -33,6 +36,9 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
       setCleaningEval(null)
       setComparison(null)
       setCleaningReport(null)
+      setSaveStatus('saved')
+      dirtyRef.current = false
+      dirtyVersionRef.current = 0
       /* eslint-enable react-hooks/set-state-in-effect */
       return
     }
@@ -54,14 +60,29 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
         setDebugPrompt(prompt ?? null)
         setCleaningEval(evalReport ?? null)
         setCleaningProfiles(profiles ?? [])
+        setSaveStatus('saved')
+        dirtyRef.current = false
+        dirtyVersionRef.current = 0
         if (!dbg) setShowHeuristic(false)
       })
       .catch(e => toast(e.message, 'error'))
       .finally(() => setLoading(false))
   }, [projectId, isActive, toast, debugMode])
 
+  const markDirty = useCallback(() => {
+    dirtyRef.current = true
+    dirtyVersionRef.current += 1
+    setSaveStatus('dirty')
+  }, [])
+
   const updateChapter = (idx, field, value) => {
+    markDirty()
     setChapters(prev => prev.map((ch, i) => i === idx ? { ...ch, [field]: value } : ch))
+  }
+
+  const updateMeta = (updates) => {
+    markDirty()
+    setMeta(prev => ({ ...prev, ...updates }))
   }
 
   const reindexChapterEvals = (chapterEvals) => chapterEvals
@@ -92,6 +113,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   }
 
   const syncCleaningEvalAfterDelete = (deletedIndex) => {
+    markDirty()
     setCleaningEval(prev => {
       if (!prev?.chapters?.length) return prev
       const targetIndex = deletedIndex === 0 ? 1 : deletedIndex - 1
@@ -109,6 +131,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   }
 
   const syncCleaningEvalAfterMove = (idx, next) => {
+    markDirty()
     setCleaningEval(prev => {
       if (!prev?.chapters?.length) return prev
       return {
@@ -125,6 +148,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   }
 
   const syncCleaningEvalAfterSplit = (splitIndex) => {
+    markDirty()
     setCleaningEval(prev => {
       if (!prev?.chapters?.length) return prev
       return {
@@ -186,26 +210,44 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     const updated = [...chapters]
     updated[selectedIdx] = { ...ch, text: before }
     updated.splice(selectedIdx + 1, 0, { title: `${ch.title} (cont.)`, text: after, audio_path: null })
+    markDirty()
     setChapters(updated)
     syncCleaningEvalAfterSplit(selectedIdx)
     toast('Chapter split at cursor.', 'success')
   }
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async (showToast = true) => {
+    const saveVersion = dirtyVersionRef.current
     setSaving(true)
+    setSaveStatus('saving')
     try {
       await Promise.all([
         saveChapters(projectId, chapters),
         updateProject(projectId, { title: meta.title, author: meta.author }),
         cleaningEval ? saveCleaningEval(projectId, cleaningEval) : Promise.resolve(),
       ])
-      toast('Saved!', 'success')
+      if (dirtyVersionRef.current === saveVersion) {
+        dirtyRef.current = false
+        setSaveStatus('saved')
+      } else {
+        setSaveStatus('dirty')
+      }
+      if (showToast) toast('Saved!', 'success')
     } catch (e) {
+      setSaveStatus('failed')
       toast(e.message, 'error')
     } finally {
       setSaving(false)
     }
-  }
+  }, [projectId, chapters, meta.title, meta.author, cleaningEval, toast])
+
+  useEffect(() => {
+    if (!projectId || !isActive || !dirtyRef.current || saveStatus !== 'dirty') return
+    const timer = setTimeout(() => {
+      if (dirtyRef.current) handleSave(false)
+    }, 1200)
+    return () => clearTimeout(timer)
+  }, [projectId, isActive, saveStatus, chapters, meta, cleaningEval, handleSave])
 
   const handleCoverUpload = async (e) => {
     const f = e.target.files[0]
@@ -213,6 +255,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     try {
       const res = await uploadCover(projectId, f)
       setMeta(m => ({ ...m, cover_image: res.cover_image }))
+      setSaveStatus('saved')
       toast('Cover uploaded!', 'success')
     } catch (e) {
       toast(e.message, 'error')
@@ -231,6 +274,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     try {
       const res = await redoCleaningChunk(projectId, chapterIndex, chunk.chunk_id, retryProfile)
       setCleaningEval(res.evaluation)
+      markDirty()
       setComparison({ chapter_index: chapterIndex, chunk: { ...res.chunk, chapter_index: chapterIndex }, variant: res.variant })
       toast('Chunk retry complete.', 'success')
     } catch (e) {
@@ -263,6 +307,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
       const payload = chunks.map(chunk => ({ chapter_index: chunk.chapter_index ?? selectedIdx, chunk_id: chunk.chunk_id }))
       const res = await batchRedoCleaning(projectId, payload, retryProfile)
       setCleaningEval(res.evaluation)
+      markDirty()
       const failed = res.results?.filter(result => !result.ok)?.length ?? 0
       toast(failed ? `Batch retry finished with ${failed} issue(s).` : `Retried ${payload.length} chunk(s).`, failed ? 'warning' : 'success')
     } catch (e) {
@@ -285,6 +330,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
         false,
       )
       setCleaningEval(applyResult.evaluation)
+      markDirty()
     } catch (e) {
       toast(e.message, 'error')
       return
@@ -328,6 +374,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
       }
       setCleaningEval(latestEval)
       updateChapter(chapterIndex, 'text', updatedChapterText)
+      markDirty()
       toast(`Applied ${lowRisk.length} low-risk candidate(s). Save to keep them.`, 'success')
     } catch (e) {
       toast(e.message, 'error')
@@ -375,6 +422,9 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           <div className="step-desc">{chapters.length} chapter{chapters.length !== 1 ? 's' : ''} · Click a chapter to edit</div>
         </div>
         <div className="flex gap-2">
+          <span className={`save-status save-status-${saveStatus}`}>
+            {saving ? 'Saving...' : saveStatus === 'dirty' ? 'Unsaved changes' : saveStatus === 'failed' ? 'Save failed' : 'Saved'}
+          </span>
           {debugPrompt && (
             <button className="btn btn-ghost btn-sm" onClick={() => setShowPromptModal(true)} title="View prompt sent to LLM">
               🔬 View Prompt
@@ -632,11 +682,11 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
 
           <div className="field">
             <label>Title</label>
-            <input type="text" value={meta.title} onChange={e => setMeta(m => ({ ...m, title: e.target.value }))} autoComplete="off" />
+            <input type="text" value={meta.title} onChange={e => updateMeta({ title: e.target.value })} autoComplete="off" />
           </div>
           <div className="field">
             <label>Author</label>
-            <input type="text" value={meta.author} onChange={e => setMeta(m => ({ ...m, author: e.target.value }))} autoComplete="off" />
+            <input type="text" value={meta.author} onChange={e => updateMeta({ author: e.target.value })} autoComplete="off" />
           </div>
 
           <div className="field">

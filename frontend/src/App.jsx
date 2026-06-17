@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import { cancelTask, getSystemInfo, getSettings } from './api'
+import { cancelTask, getSystemInfo, getSettings, listProjects } from './api'
 import './App.css'
 import './index.css'
 import Step1Upload from './components/Step1Upload'
@@ -18,6 +18,13 @@ const STEPS = [
   { label: 'Export' },
 ]
 
+const STEP_BY_STATUS = {
+  upload: 1,
+  edit: 2,
+  voice: 3,
+  export: 4,
+}
+
 export default function App() {
   const [step, setStep] = useState(1)
   const [maxStep, setMaxStep] = useState(1)
@@ -29,6 +36,8 @@ export default function App() {
   const [cudaEnabled, setCudaEnabled] = useState(true)
   const [hasCloudKey, setHasCloudKey] = useState(false)
   const [debugMode, setDebugMode] = useState(false)
+  const [projects, setProjects] = useState([])
+  const [projectsLoading, setProjectsLoading] = useState(false)
   const { getActiveTips, dismiss, disableAll } = useTips()
   const wizardTips = getActiveTips(t => t.context === 'wizard' && t.step === step)
   const voiceLibraryTips = getActiveTips(t => t.context === 'voice-library')
@@ -48,6 +57,19 @@ export default function App() {
   // Fetch on mount
   useEffect(() => { refreshHardwareState() }, [refreshHardwareState])
 
+  const refreshProjects = useCallback(() => {
+    setProjectsLoading(true)
+    listProjects()
+      .then(items => setProjects((items ?? []).slice().sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))))
+      .catch(() => {})
+      .finally(() => setProjectsLoading(false))
+  }, [])
+
+  useEffect(() => {
+    const timer = setTimeout(refreshProjects, 0)
+    return () => clearTimeout(timer)
+  }, [refreshProjects])
+
   const toast = useCallback((message, type = 'info') => {
     const id = Date.now()
     setToasts(t => [...t, { id, message, type }])
@@ -56,6 +78,13 @@ export default function App() {
 
   const next = () => setStep(s => { const n = Math.min(s + 1, 4); setMaxStep(m => Math.max(m, n)); return n })
   const back = () => setStep(s => Math.max(s - 1, 1))
+  const resumeProject = (project) => {
+    const resumeStep = STEP_BY_STATUS[project.current_step] || (project.chapter_count ? 2 : 1)
+    setProjectId(project.id)
+    setStep(resumeStep)
+    setMaxStep(Math.max(resumeStep, project.chapter_count ? 2 : 1))
+    setView('wizard')
+  }
 
   return (
     <div className="app">
@@ -118,6 +147,30 @@ export default function App() {
           />
         ) : (
           <>
+            {!projectId && step === 1 && (
+              <section className="resume-panel" data-tip-anchor="resume-projects">
+                <div>
+                  <div className="step-title">Start or resume</div>
+                  <div className="step-desc">Pick up an existing project without re-running completed parsing, cleanup, or TTS work.</div>
+                </div>
+                {projectsLoading ? (
+                  <div className="text-sm text-muted">Loading projects…</div>
+                ) : projects.length ? (
+                  <div className="resume-grid">
+                    {projects.slice(0, 6).map(project => (
+                      <button key={project.id} type="button" className="resume-card glass-hover" onClick={() => resumeProject(project)}>
+                        <span className="resume-title">{project.title}</span>
+                        <span className="resume-meta">
+                          {project.author || 'Unknown author'} · {project.chapter_count || 0} chapter{project.chapter_count === 1 ? '' : 's'} · {project.current_step || 'upload'}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted">No saved projects yet. Create one below.</div>
+                )}
+              </section>
+            )}
             <div style={{ display: step === 1 ? 'block' : 'none' }}>
               <Step1Upload
                 projectId={projectId}
@@ -128,6 +181,7 @@ export default function App() {
                 cudaEnabled={cudaEnabled}
                 hasCloudKey={hasCloudKey}
                 debugMode={debugMode}
+                onProjectChanged={refreshProjects}
               />
             </div>
             <div style={{ display: step === 2 ? 'block' : 'none' }}>
@@ -183,4 +237,3 @@ export default function App() {
     </div>
   )
 }
-

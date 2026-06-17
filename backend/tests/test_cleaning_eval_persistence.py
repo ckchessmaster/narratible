@@ -34,7 +34,12 @@ def test_cleaning_eval_round_trips_outside_chapters_json(tmp_path, monkeypatch):
     projects.save_chapters(project_id, chapters)
     projects.save_cleaning_eval(project_id, evaluation)
 
-    assert projects.load_chapters(project_id) == chapters
+    loaded_chapters = projects.load_chapters(project_id)
+    assert loaded_chapters[0]["title"] == chapters[0]["title"]
+    assert loaded_chapters[0]["text"] == chapters[0]["text"]
+    assert loaded_chapters[0]["audio_path"] is None
+    assert loaded_chapters[0]["id"]
+    assert loaded_chapters[0]["text_hash"]
     assert projects.load_cleaning_eval(project_id) == evaluation
     assert (project_dir / "chapters.json").exists()
     assert (project_dir / "cleaning_eval.json").exists()
