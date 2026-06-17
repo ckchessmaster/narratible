@@ -3,6 +3,7 @@ import shutil
 import os
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 import psutil
 
@@ -24,10 +25,12 @@ from .projects import (
     delete_project,
     load_chapters,
     save_chapters,
+    load_cleaning_eval,
+    save_cleaning_eval,
     _project_path,
 )
 from .parser import extract_structured_from_pdf
-from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters
+from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters, list_cleaning_profiles, get_cleaning_profile
 from .parsing_modules import list_modules, apply_modules, normalize_module_ids
 from .tts import synthesize_speech, get_available_voices, compose_tts_text
 from .tts_text import prepare_text_for_tts, segment_text_for_tts
@@ -264,6 +267,27 @@ class LLMFamily(BaseModel):
     variants: list[LLMVariant]
 
 
+class RedoCleaningRequest(BaseModel):
+    cleaning_profile: str = "balanced"
+    provider: str | None = None
+
+
+class ApplyVariantRequest(BaseModel):
+    variant_id: str
+    apply_to_chapter_text: bool = False
+
+
+class BatchRedoChunkRequest(BaseModel):
+    chapter_index: int
+    chunk_id: int
+
+
+class BatchRedoCleaningRequest(BaseModel):
+    chunks: list[BatchRedoChunkRequest]
+    cleaning_profile: str = "balanced"
+    provider: str | None = None
+
+
 @app.get("/api/gemini/models")
 async def list_gemini_models(api_key: str = None):
     """Return Gemini models that support generateContent, using the provided or configured API key."""
@@ -400,8 +424,9 @@ async def upload_pdf(project_id: str, file: UploadFile = File(...)):
     return {"message": "PDF uploaded successfully.", "path": str(dest)}
 
 
-def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] | None = None):
+def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] | None = None, cleaning_profile: str = "safe"):
     modules = normalize_module_ids(modules)
+    profile = get_cleaning_profile(cleaning_profile)
     try:
         meta = update_project(project_id, {"enabled_modules": modules})
         _set_task(task_id, "running", "Reading PDF…", 10, stage="Extracting text")
@@ -484,6 +509,15 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
 
         cleaned_chapters = []
         full_cleaned_text = ""
+        cleaning_eval = {
+            "version": 1,
+            "project_id": project_id,
+            "cleaner": cleaner,
+            "profile": profile.id if cleaner in ("llm", "embedded") else "heuristic",
+            "provider": None,
+            "modules": modules,
+            "chapters": [],
+        }
         
         if cleaner in ("llm", "embedded"):
             if cleaner == "embedded":
@@ -498,6 +532,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                 else:
                     # "none" or unconfigured — fall back to key-based detection
                     provider = "gemini" if cfg.gemini_api_key else "openai"
+            cleaning_eval["provider"] = provider
                 
             def _cancel_check():
                 t = _get_task(task_id)
@@ -520,23 +555,42 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                         # We just append whatever token/text we received directly
                         _set_task(task_id, "running", append_output=chunk_text)
 
-                    cleaned_ch_text = llm_clean_text(
-                        regex_clean_text(
-                            ch["raw_text"],
-                            known_titles=[meta.title, ch_title],
-                        ),
+                    cleaned_result = llm_clean_text(
+                        ch["raw_text"],
                         provider=provider, 
                         progress_callback=_progress_cb, 
                         cancel_check=_cancel_check, 
-                        output_callback=_output_cb
+                        output_callback=_output_cb,
+                        known_titles=[meta.title, ch_title],
+                        cleaning_profile=profile.id,
+                        return_evaluation=True,
                     )
+                    cleaned_ch_text, chapter_eval = cleaned_result
+                    chapter_eval = {
+                        "chapter_index": i,
+                        "title": ch_title,
+                        **chapter_eval,
+                    }
+                    cleaning_eval["chapters"].append(chapter_eval)
+
+                    warnings = list(ch.get("warnings", []))
+                    fallback_count = chapter_eval.get("fallback_count", 0)
+                    if fallback_count:
+                        warnings.append(f"{fallback_count} LLM cleaning chunk(s) fell back to heuristic text")
+                    review_count = sum(
+                        1
+                        for chunk_eval in chapter_eval.get("chunks", [])
+                        if chunk_eval.get("recommended_action") == "review" or chunk_eval.get("risk_level") == "high"
+                    )
+                    if review_count and review_count != fallback_count:
+                        warnings.append(f"{review_count} cleaning chunk(s) need review")
                     
                     cleaned_chapters.append({
                         "title": ch_title,
                         "text": cleaned_ch_text,
                         "audio_path": None,
                         "confidence": ch.get("confidence", 1.0),
-                        "warnings": ch.get("warnings", [])
+                        "warnings": warnings,
                     })
                     full_cleaned_text += cleaned_ch_text + "\n\n"
             except InterruptedError:
@@ -564,6 +618,8 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                     "warnings": ch.get("warnings", [])
                 })
                 full_cleaned_text += cleaned_txt + "\n\n"
+
+        save_cleaning_eval(project_id, cleaning_eval)
 
         # Unload the LLM from VRAM *after* all chapters are done parsing.
         # Covers any path that may have loaded the embedded model — full embedded
@@ -606,6 +662,7 @@ async def parse_pdf(
     background_tasks: BackgroundTasks,
     cleaner: str = "regex",
     modules: list[str] = Query(default=[]),
+    cleaning_profile: str = "safe",
 ):
     try:
         get_project(project_id)
@@ -614,8 +671,13 @@ async def parse_pdf(
 
     task_id = f"parse-{project_id}"
     _set_task(task_id, "running", "Queued…", 0, stage="Queued")
-    background_tasks.add_task(_run_parse, project_id, task_id, cleaner, modules)
+    background_tasks.add_task(_run_parse, project_id, task_id, cleaner, modules, cleaning_profile)
     return {"task_id": task_id}
+
+
+@app.get("/api/cleaning-profiles")
+async def get_cleaning_profiles():
+    return list_cleaning_profiles()
 
 
 @app.get("/api/parsing-modules")
@@ -641,6 +703,253 @@ async def get_debug_prompt(project_id: str):
     import json as _json
     with open(prompt_file, "r", encoding="utf-8") as f:
         return _json.load(f)
+
+
+@app.get("/api/projects/{project_id}/cleaning-eval")
+async def get_project_cleaning_eval(project_id: str):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return load_cleaning_eval(project_id)
+
+
+@app.put("/api/projects/{project_id}/cleaning-eval")
+async def update_project_cleaning_eval(project_id: str, evaluation: dict):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    evaluation["project_id"] = project_id
+    save_cleaning_eval(project_id, evaluation)
+    return evaluation
+
+
+def _find_eval_chunk(evaluation: dict, chapter_index: int, chunk_id: int) -> tuple[dict, dict]:
+    chapters_eval = evaluation.get("chapters") or []
+    chapter_eval = next((ch for ch in chapters_eval if ch.get("chapter_index") == chapter_index), None)
+    if chapter_eval is None:
+        raise HTTPException(status_code=404, detail="No cleaning evaluation is available for this chapter.")
+
+    chunks = chapter_eval.get("chunks") or []
+    chunk_eval = next((chunk for chunk in chunks if chunk.get("chunk_id") == chunk_id), None)
+    if chunk_eval is None:
+        raise HTTPException(status_code=404, detail="No cleaning evaluation is available for this chunk.")
+    return chapter_eval, chunk_eval
+
+
+def _run_chunk_redo(evaluation: dict, chapter_index: int, chunk_id: int, cleaning_profile: str, provider: str | None = None) -> dict:
+    chapter_eval, chunk_eval = _find_eval_chunk(evaluation, chapter_index, chunk_id)
+    retry_provider = provider or chapter_eval.get("provider") or evaluation.get("provider")
+    if not retry_provider:
+        raise HTTPException(status_code=400, detail="No LLM provider is available for this cleaning run.")
+
+    source_text = chunk_eval.get("source_text") or chunk_eval.get("accepted_text") or ""
+    if not source_text.strip():
+        raise HTTPException(status_code=400, detail="This chunk has no source text to retry.")
+
+    cleaned_text, retry_eval = llm_clean_text(
+        source_text,
+        provider=retry_provider,
+        cleaning_profile=cleaning_profile,
+        known_titles=[chapter_eval.get("title", "")],
+        return_evaluation=True,
+    )
+    retry_chunks = retry_eval.get("chunks") or []
+    if not retry_chunks:
+        raise HTTPException(status_code=400, detail="Retry used heuristic fallback because the provider is not configured.")
+
+    retry_chunk = retry_chunks[0]
+    variant = {
+        "variant_id": f"{chunk_id}-{len(chunk_eval.get('variants') or []) + 1}",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "provider": retry_provider,
+        "profile": retry_eval.get("profile"),
+        "status": retry_chunk.get("status"),
+        "candidate_text": retry_chunk.get("candidate_text", ""),
+        "accepted_text": cleaned_text,
+        "notes_text": retry_chunk.get("notes_text", ""),
+        "integrity_issues": retry_chunk.get("integrity_issues", []),
+        "metrics": retry_chunk.get("metrics", {}),
+        "risk_level": retry_chunk.get("risk_level", "medium"),
+        "risk_reasons": retry_chunk.get("risk_reasons", []),
+        "recommended_action": retry_chunk.get("recommended_action", "review"),
+    }
+    chunk_eval.setdefault("variants", []).append(variant)
+    return {"chapter": chapter_eval, "chunk": chunk_eval, "variant": variant}
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_index}/chunks/{chunk_id}/redo-cleaning")
+async def redo_cleaning_chunk(project_id: str, chapter_index: int, chunk_id: int, req: RedoCleaningRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    evaluation = load_cleaning_eval(project_id)
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No cleaning evaluation is available for this project.")
+
+    result = _run_chunk_redo(evaluation, chapter_index, chunk_id, req.cleaning_profile, req.provider)
+    save_cleaning_eval(project_id, evaluation)
+
+    return {"evaluation": evaluation, "chunk": result["chunk"], "variant": result["variant"]}
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_index}/chunks/{chunk_id}/apply-variant")
+async def apply_cleaning_variant(project_id: str, chapter_index: int, chunk_id: int, req: ApplyVariantRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    evaluation = load_cleaning_eval(project_id)
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No cleaning evaluation is available for this project.")
+
+    _, chunk_eval = _find_eval_chunk(evaluation, chapter_index, chunk_id)
+    variants = chunk_eval.get("variants") or []
+    variant = next((item for item in variants if item.get("variant_id") == req.variant_id), None)
+    if variant is None:
+        raise HTTPException(status_code=404, detail="Variant not found for this chunk.")
+
+    replacement_text = variant.get("accepted_text") or variant.get("candidate_text") or ""
+    if not replacement_text.strip():
+        raise HTTPException(status_code=400, detail="Variant has no text to apply.")
+
+    previous_text = chunk_eval.get("accepted_text") or chunk_eval.get("source_text") or ""
+    source_text = chunk_eval.get("source_text") or ""
+    applied_at = datetime.now(timezone.utc).isoformat()
+    for item in variants:
+        item["is_applied"] = item.get("variant_id") == req.variant_id
+        if not item["is_applied"]:
+            item.pop("applied_at", None)
+    variant["applied_at"] = applied_at
+    chunk_eval["applied_variant_id"] = req.variant_id
+    chunk_eval["applied_at"] = applied_at
+    chunk_eval["accepted_text"] = replacement_text
+
+    chapter_text_updated = False
+    if req.apply_to_chapter_text:
+        chapters = load_chapters(project_id)
+        if chapter_index >= len(chapters):
+            raise HTTPException(status_code=404, detail="Chapter not found.")
+        current_chapter_text = chapters[chapter_index].get("text", "")
+        if previous_text and previous_text in current_chapter_text:
+            chapters[chapter_index]["text"] = current_chapter_text.replace(previous_text, replacement_text, 1)
+            save_chapters(project_id, chapters)
+            chapter_text_updated = True
+        elif source_text and source_text in current_chapter_text:
+            chapters[chapter_index]["text"] = current_chapter_text.replace(source_text, replacement_text, 1)
+            save_chapters(project_id, chapters)
+            chapter_text_updated = True
+        else:
+            raise HTTPException(status_code=409, detail="Could not find the original chunk text in the chapter. Apply it in the editor instead.")
+
+    save_cleaning_eval(project_id, evaluation)
+
+    return {
+        "evaluation": evaluation,
+        "chunk": chunk_eval,
+        "variant": variant,
+        "replacement_text": replacement_text,
+        "previous_text": previous_text,
+        "chapter_text_updated": chapter_text_updated,
+    }
+
+
+@app.post("/api/projects/{project_id}/batch-redo-cleaning")
+async def batch_redo_cleaning(project_id: str, req: BatchRedoCleaningRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    evaluation = load_cleaning_eval(project_id)
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No cleaning evaluation is available for this project.")
+
+    results = []
+    for item in req.chunks:
+        try:
+            redo = _run_chunk_redo(evaluation, item.chapter_index, item.chunk_id, req.cleaning_profile, req.provider)
+            results.append({
+                "chapter_index": item.chapter_index,
+                "chunk_id": item.chunk_id,
+                "ok": True,
+                "variant": redo["variant"],
+            })
+        except HTTPException as exc:
+            results.append({
+                "chapter_index": item.chapter_index,
+                "chunk_id": item.chunk_id,
+                "ok": False,
+                "error": exc.detail,
+            })
+
+    save_cleaning_eval(project_id, evaluation)
+    return {"evaluation": evaluation, "results": results}
+
+
+@app.get("/api/projects/{project_id}/cleaning-report")
+async def get_cleaning_report(project_id: str):
+    try:
+        meta = get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    evaluation = load_cleaning_eval(project_id)
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No cleaning evaluation is available for this project.")
+
+    chapter_summaries = []
+    total_chunks = 0
+    total_fallbacks = 0
+    risk_counts = {"low": 0, "medium": 0, "high": 0}
+    applied_variants = 0
+    top_warnings = []
+
+    for chapter in evaluation.get("chapters") or []:
+        chunks = chapter.get("chunks") or []
+        total_chunks += len(chunks)
+        total_fallbacks += chapter.get("fallback_count", 0) or 0
+        chapter_risk_counts = {"low": 0, "medium": 0, "high": 0}
+        for chunk in chunks:
+            risk = chunk.get("risk_level", "medium")
+            risk_counts[risk] = risk_counts.get(risk, 0) + 1
+            chapter_risk_counts[risk] = chapter_risk_counts.get(risk, 0) + 1
+            for variant in chunk.get("variants") or []:
+                if variant.get("is_applied"):
+                    applied_variants += 1
+            if chunk.get("integrity_issues"):
+                top_warnings.append({
+                    "chapter_index": chapter.get("chapter_index"),
+                    "chunk_id": chunk.get("chunk_id"),
+                    "issues": chunk.get("integrity_issues"),
+                })
+        chapter_summaries.append({
+            "chapter_index": chapter.get("chapter_index"),
+            "title": chapter.get("title"),
+            "chunk_count": len(chunks),
+            "fallback_count": chapter.get("fallback_count", 0),
+            "accepted_count": chapter.get("accepted_count", 0),
+            "risk_counts": chapter_risk_counts,
+        })
+
+    return {
+        "project": {"id": meta.id, "title": meta.title, "author": meta.author},
+        "profile": evaluation.get("profile"),
+        "provider": evaluation.get("provider"),
+        "cleaner": evaluation.get("cleaner"),
+        "total_chunks": total_chunks,
+        "total_fallbacks": total_fallbacks,
+        "fallback_rate": total_fallbacks / total_chunks if total_chunks else 0,
+        "risk_counts": risk_counts,
+        "applied_variants": applied_variants,
+        "chapters": chapter_summaries,
+        "top_warnings": top_warnings[:10],
+    }
 
 
 # ── Chapters ──────────────────────────────────────────────────────────────────

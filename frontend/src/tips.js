@@ -32,6 +32,11 @@ export const TIPS = [
     body: 'Heuristic is fast and offline. LLM gives the best quality (needs a key). Embedded runs locally on your GPU.',
   },
   {
+    id: 'w1-cleanup-profile', context: 'wizard', step: 1, anchor: 'cleanup-profile', placement: 'top',
+    title: 'Choose cleanup strictness',
+    body: 'Conservative preserves text most strictly. Balanced repairs more OCR damage. Restorative is best for chunks you plan to review.',
+  },
+  {
     id: 'w1-parsing-modules', context: 'wizard', step: 1, anchor: 'parsing-modules', placement: 'top',
     title: 'Reading enhancements',
     body: 'Optional add-ons that rewrite text so it reads correctly. The Bible expander turns references like “Ps 1:4” into “Psalms 1:4”.',
@@ -57,6 +62,11 @@ export const TIPS = [
     id: 'w2-meta', context: 'wizard', step: 2, anchor: 'metadata-sidebar', placement: 'left',
     title: 'Metadata & cover',
     body: 'Set the title/author and upload a cover image. Your edits auto-save when you click Continue.',
+  },
+  {
+    id: 'w2-cleaning-review', context: 'wizard', step: 2, anchor: 'cleaning-review', placement: 'left',
+    title: 'Review cleaning decisions',
+    body: 'See which chunks the LLM accepted, which fell back to heuristic text, and why a chunk needs review.',
   },
 
   // ── Wizard · Step 3 (Voice) ───────────────────────────────────────────

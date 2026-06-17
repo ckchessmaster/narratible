@@ -50,12 +50,13 @@ export const uploadPdf = (projectId, file) => {
   return request('POST', `/projects/${projectId}/upload-pdf`, fd, true)
 }
 
-export const parsePdf = (projectId, cleaner = 'regex', modules = []) => {
+export const parsePdf = (projectId, cleaner = 'regex', modules = [], cleaningProfile = 'safe') => {
   const moduleParams = modules.map(m => `&modules=${encodeURIComponent(m)}`).join('')
-  return request('POST', `/projects/${projectId}/parse?cleaner=${cleaner}${moduleParams}`)
+  return request('POST', `/projects/${projectId}/parse?cleaner=${cleaner}&cleaning_profile=${encodeURIComponent(cleaningProfile)}${moduleParams}`)
 }
 
 export const getParsingModules = () => request('GET', '/parsing-modules')
+export const getCleaningProfiles = () => request('GET', '/cleaning-profiles')
 
 export const cancelTask = (projectId) => request('POST', `/projects/${projectId}/cancel`)
 
@@ -64,6 +65,15 @@ export const getChapters = (id) => request('GET', `/projects/${id}/chapters`)
 export const saveChapters = (id, chapters) => request('PUT', `/projects/${id}/chapters`, chapters)
 export const getDebugChapters = (id) => request('GET', `/projects/${id}/debug-chapters`)
 export const getDebugPrompt = (id) => request('GET', `/projects/${id}/debug-prompt`)
+export const getCleaningEval = (id) => request('GET', `/projects/${id}/cleaning-eval`)
+export const saveCleaningEval = (id, evaluation) => request('PUT', `/projects/${id}/cleaning-eval`, evaluation)
+export const redoCleaningChunk = (id, chapterIndex, chunkId, cleaningProfile = 'balanced', provider = null) =>
+  request('POST', `/projects/${id}/chapters/${chapterIndex}/chunks/${chunkId}/redo-cleaning`, { cleaning_profile: cleaningProfile, provider })
+export const applyCleaningVariant = (id, chapterIndex, chunkId, variantId, applyToChapterText = false) =>
+  request('POST', `/projects/${id}/chapters/${chapterIndex}/chunks/${chunkId}/apply-variant`, { variant_id: variantId, apply_to_chapter_text: applyToChapterText })
+export const batchRedoCleaning = (id, chunks, cleaningProfile = 'balanced', provider = null) =>
+  request('POST', `/projects/${id}/batch-redo-cleaning`, { chunks, cleaning_profile: cleaningProfile, provider })
+export const getCleaningReport = (id) => request('GET', `/projects/${id}/cleaning-report`)
 
 // Cover
 export const uploadCover = (projectId, file) => {

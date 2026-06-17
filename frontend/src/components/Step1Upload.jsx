@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
-import { createProject, uploadPdf, parsePdf, cancelTask, pollTask, getParsingModules } from '../api'
+import { createProject, uploadPdf, parsePdf, cancelTask, pollTask, getParsingModules, getCleaningProfiles } from '../api'
 
 export default function Step1Upload({ projectId, setProjectId, onNext, toast, cudaEnabled = true, hasCloudKey = false, debugMode = false }) {
   const [title, setTitle] = useState('')
   const [author, setAuthor] = useState('')
   const [cleaner, setCleaner] = useState('regex')
+  const [cleaningProfile, setCleaningProfile] = useState('safe')
+  const [cleaningProfiles, setCleaningProfiles] = useState([])
   const [parsingModules, setParsingModules] = useState([])
   const [enabledModules, setEnabledModules] = useState([])
   const [file, setFile] = useState(null)
@@ -64,6 +66,9 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
     getParsingModules()
       .then(mods => setParsingModules(mods ?? []))
       .catch(e => console.warn('Failed to load parsing modules', e))
+    getCleaningProfiles()
+      .then(profiles => setCleaningProfiles(profiles ?? []))
+      .catch(e => console.warn('Failed to load cleaning profiles', e))
   }, [])
 
   const toggleModule = (id) => {
@@ -117,7 +122,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       setProgress(9)
       setProgressStage('Starting parse')
       setProgressMsg('Starting parse…')
-      const { task_id } = await parsePdf(proj.id, cleaner, enabledModules)
+      const { task_id } = await parsePdf(proj.id, cleaner, enabledModules, cleaningProfile)
 
       await pollTask(task_id, (t) => {
         setProgress(t.progress)
@@ -340,6 +345,30 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
             )}
           </div>
         </div>
+
+        {cleaner !== 'regex' && cleaningProfiles.length > 0 && (
+          <div className="field mt-4" data-tip-anchor="cleanup-profile">
+            <label>LLM Cleaning Profile</label>
+            <div className="flex gap-2 mt-1" style={{ flexWrap: 'wrap' }}>
+              {cleaningProfiles.map(profile => (
+                <button
+                  key={profile.id}
+                  type="button"
+                  className={`btn btn-sm ${cleaningProfile === profile.id ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => !busy && setCleaningProfile(profile.id)}
+                  disabled={busy}
+                  title={profile.description}
+                  style={{ flex: 1, minWidth: 130, justifyContent: 'center' }}
+                >
+                  {profile.label}
+                </button>
+              ))}
+            </div>
+            <div className="text-xs text-muted mt-2">
+              {cleaningProfiles.find(profile => profile.id === cleaningProfile)?.description}
+            </div>
+          </div>
+        )}
 
         {/* Parsing modules */}
         {parsingModules.length > 0 && (

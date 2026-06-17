@@ -100,6 +100,10 @@ def _chapters_path(project_id: str) -> Path:
     return _project_path(project_id) / "chapters.json"
 
 
+def _cleaning_eval_path(project_id: str) -> Path:
+    return _project_path(project_id) / "cleaning_eval.json"
+
+
 def load_chapters(project_id: str) -> list[dict]:
     path = _chapters_path(project_id)
     if not path.exists():
@@ -111,6 +115,19 @@ def load_chapters(project_id: str) -> list[dict]:
 def save_chapters(project_id: str, chapters: list[dict]):
     with open(_chapters_path(project_id), "w", encoding="utf-8") as f:
         json.dump(chapters, f, indent=4, ensure_ascii=False)
+
+
+def load_cleaning_eval(project_id: str) -> dict | None:
+    path = _cleaning_eval_path(project_id)
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_cleaning_eval(project_id: str, evaluation: dict):
+    with open(_cleaning_eval_path(project_id), "w", encoding="utf-8") as f:
+        json.dump(evaluation, f, indent=4, ensure_ascii=False)
 
 
 def auto_split_chapters(text: str) -> list[dict]:
