@@ -55,6 +55,16 @@ npm run dev       # starts Vite dev server on http://localhost:5173
 
 Then open **http://localhost:5173** in your browser.
 
+### MCP server for agents
+
+The backend exposes an MCP server for local agents while it is running:
+
+- Streamable HTTP endpoint: `http://localhost:8000/mcp`
+- Stdio entry point: `cd backend && .venv\Scripts\python.exe -m app.mcp_server`
+
+Current MCP tools include project/task inspection plus `tail_logs` and `watch_logs`
+for reading live backend logs.
+
 ---
 
 ## Docker
@@ -109,4 +119,3 @@ For better text extraction from complex PDFs, add an API key in **⚙ Settings**
 
 ### Optional: Audiobookshelf Upload
 Configure your server URL and API token in **⚙ Settings** to upload finished books directly.
-

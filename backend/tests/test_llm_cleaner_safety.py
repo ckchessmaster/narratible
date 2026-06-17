@@ -12,6 +12,7 @@ from app.cleaner import (  # noqa: E402
     ReviewedChapterEntry,
     _apply_chapter_review,
     _assess_cleaning_risk,
+    _call_gemini_with_retries,
     _embedded_generation_sampling_kwargs,
     _llm_output_integrity_issues,
     _parse_llm_clean_output,
@@ -173,6 +174,34 @@ def test_llm_clean_text_accepts_structured_openai_output_with_source_anchors(mon
     _patch_openai(monkeypatch, CleanedTextResponse(main_text=cleaned, notes_text=""))
 
     assert llm_clean_text(source, provider="openai") == cleaned.strip()
+
+
+def test_gemini_retry_helper_retries_transient_unavailable(monkeypatch):
+    attempts = []
+    progress_messages = []
+
+    class TransientGeminiError(Exception):
+        status_code = 503
+
+    def flaky_call():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise TransientGeminiError("503 UNAVAILABLE: high demand")
+        return "ok"
+
+    monkeypatch.setattr(cleaner.time, "sleep", lambda seconds: None)
+
+    result = _call_gemini_with_retries(
+        flaky_call,
+        lambda message, progress: progress_messages.append((message, progress)),
+        42,
+    )
+
+    assert result == "ok"
+    assert len(attempts) == 2
+    assert progress_messages == [
+        ("Gemini temporarily unavailable, retrying in 10s... (attempt 1/5)", 42)
+    ]
 
 
 def test_parse_llm_clean_output_reads_json_fallback():

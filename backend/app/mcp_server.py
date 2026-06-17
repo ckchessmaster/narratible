@@ -35,6 +35,8 @@ def _task_payload(get_tasks: TaskProvider | None) -> dict[str, Any]:
 def create_mcp_server(
     get_tasks: TaskProvider | None = None,
     *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
     streamable_http_path: str = "/mcp",
 ) -> FastMCP:
     mcp = FastMCP(
@@ -43,6 +45,8 @@ def create_mcp_server(
             "Tools for inspecting the local narratible app, including live log "
             "watching, project metadata, chapters, and background task status."
         ),
+        host=host,
+        port=port,
         streamable_http_path=streamable_http_path,
         stateless_http=True,
     )
@@ -165,16 +169,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    mcp = FastMCP(
-        create_mcp_server().name,
-        instructions=create_mcp_server().instructions,
-        host=args.host,
-        port=args.port,
-        stateless_http=True,
-    )
-    mcp = create_mcp_server()
-    mcp.settings.host = args.host
-    mcp.settings.port = args.port
+    mcp = create_mcp_server(host=args.host, port=args.port)
     mcp.run(args.transport)
 
 

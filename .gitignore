@@ -20,6 +20,7 @@ Thumbs.db
 # App specific
 backend/projects/
 backend/voice_library/
+backend/logs/
 .narratible_config.json
 /reports
 

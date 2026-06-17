@@ -11,6 +11,7 @@ google-genai
 openai
 pydantic
 python-multipart
+mcp
 transformers
 accelerate
 bitsandbytes

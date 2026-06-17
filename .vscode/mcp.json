@@ -1,0 +1,15 @@
+{
+  "servers": {
+    "narratible": {
+      "type": "stdio",
+      "command": "${workspaceFolder}\\backend\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "app.mcp_server"
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}\\backend"
+      }
+    }
+  }
+}

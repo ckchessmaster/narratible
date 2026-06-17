@@ -16,6 +16,8 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from .config import AppConfig, load_config, save_config, get_device_string
+from .logging_config import configure_logging
+from .mcp_server import create_mcp_server
 from .projects import (
     PROJECTS_DIR,
     ProjectMetadata,
@@ -53,8 +55,9 @@ from .voices import (
     list_library_voices,
     update_library_voice,
 )
+from .runtime_state import save_task_snapshot
 
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="narratible API", version="0.1.0")
@@ -124,6 +127,7 @@ def _set_task(task_id: str, status: str, message: str = None, progress: int = No
         "is_cancelled": _is_cancelled,
         "llm_output": _llm_output
     }
+    save_task_snapshot(_tasks)
 
 def _get_task(task_id: str):
     return _tasks.get(task_id)
@@ -134,12 +138,14 @@ async def api_cancel_task(project_id: str):
     task = _get_task(task_id)
     if task:
         task["is_cancelled"] = True
+        save_task_snapshot(_tasks)
     
     # Also attempt to cancel TTS tasks if they are running under tts-{project_id}
     tts_task_id = f"tts-{project_id}"
     tts_task = _get_task(tts_task_id)
     if tts_task:
         tts_task["is_cancelled"] = True
+        save_task_snapshot(_tasks)
 
     return {"message": "Task cancelled"}
 
@@ -1768,6 +1774,12 @@ async def get_task_status(task_id: str):
     if task_id not in _tasks:
         raise HTTPException(status_code=404, detail="Task not found.")
     return _tasks[task_id]
+
+
+# ── MCP Server ────────────────────────────────────────────────────────────────
+
+mcp_server = create_mcp_server(lambda: _tasks, streamable_http_path="/")
+app.mount("/mcp", mcp_server.streamable_http_app())
 
 
 # ── Static Frontend Serving (PyInstaller Packaged) ────────────────────────────

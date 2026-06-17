@@ -33,11 +33,20 @@ Useful checks:
 - Backend tests: cd backend && .\.venv\Scripts\python.exe -m pytest tests
 - Backend compile check: cd backend && .\.venv\Scripts\python.exe -m compileall app
 
+## MCP Runtime Tools
+
+- Workspace MCP config: [.vscode/mcp.json](../.vscode/mcp.json)
+- Server entry point: `cd backend && .\.venv\Scripts\python.exe -m app.mcp_server`
+- FastAPI mount when the backend is running: `http://localhost:8000/mcp`
+- Use the narratible MCP tools when runtime state is needed, especially `tail_logs` and `watch_logs` for live backend logs, plus project/task/chapter inspection tools for current app data.
+- Prefer MCP runtime inspection over guessing from code when diagnosing active parse, cleanup, TTS, export, or upload behavior. Continue using code search and tests for static implementation changes.
+
 ## Architecture Boundaries
 
 Backend:
 - Entry point: [backend/run.py](../backend/run.py)
 - FastAPI app: [backend/app/main.py](../backend/app/main.py)
+- MCP server: [backend/app/mcp_server.py](../backend/app/mcp_server.py)
 - Config persistence: [backend/app/config.py](../backend/app/config.py)
 - Processing modules (used by future API routes):
   - [backend/app/parser.py](../backend/app/parser.py)

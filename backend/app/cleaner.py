@@ -3,7 +3,7 @@ import json
 import time
 import logging
 from difflib import SequenceMatcher
-from typing import Literal, Any
+from typing import Callable, Literal, Any
 from openai import OpenAI
 from pydantic import BaseModel
 from .config import get_device_string
@@ -67,6 +67,10 @@ DEFAULT_CLOUD_LLM_CHUNK_SIZE = 16000
 MAX_CLOUD_LLM_CHUNK_SIZE = 16000
 DEFAULT_LOCAL_LLM_CHUNK_SIZE = 8000
 MAX_LOCAL_LLM_CHUNK_SIZE = 12000
+GEMINI_MAX_RETRIES = 5
+GEMINI_RETRY_BASE_SECONDS = 10
+GEMINI_RETRY_MAX_SECONDS = 90
+GEMINI_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 
 CLEANING_PROFILES: dict[str, CleaningProfile] = {
     "safe": CleaningProfile(
@@ -114,6 +118,105 @@ def get_cleaning_profile(profile_id: str | None = None) -> CleaningProfile:
 
 def list_cleaning_profiles() -> list[dict]:
     return [profile.model_dump() for profile in CLEANING_PROFILES.values()]
+
+
+def _gemini_error_status_code(error: Exception) -> int | None:
+    for source in (error, getattr(error, "response", None)):
+        if source is None:
+            continue
+        status_code = getattr(source, "status_code", None)
+        if status_code is None:
+            continue
+        try:
+            return int(status_code)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _is_gemini_free_tier_quota_error(error: Exception) -> bool:
+    err_str = str(error).lower()
+    return "free_tier" in err_str or "limit: 0" in err_str
+
+
+def _is_transient_gemini_error(error: Exception) -> bool:
+    status_code = _gemini_error_status_code(error)
+    if status_code in GEMINI_TRANSIENT_STATUS_CODES:
+        return True
+    err_str = str(error).upper()
+    return any(
+        token in err_str
+        for token in (
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "INTERNAL",
+            "DEADLINE_EXCEEDED",
+            "500",
+            "502",
+            "503",
+            "504",
+            "429",
+        )
+    )
+
+
+def _gemini_retry_reason(error: Exception) -> str:
+    status_code = _gemini_error_status_code(error)
+    err_str = str(error).upper()
+    if status_code == 429 or "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+        return "rate limited"
+    if status_code == 503 or "UNAVAILABLE" in err_str or "503" in err_str:
+        return "temporarily unavailable"
+    return "temporarily failed"
+
+
+def _sleep_with_cancel(seconds: int, cancel_check: Callable[[], bool] | None = None):
+    for _ in range(seconds):
+        if cancel_check and cancel_check():
+            raise InterruptedError("User cancelled.")
+        time.sleep(1)
+
+
+def _call_gemini_with_retries(
+    call: Callable[[], Any],
+    report: Callable[[str, int], None],
+    progress: int,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
+):
+    last_error: Exception | None = None
+    for attempt in range(GEMINI_MAX_RETRIES):
+        try:
+            return call()
+        except Exception as api_err:
+            if _is_gemini_free_tier_quota_error(api_err):
+                raise RuntimeError(
+                    "Gemini free-tier quota exhausted (limit is 0). "
+                    "Enable billing on your Google AI account or switch to a paid tier: "
+                    "https://ai.google.dev/gemini-api/docs/rate-limits"
+                ) from api_err
+            if not _is_transient_gemini_error(api_err):
+                raise
+            last_error = api_err
+            if attempt >= GEMINI_MAX_RETRIES - 1:
+                break
+            wait = min(GEMINI_RETRY_MAX_SECONDS, (2 ** attempt) * GEMINI_RETRY_BASE_SECONDS)
+            reason = _gemini_retry_reason(api_err)
+            logger.warning(
+                "Gemini request %s; retrying in %ss (attempt %s/%s).",
+                reason,
+                wait,
+                attempt + 1,
+                GEMINI_MAX_RETRIES,
+            )
+            report(
+                f"Gemini {reason}, retrying in {wait}s... (attempt {attempt + 1}/{GEMINI_MAX_RETRIES})",
+                progress,
+            )
+            _sleep_with_cancel(wait, cancel_check)
+    raise RuntimeError(
+        f"Gemini request failed after {GEMINI_MAX_RETRIES} attempts: {last_error}"
+    ) from last_error
 
 
 def _normalize_words(text: str) -> list[str]:
@@ -788,10 +891,15 @@ def llm_review_chapters(
                 response_mime_type="application/json",
                 response_schema=ChapterReviewResponse,
             )
-            response = client.models.generate_content(
-                model=getattr(cfg, "gemini_model", "gemini-2.5-flash"),
-                contents=USER_PROMPT,
-                config=config,
+            response = _call_gemini_with_retries(
+                lambda: client.models.generate_content(
+                    model=getattr(cfg, "gemini_model", "gemma-4-31b-it"),
+                    contents=USER_PROMPT,
+                    config=config,
+                ),
+                report,
+                20,
+                cancel_check=cancel_check,
             )
             response_text = (response.text or "").strip()
             if not response_text:
@@ -1269,30 +1377,16 @@ def llm_clean_text(
                 response_schema=CleanedTextResponse,
             )
 
-            max_retries = 5
-            for attempt in range(max_retries):
-                try:
-                    response = client.models.generate_content(
-                        model=getattr(cfg, "gemini_model", "gemini-2.5-flash"),
-                        contents=build_cloud_prompt(chunk),
-                        config=config,
-                    )
-                    break
-                except Exception as api_err:
-                    err_str = str(api_err)
-                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                        if "free_tier" in err_str or "limit: 0" in err_str:
-                            raise RuntimeError(
-                                "Gemini free-tier quota exhausted (limit is 0). "
-                                "Enable billing on your Google AI account or switch to a paid tier: "
-                                "https://ai.google.dev/gemini-api/docs/rate-limits"
-                            ) from api_err
-                        if attempt < max_retries - 1:
-                            wait = 2 ** attempt * 10
-                            report(f"Gemini rate limited, retrying in {wait}s… (attempt {attempt+1}/{max_retries})", base_prog)
-                            time.sleep(wait)
-                            continue
-                    raise
+            response = _call_gemini_with_retries(
+                lambda: client.models.generate_content(
+                    model=getattr(cfg, "gemini_model", "gemma-4-31b-it"),
+                    contents=build_cloud_prompt(chunk),
+                    config=config,
+                ),
+                report,
+                base_prog,
+                cancel_check=cancel_check,
+            )
             try:
                 response_text = (response.text or "").strip()
                 if not response_text:

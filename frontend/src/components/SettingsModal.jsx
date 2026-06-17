@@ -361,13 +361,13 @@ export default function SettingsModal({ onClose, toast }) {
                             <div className="field">
                               <label>Model {fetchingGeminiModels && <span className="text-muted">(loading…)</span>}</label>
                               {geminiModels ? (
-                                <select value={cfg.gemini_model || 'gemini-2.5-flash'} onChange={e => set('gemini_model', e.target.value)}>
+                                <select value={cfg.gemini_model || 'gemma-4-31b-it'} onChange={e => set('gemini_model', e.target.value)}>
                                   {geminiModels.map(m => (
                                     <option key={m.id} value={m.id}>{m.display_name || m.id}</option>
                                   ))}
                                 </select>
                               ) : (
-                                <input type="text" placeholder="gemini-2.5-flash" value={cfg.gemini_model || ''} onChange={e => set('gemini_model', e.target.value)} autoComplete="off" />
+                                <input type="text" placeholder="gemma-4-31b-it" value={cfg.gemini_model || ''} onChange={e => set('gemini_model', e.target.value)} autoComplete="off" />
                               )}
                               <div className="text-xs text-muted mt-1">Models auto-load when your key is saved.</div>
                             </div>
