@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import { cancelTask, getSystemInfo, getSettings, listProjects } from './api'
+import { cancelTask, deleteProject, getSystemInfo, getSettings, listProjects } from './api'
 import './App.css'
 import './index.css'
 import Step1Upload from './components/Step1Upload'
@@ -38,6 +38,8 @@ export default function App() {
   const [debugMode, setDebugMode] = useState(false)
   const [projects, setProjects] = useState([])
   const [projectsLoading, setProjectsLoading] = useState(false)
+  const [deletingProjectId, setDeletingProjectId] = useState(null)
+  const [projectSearch, setProjectSearch] = useState('')
   const { getActiveTips, dismiss, disableAll } = useTips()
   const wizardTips = getActiveTips(t => t.context === 'wizard' && t.step === step)
   const voiceLibraryTips = getActiveTips(t => t.context === 'voice-library')
@@ -85,6 +87,29 @@ export default function App() {
     setMaxStep(Math.max(resumeStep, project.chapter_count ? 2 : 1))
     setView('wizard')
   }
+
+  const handleDeleteProject = async (project) => {
+    if (!window.confirm(`Delete project "${project.title}"? This cannot be undone.`)) return
+    setDeletingProjectId(project.id)
+    try {
+      await deleteProject(project.id)
+      toast(`Deleted project: ${project.title}`, 'success')
+      refreshProjects()
+    } catch (e) {
+      toast(e.message || 'Failed to delete project.', 'error')
+    } finally {
+      setDeletingProjectId(null)
+    }
+  }
+
+  const normalizedProjectSearch = projectSearch.trim().toLowerCase()
+  const filteredProjects = normalizedProjectSearch
+    ? projects.filter(project => {
+        const title = (project.title || '').toLowerCase()
+        const author = (project.author || '').toLowerCase()
+        return title.includes(normalizedProjectSearch) || author.includes(normalizedProjectSearch)
+      })
+    : projects
 
   return (
     <div className="app">
@@ -153,19 +178,54 @@ export default function App() {
                   <div className="step-title">Start or resume</div>
                   <div className="step-desc">Pick up an existing project without re-running completed parsing, cleanup, or TTS work.</div>
                 </div>
+                {projects.length > 0 && (
+                  <div className="resume-search-row" data-tip-anchor="resume-search">
+                    <input
+                      type="text"
+                      className="resume-search-input"
+                      value={projectSearch}
+                      onChange={e => setProjectSearch(e.target.value)}
+                      placeholder="Search projects by title or author"
+                      aria-label="Search projects"
+                    />
+                    {projectSearch && (
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => setProjectSearch('')}>
+                        Clear
+                      </button>
+                    )}
+                    <span className="resume-search-count">
+                      {filteredProjects.length} of {projects.length}
+                    </span>
+                  </div>
+                )}
                 {projectsLoading ? (
                   <div className="text-sm text-muted">Loading projects…</div>
-                ) : projects.length ? (
-                  <div className="resume-grid">
-                    {projects.slice(0, 6).map(project => (
-                      <button key={project.id} type="button" className="resume-card glass-hover" onClick={() => resumeProject(project)}>
-                        <span className="resume-title">{project.title}</span>
-                        <span className="resume-meta">
-                          {project.author || 'Unknown author'} · {project.chapter_count || 0} chapter{project.chapter_count === 1 ? '' : 's'} · {project.current_step || 'upload'}
-                        </span>
-                      </button>
-                    ))}
+                ) : filteredProjects.length ? (
+                  <div className="resume-list-scroll">
+                    <div className="resume-grid">
+                      {filteredProjects.map(project => (
+                        <article key={project.id} className="resume-card glass-hover">
+                          <button type="button" className="resume-open" onClick={() => resumeProject(project)}>
+                            <span className="resume-title">{project.title}</span>
+                            <span className="resume-meta">
+                              {project.author || 'Unknown author'} · {project.chapter_count || 0} chapter{project.chapter_count === 1 ? '' : 's'} · {project.current_step || 'upload'}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-danger btn-sm resume-delete"
+                            data-tip-anchor="resume-delete"
+                            disabled={deletingProjectId === project.id}
+                            onClick={() => handleDeleteProject(project)}
+                          >
+                            {deletingProjectId === project.id ? 'Deleting…' : 'Delete'}
+                          </button>
+                        </article>
+                      ))}
+                    </div>
                   </div>
+                ) : projects.length ? (
+                  <div className="text-sm text-muted">No projects match that search.</div>
                 ) : (
                   <div className="text-sm text-muted">No saved projects yet. Create one below.</div>
                 )}

@@ -5,6 +5,7 @@
     "*npm run build*": true,
     "*npm run lint*": true,
     "*\\.venv\\\\Scripts\\\\python* -m pytest*": true,
-    "*\\.venv\\\\Scripts\\\\python* -m compileall*": true
+    "*\\.venv\\\\Scripts\\\\python* -m compileall*": true,
+    "npm run lint": true
   }
 }

@@ -27,6 +27,16 @@ export const TIPS = [
     body: 'Saved projects appear here so you can continue without re-running completed parsing, cleanup, or audio steps.',
   },
   {
+    id: 'w1-resume-search', context: 'wizard', step: 1, anchor: 'resume-search', placement: 'bottom',
+    title: 'Find a project quickly',
+    body: 'Search by title or author to filter the list when you have many saved projects.',
+  },
+  {
+    id: 'w1-resume-delete', context: 'wizard', step: 1, anchor: 'resume-delete', placement: 'bottom',
+    title: 'Remove old projects',
+    body: 'Use Delete on a project card to permanently remove it and all generated files for that project.',
+  },
+  {
     id: 'w1-meta', context: 'wizard', step: 1, anchor: 'upload-meta', placement: 'bottom',
     title: 'Book details',
     body: 'Enter your book’s title (required) and author — these are written into the EPUB metadata.',

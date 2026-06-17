@@ -127,9 +127,34 @@ jobs:
           path: packaging/Output/narratible_Installer.exe
           if-no-files-found: error
 
+      - name: Build Release Notes from CHANGELOG
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $changelogPath = 'CHANGELOG.md'
+
+          if (-not (Test-Path $changelogPath)) {
+            throw "CHANGELOG.md not found at repository root."
+          }
+
+          $content = Get-Content $changelogPath -Raw
+
+          # Capture from "## <tag>" until the next "## " heading (or EOF).
+          $escapedTag = [regex]::Escape($tag)
+          $pattern = "(?ms)^##\s+$escapedTag\b.*?(?=^##\s+|\z)"
+          $match = [regex]::Match($content, $pattern)
+
+          if (-not $match.Success) {
+            throw "No changelog section found for tag '$tag' in CHANGELOG.md"
+          }
+
+          $notes = $match.Value.Trim() + "`n"
+          Set-Content -Path release-notes.md -Value $notes
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: packaging/Output/narratible_Installer.exe
-          generate_release_notes: true
+          body_path: release-notes.md
