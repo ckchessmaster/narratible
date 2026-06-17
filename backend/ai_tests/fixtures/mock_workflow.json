@@ -1,0 +1,45 @@
+{
+  "project": {
+    "title": "AI Harness Fixture",
+    "author": "narratible"
+  },
+  "pdf_data": {
+    "method": "toc",
+    "raw_text": "Chapter One raw text.\n\nChapter Two raw text.",
+    "chapters": [
+      {
+        "title": "Chapter One",
+        "raw_text": "CHAPTER ONE\n\nThe first chapter has clean source anchors and should be accepted.",
+        "confidence": 1.0,
+        "warnings": [],
+        "llm": {
+          "cleaned_text": "The first chapter has clean source anchors and should be accepted.",
+          "status": "accepted",
+          "fallback_count": 0,
+          "risk_level": "low",
+          "integrity_issues": []
+        }
+      },
+      {
+        "title": "Chapter Two",
+        "raw_text": "CHAPTER TWO\n\nThe second chapter keeps its original source because the model reply was unsafe.",
+        "confidence": 1.0,
+        "warnings": [],
+        "llm": {
+          "cleaned_text": "CHAPTER TWO\n\nThe second chapter keeps its original source because the model reply was unsafe.",
+          "status": "fallback",
+          "fallback_count": 1,
+          "risk_level": "high",
+          "integrity_issues": [
+            "placeholder or summary language"
+          ]
+        }
+      }
+    ]
+  },
+  "expected": {
+    "chapter_count": 2,
+    "fallback_count": 1,
+    "tts_calls": 2
+  }
+}

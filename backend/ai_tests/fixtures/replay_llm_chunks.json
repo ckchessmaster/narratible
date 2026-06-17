@@ -1,0 +1,33 @@
+{
+  "cases": [
+    {
+      "name": "accepts anchored cleanup",
+      "provider": "replay-openai",
+      "profile": "safe",
+      "source_word_count": 120,
+      "response_mode": "identity_json",
+      "expected": {
+        "status": "accepted",
+        "risk_level": "low",
+        "accepted_contains": "word119",
+        "issues_contains": []
+      }
+    },
+    {
+      "name": "rejects placeholder summary",
+      "provider": "replay-gemini",
+      "profile": "safe",
+      "source_word_count": 120,
+      "response_mode": "placeholder_summary",
+      "expected": {
+        "status": "fallback",
+        "risk_level": "high",
+        "accepted_contains": "word119",
+        "issues_contains": [
+          "placeholder or summary language",
+          "missing source anchor phrases"
+        ]
+      }
+    }
+  ]
+}
