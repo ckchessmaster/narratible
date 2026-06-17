@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
-import { getProject, exportEpub, listExports, downloadExportUrl,
-         getAbsLibraries, uploadToAbs, synthesizeBook, pollTask } from '../api'
+import { getProject, getChapters, exportEpub, listExports, downloadExportUrl,
+         getAbsLibraries, uploadToAbs, synthesizeBook, synthesizeChapter,
+         chapterAudioUrl, pollTask } from '../api'
 
 export default function Step4Export({ projectId, isActive, onBack, toast }) {
   const [meta, setMeta] = useState(null)
+  const [chapters, setChapters] = useState([])
   const [exports, setExports] = useState([])
   const [exporting, setExporting] = useState(false)
   const [synthesizing, setSynthesizing] = useState(false)
@@ -16,6 +18,8 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
   const [uploading, setUploading] = useState(false)
   const [uploadLog, setUploadLog] = useState([])
   const [loadingLibs, setLoadingLibs] = useState(false)
+  const [chapterTask, setChapterTask] = useState(null)
+  const [forceAudio, setForceAudio] = useState(false)
 
   // Incremented every time a new synthesis starts or the project is cleared.
   // The pollTask callback checks this to discard results from a stale session.
@@ -24,6 +28,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
   useEffect(() => {
     if (!projectId || !isActive) return
     getProject(projectId).then(setMeta).catch(() => {})
+    refreshChapters()
     refreshExports()
   // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshExports closes over projectId which is already in deps
   }, [projectId, isActive])
@@ -39,6 +44,12 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
   const refreshExports = () => {
     listExports(projectId)
       .then(res => setExports(res.files))
+      .catch(() => {})
+  }
+
+  const refreshChapters = () => {
+    getChapters(projectId)
+      .then(setChapters)
       .catch(() => {})
   }
 
@@ -73,19 +84,37 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
     setSynthesizing(true)
     setTaskProgress({ status: 'running', message: 'Queued…', progress: 0 })
     try {
-      const { task_id } = await synthesizeBook(projectId, meta.tts_engine, meta.tts_voice, meta.tts_speed, singleAudio, audioFormat, meta.tts_read_headings ?? true)
+      const { task_id } = await synthesizeBook(projectId, meta.tts_engine, meta.tts_voice, meta.tts_speed, singleAudio, audioFormat, meta.tts_read_headings ?? true, forceAudio)
       await pollTask(task_id, t => {
         if (synthesizeSessionRef.current !== session) return
         setTaskProgress(t)
       })
       if (synthesizeSessionRef.current === session) {
         if (taskProgress?.status !== 'error') toast('Synthesis complete!', 'success')
+        refreshChapters()
         refreshExports()
       }
     } catch (e) {
       if (synthesizeSessionRef.current === session) toast(e.message, 'error')
     } finally {
       if (synthesizeSessionRef.current === session) setSynthesizing(false)
+    }
+  }
+
+  const handleSynthesizeChapter = async (chapter, force = false) => {
+    const chapterId = chapter.id
+    if (!chapterId) return
+    setChapterTask({ chapterId, status: 'running', message: 'Queued...', progress: 0 })
+    try {
+      const { task_id } = await synthesizeChapter(projectId, chapterId, force)
+      await pollTask(task_id, t => setChapterTask({ chapterId, ...t }))
+      toast('Chapter audio updated.', 'success')
+      refreshChapters()
+      refreshExports()
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setChapterTask(null)
     }
   }
 
@@ -131,6 +160,17 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
     return '📄'
   }
 
+  const ttsStatusLabel = (chapter) => {
+    const tts = chapter.tts || {}
+    if (tts.status === 'generating') return 'Generating'
+    if (tts.status === 'failed') return 'Failed'
+    if (tts.audio_path && (tts.status === 'stale' || tts.text_hash !== chapter.text_hash)) return 'Stale'
+    if (tts.status === 'complete' && tts.audio_path) return 'Ready'
+    return 'Not generated'
+  }
+
+  const ttsStatusClass = (chapter) => ttsStatusLabel(chapter).toLowerCase().replace(/\s+/g, '-')
+
   return (
     <div className="step-card">
       <div className="step-header">
@@ -167,6 +207,10 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
               <label className="flex items-center gap-2 mb-3 text-sm cursor-pointer">
                 <input type="checkbox" checked={singleAudio} onChange={e => setSingleAudio(e.target.checked)} disabled={synthesizing} />
                 Merge into single audio file (requires FFmpeg)
+              </label>
+              <label className="flex items-center gap-2 mb-3 text-sm cursor-pointer">
+                <input type="checkbox" checked={forceAudio} onChange={e => setForceAudio(e.target.checked)} disabled={synthesizing} />
+                Regenerate chapters that already have current audio
               </label>
               {singleAudio && (
                 <div className="flex items-center gap-2 mb-3 text-sm" data-tip-anchor="audio-format-toggle">
@@ -208,6 +252,38 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
                 </div>
               )}
             </div>
+          </div>
+
+          <div className="section-title">Chapter Audio</div>
+          <div className="chapter-audio-list" data-tip-anchor="chapter-audio-status">
+            {chapters.length === 0 ? (
+              <div className="text-sm text-muted">No chapters yet.</div>
+            ) : chapters.map((chapter, index) => {
+              const status = ttsStatusLabel(chapter)
+              const active = chapterTask?.chapterId === chapter.id
+              const hasAudio = !!(chapter.tts?.audio_path || chapter.audio_path)
+              return (
+                <div key={chapter.id || index} className="chapter-audio-row glass">
+                  <div className="chapter-audio-main">
+                    <div className="truncate text-sm" style={{ fontWeight: 600 }}>{chapter.title || `Chapter ${index + 1}`}</div>
+                    <div className={`tts-status tts-status-${ttsStatusClass(chapter)}`}>
+                      {active ? `${chapterTask.message || 'Generating...'} ${chapterTask.progress ?? 0}%` : status}
+                    </div>
+                    {chapter.tts?.error && <div className="text-xs text-danger">{chapter.tts.error}</div>}
+                  </div>
+                  {hasAudio && (
+                    <audio src={chapterAudioUrl(projectId, chapter.id)} controls preload="none" />
+                  )}
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => handleSynthesizeChapter(chapter, status === 'Ready')}
+                    disabled={!!chapterTask || synthesizing}
+                  >
+                    {active ? 'Generating...' : status === 'Ready' ? 'Regenerate' : 'Generate'}
+                  </button>
+                </div>
+              )
+            })}
           </div>
 
           {/* File list */}

@@ -3,6 +3,7 @@ import shutil
 import os
 import sys
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 import psutil
@@ -25,6 +26,13 @@ from .projects import (
     delete_project,
     load_chapters,
     save_chapters,
+    update_chapter,
+    source_pdf_path,
+    artifact_dir,
+    audio_dir,
+    project_file,
+    tts_settings_hash,
+    chapter_audio_current,
     load_cleaning_eval,
     save_cleaning_eval,
     _project_path,
@@ -288,6 +296,12 @@ class BatchRedoCleaningRequest(BaseModel):
     provider: str | None = None
 
 
+class ChapterPatchRequest(BaseModel):
+    title: str | None = None
+    text: str | None = None
+    order: int | None = None
+
+
 @app.get("/api/gemini/models")
 async def list_gemini_models(api_key: str = None):
     """Return Gemini models that support generateContent, using the provided or configured API key."""
@@ -418,9 +432,17 @@ async def upload_pdf(project_id: str, file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
 
-    dest = _project_path(project_id) / "book.pdf"
+    dest = source_pdf_path(project_id)
+    dest.parent.mkdir(parents=True, exist_ok=True)
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
+    update_project(project_id, {
+        "source_pdf": {
+            "filename": file.filename,
+            "stored_path": "source/original.pdf",
+        },
+        "current_step": "upload",
+    })
     return {"message": "PDF uploaded successfully.", "path": str(dest)}
 
 
@@ -430,7 +452,10 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
     try:
         meta = update_project(project_id, {"enabled_modules": modules})
         _set_task(task_id, "running", "Reading PDF…", 10, stage="Extracting text")
-        pdf_path = _project_path(project_id) / "book.pdf"
+        pdf_path = source_pdf_path(project_id)
+        legacy_pdf_path = _project_path(project_id) / "book.pdf"
+        if not pdf_path.exists() and legacy_pdf_path.exists():
+            pdf_path = legacy_pdf_path
         if not pdf_path.exists():
             raise FileNotFoundError("book.pdf not found. Upload a PDF first.")
 
@@ -443,7 +468,9 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
         raw_text = pdf_data["raw_text"]
         raw_chapters = pdf_data["chapters"]
         
-        raw_path = _project_path(project_id) / "raw_text.txt"
+        artifacts = artifact_dir(project_id)
+        artifacts.mkdir(exist_ok=True)
+        raw_path = artifacts / "raw_text.txt"
         raw_path.write_text(raw_text, encoding="utf-8")
 
         # Hybrid chapter review: refine layout-heuristic boundaries with LLM before cleaning.
@@ -642,7 +669,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                 ch["text"] = apply_modules(ch["text"], modules)
                 full_cleaned_text += ch["text"] + "\n\n"
 
-        cleaned_path = _project_path(project_id) / "cleaned_text.txt"
+        cleaned_path = artifacts / "cleaned_text.txt"
         cleaned_path.write_text(full_cleaned_text.strip(), encoding="utf-8")
         
         # We no longer need to auto-split because we split natively!
@@ -650,6 +677,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
 
         chapters = cleaned_chapters
         save_chapters(project_id, chapters)
+        update_project(project_id, {"current_step": "edit"})
         _set_task(task_id, "done", f"Parsed {len(chapters)} chapter(s) via {pdf_data.get('method', 'unknown')}.", 100, stage="Done")
     except Exception as e:
         logger.exception("Parse task failed")
@@ -970,7 +998,21 @@ async def api_save_chapters(project_id: str, chapters: list[dict]):
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     save_chapters(project_id, chapters)
+    update_project(project_id, {"current_step": "edit"})
     return {"message": f"Saved {len(chapters)} chapter(s)."}
+
+
+@app.patch("/api/projects/{project_id}/chapters/{chapter_id}")
+async def api_update_chapter(project_id: str, chapter_id: str, req: ChapterPatchRequest):
+    try:
+        get_project(project_id)
+        return update_chapter(
+            project_id,
+            chapter_id,
+            {key: value for key, value in req.model_dump().items() if value is not None},
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ── Cover Image Upload ────────────────────────────────────────────────────────
@@ -1239,11 +1281,133 @@ def resolve_merge_format(audio_format: str):
     return fmt, codec_args
 
 
+def _find_chapter(chapters: list[dict], chapter_id: str) -> tuple[int, dict]:
+    for index, chapter in enumerate(chapters):
+        if str(chapter.get("id", index)) == chapter_id or str(index) == chapter_id:
+            return index, chapter
+    raise FileNotFoundError(f"Chapter '{chapter_id}' not found.")
+
+
+def _chapter_audio_relative_path(chapter: dict) -> str:
+    return f"audio/{chapter.get('id') or uuid.uuid4()}.mp3"
+
+
+async def synthesize_project_chapter(
+    project_id: str,
+    chapter_id: str,
+    *,
+    engine: str,
+    voice: str,
+    speed: float,
+    read_headings: bool,
+    force: bool = False,
+    progress_cb=None,
+) -> dict:
+    meta = get_project(project_id)
+    chapters = load_chapters(project_id)
+    index, chapter = _find_chapter(chapters, chapter_id)
+    settings_hash = tts_settings_hash(
+        engine=engine,
+        voice=voice,
+        speed=speed,
+        read_headings=read_headings,
+        enabled_modules=meta.enabled_modules,
+    )
+
+    if chapter_audio_current(chapter, settings_hash, project_id) and not force:
+        return {"status": "skipped", "chapter": chapter, "audio_path": chapter["tts"]["audio_path"]}
+
+    rel_audio_path = chapter.get("tts", {}).get("audio_path") or _chapter_audio_relative_path(chapter)
+    final_path = project_file(project_id, rel_audio_path)
+    if final_path is None:
+        raise ValueError("Chapter audio path could not be resolved.")
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = final_path.with_name(f"{final_path.stem}.tmp{final_path.suffix}")
+
+    previous_tts = dict(chapter.get("tts") or {})
+    text_hash = chapter.get("text_hash")
+    chapters[index]["tts"] = {
+        **previous_tts,
+        "status": "generating",
+        "audio_path": rel_audio_path,
+        "text_hash": previous_tts.get("text_hash"),
+        "settings_hash": previous_tts.get("settings_hash"),
+        "engine": engine,
+        "voice": voice,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "error": None,
+    }
+    chapters[index]["audio_path"] = rel_audio_path
+    save_chapters(project_id, chapters)
+
+    try:
+        voice_sample_path = None
+        voice_reference_text = None
+        voice_samples_dir = None
+        voice_temperature = None
+        if engine == "f5-tts":
+            voice_sample_path, voice_samples_dir, voice_reference_text, voice_temperature = _resolve_f5_voice_reference(project_id, voice)
+
+        await synthesize_speech(
+            text=compose_tts_text(chapter.get("title", f"Chapter {index + 1}"), chapter.get("text", ""), read_headings),
+            output_path=temp_path,
+            engine=engine,
+            voice=voice,
+            speed=speed,
+            temperature=voice_temperature if voice_temperature is not None else 0.7,
+            voice_sample_path=voice_sample_path,
+            voice_reference_text=voice_reference_text,
+            voice_samples_dir=voice_samples_dir,
+            progress_cb=progress_cb,
+            enabled_modules=meta.enabled_modules,
+        )
+        os.replace(temp_path, final_path)
+
+        latest_chapters = load_chapters(project_id)
+        latest_index, latest_chapter = _find_chapter(latest_chapters, chapter_id)
+        latest_hash = latest_chapter.get("text_hash")
+        status = "complete" if latest_hash == text_hash else "stale"
+        latest_chapters[latest_index]["tts"] = {
+            **(latest_chapter.get("tts") or {}),
+            "status": status,
+            "audio_path": rel_audio_path,
+            "text_hash": text_hash,
+            "settings_hash": settings_hash,
+            "engine": engine,
+            "voice": voice,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "error": None,
+        }
+        latest_chapters[latest_index]["audio_path"] = rel_audio_path
+        save_chapters(project_id, latest_chapters)
+        return {"status": status, "chapter": latest_chapters[latest_index], "audio_path": rel_audio_path}
+    except Exception as exc:
+        temp_path.unlink(missing_ok=True)
+        latest_chapters = load_chapters(project_id)
+        latest_index, latest_chapter = _find_chapter(latest_chapters, chapter_id)
+        latest_chapters[latest_index]["tts"] = {
+            **(latest_chapter.get("tts") or previous_tts),
+            "status": "failed",
+            "audio_path": previous_tts.get("audio_path") or latest_chapter.get("tts", {}).get("audio_path"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "error": str(exc),
+        }
+        latest_chapters[latest_index]["audio_path"] = latest_chapters[latest_index]["tts"].get("audio_path")
+        save_chapters(project_id, latest_chapters)
+        raise
+
+
 async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed: float,
                    single_file: bool = False, audio_format: str = "m4b",
-                   read_headings: bool = True):
+                   read_headings: bool = True, force: bool = False):
     try:
-        meta = get_project(project_id)
+        meta = update_project(project_id, {
+            "tts_engine": engine,
+            "tts_voice": voice,
+            "tts_speed": speed,
+            "tts_read_headings": read_headings,
+            "current_step": "export",
+        })
         chapters = load_chapters(project_id)
         if not chapters:
             raise ValueError("No chapters found. Parse the PDF first.")
@@ -1262,33 +1426,23 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
             progress = int((i / len(chapters)) * 90)
             ch_title = ch.get("title", f"Chapter {i + 1}")
             _set_task(task_id, "running", f"Chapter {i + 1}/{len(chapters)}: {ch_title} — Synthesizing…", progress)
-            safe_ch = _sanitize_filename(ch_title, f"chapter_{i + 1}")
-            audio_path = exports_dir / f"{i + 1:03d}_{safe_ch}.mp3"
-            voice_sample_path = None
-            voice_reference_text = None
-            voice_samples_dir = None
-            voice_temperature = None
-            if engine == "f5-tts":
-                voice_sample_path, voice_samples_dir, voice_reference_text, voice_temperature = _resolve_f5_voice_reference(project_id, voice)
 
             def _tts_progress_cb(msg: str, _pct: int = 0, _task_id: str = task_id, _base: int = progress):
                 _set_task(_task_id, "running", msg, _base)
 
-            await synthesize_speech(
-                text=compose_tts_text(ch_title, ch.get("text", ""), read_headings),
-                output_path=audio_path,
+            result = await synthesize_project_chapter(
+                project_id,
+                str(ch.get("id", i)),
                 engine=engine,
                 voice=voice,
                 speed=speed,
-                temperature=voice_temperature if voice_temperature is not None else 0.7,
-                voice_sample_path=voice_sample_path,
-                voice_reference_text=voice_reference_text,
-                voice_samples_dir=voice_samples_dir,
+                read_headings=read_headings,
+                force=force,
                 progress_cb=_tts_progress_cb,
-                enabled_modules=meta.enabled_modules,
             )
-            audio_files.append(audio_path)
-            chapters[i]["audio_path"] = str(audio_path)
+            audio_path = project_file(project_id, result.get("audio_path"))
+            if audio_path and audio_path.exists():
+                audio_files.append(audio_path)
 
         if single_file and audio_files:
             _set_task(task_id, "running", "Merging audio files…", 95)
@@ -1303,7 +1457,8 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
             list_path = exports_dir / "concat_list.txt"
             with open(list_path, "w", encoding="utf-8") as f:
                 for audio_path in audio_files:
-                    f.write(f"file '{audio_path.name}'\n")
+                    ffmpeg_path = str(audio_path.resolve()).replace("\\", "/")
+                    f.write(f"file '{ffmpeg_path}'\n")
 
             fmt, codec_args = resolve_merge_format(audio_format)
             safe_book = _sanitize_filename(meta.title, "audiobook")
@@ -1321,7 +1476,6 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
             except Exception as e:
                 logger.warning(f"FFmpeg failed to merge audio: {e}")
 
-        save_chapters(project_id, chapters)
         _set_task(task_id, "done", "Audio synthesis complete.", 100)
     except Exception as e:
         logger.exception("TTS task failed")
@@ -1338,6 +1492,7 @@ async def synthesize_book(
     single_file: bool = False,
     audio_format: str = "m4b",
     read_headings: bool = True,
+    force: bool = False,
 ):
     try:
         get_project(project_id)
@@ -1348,8 +1503,61 @@ async def synthesize_book(
 
     task_id = f"tts-{project_id}"
     _set_task(task_id, "running", "Queued…", 0)
-    background_tasks.add_task(_run_tts, project_id, task_id, engine, voice, speed, single_file, audio_format, read_headings)
+    background_tasks.add_task(_run_tts, project_id, task_id, engine, voice, speed, single_file, audio_format, read_headings, force)
     return {"task_id": task_id}
+
+
+async def _run_chapter_tts(project_id: str, chapter_id: str, task_id: str, force: bool):
+    try:
+        meta = get_project(project_id)
+        _set_task(task_id, "running", "Synthesizing chapter…", 10)
+
+        def _progress_cb(msg: str, pct: int = 0):
+            _set_task(task_id, "running", msg, max(10, min(95, pct)))
+
+        result = await synthesize_project_chapter(
+            project_id,
+            chapter_id,
+            engine=meta.tts_engine,
+            voice=meta.tts_voice,
+            speed=meta.tts_speed,
+            read_headings=meta.tts_read_headings,
+            force=force,
+            progress_cb=_progress_cb,
+        )
+        message = "Chapter audio is current." if result["status"] == "skipped" else "Chapter audio generated."
+        _set_task(task_id, "done", message, 100)
+    except Exception as e:
+        logger.exception("Chapter TTS task failed")
+        _set_task(task_id, "error", str(e), 0)
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_id}/tts")
+async def synthesize_chapter(project_id: str, chapter_id: str, background_tasks: BackgroundTasks, force: bool = False):
+    try:
+        get_project(project_id)
+        _find_chapter(load_chapters(project_id), chapter_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    task_id = f"tts-{project_id}-{chapter_id}"
+    _set_task(task_id, "running", "Queued…", 0)
+    background_tasks.add_task(_run_chapter_tts, project_id, chapter_id, task_id, force)
+    return {"task_id": task_id}
+
+
+@app.get("/api/projects/{project_id}/chapters/{chapter_id}/audio")
+async def get_chapter_audio(project_id: str, chapter_id: str):
+    try:
+        get_project(project_id)
+        _, chapter = _find_chapter(load_chapters(project_id), chapter_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    audio_path = project_file(project_id, (chapter.get("tts") or {}).get("audio_path") or chapter.get("audio_path"))
+    if not audio_path or not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Chapter audio not found.")
+    return FileResponse(audio_path, media_type="audio/mpeg", filename=audio_path.name)
 
 
 # ── Voice Sample Upload (for F5-TTS cloning) ──────────────────────────────────
@@ -1456,9 +1664,14 @@ async def list_exports(project_id: str):
         raise HTTPException(status_code=404, detail=str(e))
 
     exports_dir = _project_path(project_id) / "exports"
-    if not exports_dir.exists():
-        return {"files": []}
-    return {"files": [f.name for f in exports_dir.iterdir() if f.is_file()]}
+    files = [f.name for f in exports_dir.iterdir() if f.is_file()] if exports_dir.exists() else []
+    chapter_audio_files = set()
+    for chapter in load_chapters(project_id):
+        audio_path = project_file(project_id, (chapter.get("tts") or {}).get("audio_path") or chapter.get("audio_path"))
+        if audio_path and audio_path.exists() and audio_path.parent == audio_dir(project_id):
+            chapter_audio_files.add(audio_path.name)
+    audio_files = sorted(chapter_audio_files)
+    return {"files": sorted(files + audio_files)}
 
 
 @app.get("/api/projects/{project_id}/exports/{filename}")
@@ -1468,14 +1681,22 @@ async def download_export(project_id: str, filename: str):
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
+    safe_filename = Path(filename).name
+    if safe_filename != filename:
+        raise HTTPException(status_code=400, detail="Invalid filename.")
     exports_dir = (_project_path(project_id) / "exports").resolve()
-    file_path = (exports_dir / filename).resolve()
-    if not str(file_path).startswith(str(exports_dir)):
+    audio_artifacts_dir = audio_dir(project_id).resolve()
+    file_path = (exports_dir / safe_filename).resolve()
+    if not file_path.exists():
+        file_path = (audio_artifacts_dir / safe_filename).resolve()
+        if not str(file_path).startswith(str(audio_artifacts_dir)):
+            raise HTTPException(status_code=400, detail="Invalid filename.")
+    elif not str(file_path).startswith(str(exports_dir)):
         raise HTTPException(status_code=400, detail="Invalid filename.")
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found.")
 
-    return FileResponse(file_path, filename=filename)
+    return FileResponse(file_path, filename=safe_filename)
 
 
 # ── Audiobookshelf ────────────────────────────────────────────────────────────

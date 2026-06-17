@@ -22,6 +22,11 @@ export const TIPS = [
     body: 'First time here? Open Settings to add a Gemini or OpenAI key (or set up Local AI) before you begin.',
   },
   {
+    id: 'w1-resume-projects', context: 'wizard', step: 1, anchor: 'resume-projects', placement: 'bottom',
+    title: 'Resume saved work',
+    body: 'Saved projects appear here so you can continue without re-running completed parsing, cleanup, or audio steps.',
+  },
+  {
     id: 'w1-meta', context: 'wizard', step: 1, anchor: 'upload-meta', placement: 'bottom',
     title: 'Book details',
     body: 'Enter your book’s title (required) and author — these are written into the EPUB metadata.',
@@ -128,6 +133,11 @@ export const TIPS = [
     id: 'w4-audio-format', context: 'wizard', step: 4, anchor: 'audio-format-toggle', placement: 'top',
     title: 'M4B vs MP3',
     body: 'M4B is the audiobook standard — re-encoded to AAC, with the best player support (chapters, bookmarks, resume). MP3 is a universally compatible single track, stream-copied so it merges faster. Pick MP3 for maximum compatibility, M4B for a proper audiobook.',
+  },
+  {
+    id: 'w4-chapter-audio', context: 'wizard', step: 4, anchor: 'chapter-audio-status', placement: 'top',
+    title: 'Regenerate only changed chapters',
+    body: 'Each chapter tracks whether its audio is ready, missing, failed, or stale after text or voice settings change.',
   },
   {
     id: 'w4-abs', context: 'wizard', step: 4, anchor: 'abs-panel', placement: 'left',
