@@ -19,3 +19,6 @@ bitsandbytes
 # kokoro        # local fast TTS (Kokoro-82M); also needs: pip install torch --index-url https://download.pytorch.org/whl/cu121
 # f5-tts        # voice cloning (F5-TTS); also needs torch CUDA (already installed with kokoro setup)
 psutil
+
+# Test tooling
+pytest
