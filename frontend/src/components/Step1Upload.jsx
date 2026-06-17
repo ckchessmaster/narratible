@@ -97,6 +97,10 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       toast('Embedded Local LLM requires a CUDA GPU. Please select a different cleanup method.', 'error')
       return
     }
+    if ((cleaner === 'llm' || cleaner === 'llm_chapters_only') && !hasCloudKey) {
+      toast('Cloud LLM cleanup requires a Gemini or OpenAI key in Settings.', 'error')
+      return
+    }
 
     try {
       setStatus('creating')
@@ -269,7 +273,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
           <div className="flex gap-3 mt-1" style={{ flexWrap: 'wrap' }}>
             {[
                           { value: 'regex', label: 'Heuristic (fast, offline)', desc: 'Regex rules — no API key or GPU needed', disabled: false },
-              { value: 'llm', label: 'LLM (Gemini / OpenAI)', desc: hasCloudKey ? 'Best quality — uses your configured API key' : 'Requires a Gemini or OpenAI key in ⚙ Settings', disabled: false },
+              { value: 'llm', label: 'LLM (Gemini / OpenAI)', desc: hasCloudKey ? 'Best quality — uses your configured API key' : 'Requires a Gemini or OpenAI key in ⚙ Settings', disabled: !hasCloudKey },
               { value: 'embedded', label: 'Embedded Local LLM', desc: cudaEnabled ? 'Runs locally — uses GPU VRAM' : 'Requires a CUDA-capable GPU', disabled: !cudaEnabled },
             ].map(opt => (
               <label
@@ -318,16 +322,16 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
                   <div className="text-xs text-muted mt-1">Runs LLM boundary review only — text cleanup uses regex. For testing chapter detection.</div>
                   {(cleaner === 'llm_chapters_only' || cleaner === 'llm_chapters_only_embedded') && (
                     <div className="flex gap-4 mt-2">
-                      <label className="flex items-center gap-1 text-xs cursor-pointer" style={{ fontWeight: 500 }}>
+                      <label className="flex items-center gap-1 text-xs cursor-pointer" style={{ fontWeight: 500, opacity: hasCloudKey ? 1 : 0.45 }}>
                         <input
                           type="radio"
                           name="debug_provider"
                           checked={cleaner === 'llm_chapters_only'}
                           onChange={() => setCleaner('llm_chapters_only')}
-                          disabled={busy}
+                          disabled={busy || !hasCloudKey}
                           style={{ width: 'auto' }}
                         />
-                        Cloud (Gemini / OpenAI)
+                        Cloud (Gemini / OpenAI){!hasCloudKey ? ' (no key)' : ''}
                       </label>
                       <label className="flex items-center gap-1 text-xs cursor-pointer" style={{ fontWeight: 500, opacity: cudaEnabled ? 1 : 0.45 }}>
                         <input

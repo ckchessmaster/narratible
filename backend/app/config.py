@@ -14,7 +14,7 @@ else:
 class AppConfig(BaseModel):
     llm_provider: str = "gemini"  # "gemini" | "openai" | "local" | "none"
     gemini_api_key: str = ""
-    gemini_model: str = "gemma-4-31b-it"
+    gemini_model: str = "gemini-2.5-flash"
     openai_api_key: str = ""
     huggingface_token: str = ""
     embedded_llm_model: str = "google/gemma-4-E2B-it"
@@ -34,6 +34,8 @@ def load_config() -> AppConfig:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             try:
                 data = json.load(f)
+                if data.get("gemini_model") == "gemma-4-31b-it":
+                    data["gemini_model"] = AppConfig.model_fields["gemini_model"].default
                 return AppConfig(**data)
             except Exception:
                 pass

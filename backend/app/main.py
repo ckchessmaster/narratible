@@ -59,6 +59,31 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="narratible API", version="0.1.0")
 VOICE_SAMPLE_SUFFIXES = {".wav", ".mp3", ".flac"}
+CLOUD_LLM_CONFIG_ERROR = (
+    "Cloud LLM cleanup requires a configured Gemini or OpenAI API key. "
+    "Add a key in Settings, then choose LLM again."
+)
+
+
+def _resolve_cloud_llm_provider(cfg: AppConfig) -> str | None:
+    provider_keys = {
+        "gemini": cfg.gemini_api_key.strip(),
+        "openai": cfg.openai_api_key.strip(),
+    }
+    selected_provider = cfg.llm_provider
+    if selected_provider in provider_keys and provider_keys[selected_provider]:
+        return selected_provider
+    for provider, api_key in provider_keys.items():
+        if api_key:
+            return provider
+    return None
+
+
+def _require_cloud_llm_provider(cfg: AppConfig) -> str:
+    provider = _resolve_cloud_llm_provider(cfg)
+    if provider is None:
+        raise RuntimeError(CLOUD_LLM_CONFIG_ERROR)
+    return provider
 
 # In packaged mode, allow all origins so the local static frontend can fetch from the backend
 cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -483,14 +508,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
             if cleaner == "embedded" or cleaner == "llm_chapters_only_embedded":
                 review_provider = "embedded"
             else:
-                cfg = load_config()
-                lp = cfg.llm_provider
-                if lp == "local":
-                    review_provider = "embedded"
-                elif lp in ("gemini", "openai"):
-                    review_provider = lp
-                else:
-                    review_provider = "gemini" if cfg.gemini_api_key else "openai"
+                review_provider = _require_cloud_llm_provider(load_config())
             # Save lightweight heuristic snapshot for debug comparison (before LLM review)
             if cleaner in _debug_cleaners:
                 debug_snapshot = [
@@ -550,15 +568,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
             if cleaner == "embedded":
                 provider = "embedded"
             else:
-                cfg = load_config()
-                lp = cfg.llm_provider
-                if lp == "local":
-                    provider = "embedded"
-                elif lp in ("gemini", "openai"):
-                    provider = lp
-                else:
-                    # "none" or unconfigured — fall back to key-based detection
-                    provider = "gemini" if cfg.gemini_api_key else "openai"
+                provider = _require_cloud_llm_provider(load_config())
             cleaning_eval["provider"] = provider
                 
             def _cancel_check():
@@ -696,6 +706,12 @@ async def parse_pdf(
         get_project(project_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+    if cleaner in ("llm", "llm_chapters_only"):
+        try:
+            _require_cloud_llm_provider(load_config())
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     task_id = f"parse-{project_id}"
     _set_task(task_id, "running", "Queued…", 0, stage="Queued")
