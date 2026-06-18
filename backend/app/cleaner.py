@@ -562,6 +562,18 @@ def _evaluate_llm_chunk(
     )
 
 
+def _unescape_unicode(text: str) -> str:
+    """Decode any literal \\uXXXX escape sequences left in plain-text LLM output."""
+    try:
+        return text.encode("utf-8").decode("unicode_escape").encode("latin-1").decode("utf-8")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        # Fallback: use the json decoder which handles \uXXXX reliably
+        try:
+            return json.loads(f'"{text.replace(chr(34), chr(92) + chr(34))}"')
+        except Exception:
+            return text
+
+
 def _parse_llm_clean_output(response_text: str) -> tuple[str, str]:
     try:
         response_json = json.loads(response_text)
@@ -595,7 +607,44 @@ def _parse_llm_clean_output(response_text: str) -> tuple[str, str]:
             flags=re.IGNORECASE | re.DOTALL,
         ).strip()
 
+    # Decode any literal \uXXXX sequences that slipped through (e.g. from
+    # a JSON-mode response that wasn't properly parsed).
+    if r'\u' in main_text:
+        main_text = _unescape_unicode(main_text)
+    if notes_text and r'\u' in notes_text:
+        notes_text = _unescape_unicode(notes_text)
+
     return main_text, notes_text
+
+
+def _extract_json_payload(response_text: str) -> str:
+    """Return a best-effort JSON payload from model output text."""
+    text = (response_text or "").strip()
+    if not text:
+        raise ValueError("Empty response text.")
+
+    # Fast path: already valid JSON.
+    try:
+        json.loads(text)
+        return text
+    except json.JSONDecodeError:
+        pass
+
+    # Common pattern: fenced blocks like ```json ... ```.
+    fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, re.IGNORECASE)
+    if fenced:
+        candidate = fenced.group(1).strip()
+        json.loads(candidate)
+        return candidate
+
+    # Fallback: first JSON object-like substring.
+    first_obj = re.search(r"\{[\s\S]*\}", text)
+    if first_obj:
+        candidate = first_obj.group(0).strip()
+        json.loads(candidate)
+        return candidate
+
+    raise ValueError("No parseable JSON object found in response.")
 
 
 def _find_contents_text(chapters: list[dict], max_chars: int = 1500) -> str | None:
@@ -904,7 +953,7 @@ def llm_review_chapters(
             response_text = (response.text or "").strip()
             if not response_text:
                 raise ValueError("Gemini returned an empty chapter review response.")
-            reviewed = ChapterReviewResponse.model_validate_json(response_text)
+            reviewed = ChapterReviewResponse.model_validate_json(_extract_json_payload(response_text))
 
         elif provider == "openai" and cfg.openai_api_key:
             client = OpenAI(api_key=cfg.openai_api_key)
@@ -1066,6 +1115,7 @@ def llm_clean_text(
     progress_callback=None,
     cancel_check=None,
     output_callback=None,
+    retry_decision_callback=None,
     known_titles: list[str] | None = None,
     cleaning_profile: str = "safe",
     return_evaluation: bool = False,
@@ -1075,6 +1125,7 @@ def llm_clean_text(
     progress_callback: Optional callable(str, int) to report status string and progress percentage (0-100).
     cancel_check: Optional callable() -> bool to abort processing early.
     output_callback: Optional callable(str) -> to report chunks of text as they finish.
+    retry_decision_callback: Optional callable(dict) -> "retry" | "heuristic".
     """
     from .config import load_config
     import re
@@ -1369,33 +1420,126 @@ def llm_clean_text(
 
             base_prog = 30 + int((i / len(chunks)) * 60)
             report(f"Processing chunk {i+1}/{len(chunks)} via Gemini…", base_prog)
-            
-            config = types.GenerateContentConfig(
-                temperature=profile.temperature,
-                system_instruction=SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                response_schema=CleanedTextResponse,
-            )
 
-            response = _call_gemini_with_retries(
-                lambda: client.models.generate_content(
-                    model=getattr(cfg, "gemini_model", "gemma-4-31b-it"),
-                    contents=build_cloud_prompt(chunk),
-                    config=config,
-                ),
-                report,
-                base_prog,
-                cancel_check=cancel_check,
-            )
-            try:
-                response_text = (response.text or "").strip()
-                if not response_text:
-                    raise ValueError("Gemini returned an empty cleanup response.")
-                res_obj = CleanedTextResponse.model_validate_json(response_text)
-                process_chunk_result(i, chunk, res_obj.main_text, res_obj.notes_text)
-            except Exception:
-                main_text, notes_text = parse_output((response.text or "").strip())
-                process_chunk_result(i, chunk, main_text, notes_text)
+            while True:
+                try:
+                    if output_callback:
+                        # Streaming path: use plain-text XML-tag format so the user sees
+                        # readable tokens as they arrive instead of raw JSON fragments.
+                        stream_config = types.GenerateContentConfig(
+                            temperature=profile.temperature,
+                            system_instruction=SYSTEM_PROMPT,
+                        )
+                        last_stream_error: Exception | None = None
+                        for attempt in range(GEMINI_MAX_RETRIES):
+                            accumulated: list[str] = []
+                            try:
+                                for stream_chunk in client.models.generate_content_stream(
+                                    model=getattr(cfg, "gemini_model", "gemma-4-31b-it"),
+                                    contents=build_prompt(chunk),
+                                    config=stream_config,
+                                ):
+                                    if cancel_check and cancel_check():
+                                        raise InterruptedError("User cancelled.")
+                                    token = stream_chunk.text or ""
+                                    if token:
+                                        accumulated.append(token)
+                                        output_callback(token)
+                                last_stream_error = None
+                                break
+                            except InterruptedError:
+                                raise
+                            except Exception as stream_err:
+                                if _is_gemini_free_tier_quota_error(stream_err):
+                                    raise RuntimeError(
+                                        "Gemini free-tier quota exhausted (limit is 0). "
+                                        "Enable billing on your Google AI account or switch to a paid tier: "
+                                        "https://ai.google.dev/gemini-api/docs/rate-limits"
+                                    ) from stream_err
+                                if not _is_transient_gemini_error(stream_err):
+                                    raise
+                                last_stream_error = stream_err
+                                if attempt >= GEMINI_MAX_RETRIES - 1:
+                                    break
+                                wait = min(GEMINI_RETRY_MAX_SECONDS, (2 ** attempt) * GEMINI_RETRY_BASE_SECONDS)
+                                reason = _gemini_retry_reason(stream_err)
+                                logger.warning(
+                                    "Gemini stream %s; retrying in %ss (attempt %s/%s).",
+                                    reason,
+                                    wait,
+                                    attempt + 1,
+                                    GEMINI_MAX_RETRIES,
+                                )
+                                report(
+                                    f"Gemini {reason}, retrying in {wait}s… (attempt {attempt + 1}/{GEMINI_MAX_RETRIES})",
+                                    base_prog,
+                                )
+                                _sleep_with_cancel(wait, cancel_check)
+                        if last_stream_error is not None:
+                            raise RuntimeError(
+                                f"Gemini stream failed after {GEMINI_MAX_RETRIES} attempts: {last_stream_error}"
+                            ) from last_stream_error
+                        response_text = "".join(accumulated).strip()
+                        main_text, notes_text = parse_output(response_text)
+                        process_chunk_result(i, chunk, main_text, notes_text)
+                    else:
+                        # Non-streaming path: use structured JSON for reliable parsing.
+                        config = types.GenerateContentConfig(
+                            temperature=profile.temperature,
+                            system_instruction=SYSTEM_PROMPT,
+                            response_mime_type="application/json",
+                            response_schema=CleanedTextResponse,
+                        )
+                        response = _call_gemini_with_retries(
+                            lambda: client.models.generate_content(
+                                model=getattr(cfg, "gemini_model", "gemma-4-31b-it"),
+                                contents=build_cloud_prompt(chunk),
+                                config=config,
+                            ),
+                            report,
+                            base_prog,
+                            cancel_check=cancel_check,
+                        )
+                        try:
+                            response_text = (response.text or "").strip()
+                            if not response_text:
+                                raise ValueError("Gemini returned an empty cleanup response.")
+                            res_obj = CleanedTextResponse.model_validate_json(response_text)
+                            process_chunk_result(i, chunk, res_obj.main_text, res_obj.notes_text)
+                        except Exception:
+                            main_text, notes_text = parse_output((response.text or "").strip())
+                            process_chunk_result(i, chunk, main_text, notes_text)
+                    break
+                except RuntimeError as gemini_err:
+                    err_text = str(gemini_err)
+                    if "free-tier quota exhausted" in err_text:
+                        raise
+                    if "Gemini request failed after" in err_text or "Gemini stream failed after" in err_text:
+                        if retry_decision_callback:
+                            decision = retry_decision_callback(
+                                {
+                                    "chunk_index": i,
+                                    "chunk_count": len(chunks),
+                                    "error": err_text,
+                                }
+                            )
+                            if decision == "retry":
+                                report("Retrying Gemini for this chunk by user request…", base_prog)
+                                if output_callback:
+                                    output_callback("\n\n[Retrying Gemini for this chunk…]\n\n")
+                                continue
+                            logger.warning(
+                                "Gemini unavailable after retries for chunk %s/%s; using heuristic text by user choice.",
+                                i + 1,
+                                len(chunks),
+                            )
+                            report("Using heuristic text for this chunk by user choice.", base_prog)
+                            if output_callback:
+                                output_callback("\n\n[Used heuristic fallback for this chunk.]\n\n")
+                            process_chunk_result(i, chunk, chunk, "")
+                            break
+                        raise
+                    raise
             
     elif provider == "openai" and cfg.openai_api_key:
         client = OpenAI(api_key=cfg.openai_api_key)

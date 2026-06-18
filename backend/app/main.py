@@ -4,9 +4,11 @@ import os
 import sys
 import tempfile
 import uuid
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 import psutil
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -102,7 +104,7 @@ app.add_middleware(
 )
 
 # ── In-memory task status store ──────────────────────────────────────────────
-# Maps task_id -> {"status": "running"|"done"|"error"|"cancelled", "stage": str, "message": str, "progress": 0-100, "is_cancelled": bool, "llm_output": str}
+# Maps task_id -> {"status": "running"|"waiting_input"|"done"|"error"|"cancelled", "stage": str, "message": str, "progress": 0-100, "is_cancelled": bool, "llm_output": str}
 # "stage" is the coarse phase shown as the primary status line (e.g. "Extracting
 # text", "Cleaning text"); "message" carries the finer detail shown beneath it.
 _tasks: dict[str, dict] = {}
@@ -119,7 +121,7 @@ def _set_task(task_id: str, status: str, message: str = None, progress: int = No
     _stage = existing.get("stage", "") if stage is None else stage
     _message = existing.get("message", "") if message is None else message
     _progress = existing.get("progress", 0) if progress is None else progress
-    _tasks[task_id] = {
+    base_task = {
         "status": status,
         "stage": _stage,
         "message": _message,
@@ -127,6 +129,9 @@ def _set_task(task_id: str, status: str, message: str = None, progress: int = No
         "is_cancelled": _is_cancelled,
         "llm_output": _llm_output
     }
+    # Preserve any auxiliary state fields (e.g. pending decision prompts).
+    extra = {k: v for k, v in existing.items() if k not in base_task}
+    _tasks[task_id] = {**base_task, **extra}
     save_task_snapshot(_tasks)
 
 def _get_task(task_id: str):
@@ -331,6 +336,10 @@ class ChapterPatchRequest(BaseModel):
     title: str | None = None
     text: str | None = None
     order: int | None = None
+
+
+class TaskDecisionRequest(BaseModel):
+    action: Literal["retry", "heuristic"]
 
 
 @app.get("/api/gemini/models")
@@ -587,16 +596,70 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                         break
                         
                     ch_title = ch["title"]
+                    current_overall_progress = 30 + int((i / len(raw_chapters)) * 50)
                     
                     def _progress_cb(msg: str, pct: int):
+                        nonlocal current_overall_progress
                         # Localize progress over total chapters
                         base_prog = 30 + int((i / len(raw_chapters)) * 50)
                         overall_prog = base_prog + int((pct / 100) * (50 / len(raw_chapters)))
+                        current_overall_progress = overall_prog
                         _set_task(task_id, "running", f"Cleaning '{ch_title}' — {msg}", overall_prog, stage="Cleaning text")
 
                     def _output_cb(chunk_text: str):
                         # We just append whatever token/text we received directly
                         _set_task(task_id, "running", append_output=chunk_text)
+
+                    def _gemini_retry_decision_cb(context: dict) -> str:
+                        decision_id = str(uuid.uuid4())
+                        pending = {
+                            "id": decision_id,
+                            "type": "gemini_retry_exhausted",
+                            "chapter_index": i,
+                            "chapter_title": ch_title,
+                            "chunk_index": context.get("chunk_index", 0),
+                            "chunk_count": context.get("chunk_count", 1),
+                            "choices": ["retry", "heuristic"],
+                            "message": (
+                                "Gemini is unavailable after 5 retries. "
+                                "Choose Retry to attempt another 5 retries for this chunk, "
+                                "or Heuristic to keep processing with regex fallback."
+                            ),
+                            "error": context.get("error", ""),
+                        }
+                        current = _get_task(task_id) or {}
+                        current["pending_decision"] = pending
+                        current["decision_response"] = None
+                        current["status"] = "waiting_input"
+                        current["stage"] = "Waiting for input"
+                        current["message"] = (
+                            f"Gemini unavailable while cleaning '{ch_title}'. Waiting for your choice…"
+                        )
+                        current["progress"] = current_overall_progress
+                        _tasks[task_id] = current
+                        save_task_snapshot(_tasks)
+
+                        while True:
+                            t = _get_task(task_id) or {}
+                            if t.get("is_cancelled"):
+                                raise InterruptedError("User cancelled.")
+                            action = t.get("decision_response")
+                            if action in ("retry", "heuristic"):
+                                # Clear prompt state and resume running updates.
+                                t.pop("pending_decision", None)
+                                t.pop("decision_response", None)
+                                t["status"] = "running"
+                                t["stage"] = "Cleaning text"
+                                t["message"] = (
+                                    "Retrying Gemini for this chunk…"
+                                    if action == "retry"
+                                    else "Using heuristic fallback for this chunk…"
+                                )
+                                t["progress"] = current_overall_progress
+                                _tasks[task_id] = t
+                                save_task_snapshot(_tasks)
+                                return action
+                            time.sleep(0.5)
 
                     cleaned_result = llm_clean_text(
                         ch["raw_text"],
@@ -604,6 +667,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                         progress_callback=_progress_cb, 
                         cancel_check=_cancel_check, 
                         output_callback=_output_cb,
+                        retry_decision_callback=_gemini_retry_decision_cb if provider == "gemini" else None,
                         known_titles=[meta.title, ch_title],
                         cleaning_profile=profile.id,
                         return_evaluation=True,
@@ -1768,6 +1832,21 @@ async def upload_to_abs(project_id: str, req: UploadToAbsRequest):
 
 
 # ── Task Status ───────────────────────────────────────────────────────────────
+
+@app.post("/api/tasks/{task_id}/decision")
+async def submit_task_decision(task_id: str, req: TaskDecisionRequest):
+    task = _get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    pending = task.get("pending_decision")
+    if not pending:
+        raise HTTPException(status_code=409, detail="Task is not waiting for a decision.")
+    choices = pending.get("choices", [])
+    if req.action not in choices:
+        raise HTTPException(status_code=400, detail="Invalid decision for this task.")
+    task["decision_response"] = req.action
+    save_task_snapshot(_tasks)
+    return {"ok": True}
 
 @app.get("/api/tasks/{task_id}")
 async def get_task_status(task_id: str):

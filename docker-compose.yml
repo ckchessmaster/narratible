@@ -15,6 +15,7 @@ services:
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
+      - UVICORN_ACCESS_LOG=${UVICORN_ACCESS_LOG:-0}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
@@ -34,7 +35,11 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        - VITE_TASK_POLL_INTERVAL_MS=${VITE_TASK_POLL_INTERVAL_MS:-2000}
     restart: unless-stopped
+    environment:
+      - NGINX_ACCESS_LOG=${NGINX_ACCESS_LOG:-0}
     ports:
       - "80:80"
     depends_on:

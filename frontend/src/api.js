@@ -1,4 +1,8 @@
 const BASE = '/api'
+const parsedPollIntervalMs = Number.parseInt(import.meta.env.VITE_TASK_POLL_INTERVAL_MS ?? '2000', 10)
+const DEFAULT_TASK_POLL_INTERVAL_MS = Number.isFinite(parsedPollIntervalMs) && parsedPollIntervalMs > 0
+  ? parsedPollIntervalMs
+  : 2000
 
 async function request(method, path, body, isFormData = false) {
   const opts = { method, headers: {} }
@@ -156,7 +160,9 @@ export const uploadToAbs = (projectId, libraryId, files) =>
 
 // Task polling
 export const getTask = (taskId) => request('GET', `/tasks/${taskId}`)
-export async function pollTask(taskId, onProgress, intervalMs = 1000) {
+export const submitTaskDecision = (taskId, action) =>
+  request('POST', `/tasks/${encodeURIComponent(taskId)}/decision`, { action })
+export async function pollTask(taskId, onProgress, intervalMs = DEFAULT_TASK_POLL_INTERVAL_MS) {
   return new Promise((resolve, reject) => {
     const iv = setInterval(async () => {
       try {

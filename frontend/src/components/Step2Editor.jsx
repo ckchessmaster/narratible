@@ -276,7 +276,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
       setCleaningEval(res.evaluation)
       markDirty()
       setComparison({ chapter_index: chapterIndex, chunk: { ...res.chunk, chapter_index: chapterIndex }, variant: res.variant })
-      toast('Chunk retry complete.', 'success')
+      toast('Cleanup retry complete.', 'success')
     } catch (e) {
       toast(e.message, 'error')
     } finally {
@@ -300,6 +300,67 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     return true
   }
 
+  const formatCleaningIssue = (issue) => {
+    const labels = {
+      'possible page header inserted mid-sentence': 'Possible page header inserted mid-sentence',
+      'placeholder or summary language': 'Placeholder or summary language',
+      'missing source anchor phrases': 'Missing source anchor phrases',
+      'empty output': 'Empty output',
+    }
+    if (labels[issue]) return labels[issue]
+    const readable = String(issue || '').replace(/[_-]+/g, ' ').trim()
+    return readable ? readable.charAt(0).toUpperCase() + readable.slice(1) : 'Cleanup warning'
+  }
+
+  const cleanupSnippetFromText = (text, maxLength = 170) => {
+    const normalized = (text || '').replace(/\s+/g, ' ').trim()
+    if (!normalized) return ''
+    if (normalized.length <= maxLength) return normalized
+    const clipped = normalized.slice(0, maxLength).trimEnd()
+    const breakAt = Math.max(clipped.lastIndexOf('. '), clipped.lastIndexOf('? '), clipped.lastIndexOf('! '), clipped.lastIndexOf('; '))
+    return `${(breakAt > 80 ? clipped.slice(0, breakAt + 1) : clipped).trim()}...`
+  }
+
+  const lineLooksUnfinished = (line) => Boolean(line) && !/[.!?;:)\]"']$/.test(line.trim())
+  const lineContinuesSentence = (line) => /^[a-z("']/.test((line || '').trim()) || /^(that|this|these|those|it|them|which|who)\b/i.test((line || '').trim())
+
+  const pageHeaderSnippet = (text, maxLength) => {
+    const lines = (text || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+    for (let i = 1; i < lines.length - 1; i += 1) {
+      const previous = lines[i - 1]
+      const current = lines[i]
+      const next = lines[i + 1]
+      if (lineLooksUnfinished(previous) && current.length >= 4 && current.length <= 90 && lineContinuesSentence(next)) {
+        return cleanupSnippetFromText(`${previous} ${current} ${next}`, maxLength)
+      }
+    }
+    return ''
+  }
+
+  const cleanupSnippet = (chunk, issue = '', maxLength = 170) => {
+    const sourceText = chunk?.accepted_text || chunk?.source_text || chunk?.candidate_text || ''
+    if (issue === 'possible page header inserted mid-sentence') {
+      const focused = pageHeaderSnippet(sourceText, maxLength)
+      if (focused) return focused
+    }
+    return cleanupSnippetFromText(sourceText, maxLength)
+  }
+
+  const cleanupWarningItems = (chapterEval) => (chapterEval?.chunks || []).flatMap(chunk => (
+    (chunk.integrity_issues || []).map((issue, issueIndex) => ({
+      key: `${chapterEval.chapter_index}:${chunk.chunk_id}:${issueIndex}:${issue}`,
+      chapter_index: chapterEval.chapter_index,
+      chapterTitle: chapterEval.title || chapters[chapterEval.chapter_index]?.title || `Chapter ${chapterEval.chapter_index + 1}`,
+      issue,
+      label: formatCleaningIssue(issue),
+      snippet: cleanupSnippet(chunk, issue),
+      chunk: { ...chunk, chapter_index: chapterEval.chapter_index },
+    }))
+  ))
+
+  const riskLabel = (risk) => risk === 'low' ? 'Low risk' : risk === 'high' ? 'Needs review' : 'Review'
+  const statusLabel = (status) => status === 'fallback' ? 'Fallback used' : 'Accepted'
+
   const handleBatchRedoVisible = async (chunks) => {
     if (!chunks.length) return
     setBatchRetrying(true)
@@ -309,7 +370,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
       setCleaningEval(res.evaluation)
       markDirty()
       const failed = res.results?.filter(result => !result.ok)?.length ?? 0
-      toast(failed ? `Batch retry finished with ${failed} issue(s).` : `Retried ${payload.length} chunk(s).`, failed ? 'warning' : 'success')
+      toast(failed ? `Batch retry finished with ${failed} issue(s).` : `Retried ${payload.length} passage(s).`, failed ? 'warning' : 'success')
     } catch (e) {
       toast(e.message, 'error')
     } finally {
@@ -397,6 +458,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   const selectedEval = getChapterEval(selectedIdx)
   const hasCleaningEval = cleaningEval?.chapters?.length > 0
   const formatRatio = (value) => `${Math.round((value ?? 1) * 100)}%`
+  const selectedWarningItems = cleanupWarningItems(selectedEval)
   const visibleReviewChunks = selectedEval?.chunks?.map(chunk => ({
     ...chunk,
     chapter_index: selectedEval.chapter_index,
@@ -405,13 +467,25 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   const lowRiskVisibleChunks = visibleReviewChunks.filter(chunk => (chunk.variants || []).some(variant => variant.risk_level === 'low' && !(variant.integrity_issues?.length) && !variant.is_applied))
   const filterOptions = [
     ['all', 'All'],
-    ['fallbacks', 'Fallbacks'],
+    ['fallbacks', 'Fallback used'],
     ['warnings', 'Warnings'],
-    ['large_delta', 'Delta'],
-    ['missing_anchors', 'Anchors'],
-    ['variants', 'Variants'],
+    ['large_delta', 'Text changed'],
+    ['missing_anchors', 'Missing anchors'],
+    ['variants', 'Candidates'],
   ]
   const riskColor = (risk) => risk === 'low' ? 'var(--success)' : risk === 'high' ? 'var(--danger)' : 'var(--warning, #f59e0b)'
+  const reportWarningItems = (cleaningReport?.top_warnings || []).flatMap((warning, warningIndex) => {
+    const chapterIndex = warning.chapter_index ?? 0
+    const chapterEval = getChapterEval(chapterIndex)
+    const reportChapter = cleaningReport?.chapters?.find(chapter => chapter.chapter_index === chapterIndex)
+    const chunk = chapterEval?.chunks?.find(item => item.chunk_id === warning.chunk_id)
+    return (warning.issues || []).map((issue, issueIndex) => ({
+      key: `${chapterIndex}:${warning.chunk_id ?? warningIndex}:${issueIndex}:${issue}`,
+      chapterTitle: reportChapter?.title || chapterEval?.title || chapters[chapterIndex]?.title || `Chapter ${chapterIndex + 1}`,
+      label: formatCleaningIssue(issue),
+      snippet: cleanupSnippet(chunk, issue, 220),
+    }))
+  })
 
   return (
     <div className="step-card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -425,6 +499,11 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           <span className={`save-status save-status-${saveStatus}`}>
             {saving ? 'Saving...' : saveStatus === 'dirty' ? 'Unsaved changes' : saveStatus === 'failed' ? 'Save failed' : 'Saved'}
           </span>
+          {hasCleaningEval && (
+            <button className="btn btn-ghost btn-sm" onClick={handleLoadCleaningReport}>
+              Book Cleanup Report
+            </button>
+          )}
           {debugPrompt && (
             <button className="btn btn-ghost btn-sm" onClick={() => setShowPromptModal(true)} title="View prompt sent to LLM">
               🔬 View Prompt
@@ -500,7 +579,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
                 <div className="text-xs text-muted">{ch.text?.length ?? 0} chars</div>
                 {(getChapterEval(i)?.fallback_count ?? 0) > 0 && (
                   <div className="text-xs" style={{ color: 'var(--warning, #f59e0b)', marginTop: 2 }}>
-                    {getChapterEval(i).fallback_count} fallback chunk{getChapterEval(i).fallback_count === 1 ? '' : 's'}
+                    {getChapterEval(i).fallback_count} fallback used
                   </div>
                 )}
               </div>
@@ -560,103 +639,37 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
         }} data-tip-anchor="metadata-sidebar">
           {hasCleaningEval && (
             <div data-tip-anchor="cleaning-review" style={{ marginBottom: 18, paddingBottom: 16, borderBottom: '1px solid var(--glass-border)' }}>
-              <div className="section-title">Cleaning Review</div>
+              <div className="section-title">Text Cleanup</div>
               <div className="text-xs text-muted mb-2">
-                {cleaningEval.provider || 'heuristic'} · {cleaningEval.profile || 'heuristic'} · {selectedEval?.title || ch?.title || `Chapter ${selectedIdx + 1}`}
+                {selectedEval?.title || ch?.title || `Chapter ${selectedIdx + 1}`}
               </div>
-              {cleaningProfiles.length > 0 && (
-                <div className="field" style={{ marginBottom: 10 }}>
-                  <label style={{ fontSize: 11 }}>Retry Profile</label>
-                  <select value={retryProfile} onChange={e => setRetryProfile(e.target.value)} style={{ fontSize: 12 }}>
-                    {cleaningProfiles.map(profile => (
-                      <option key={profile.id} value={profile.id}>{profile.label}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
               {selectedEval ? (
                 <>
-                  <div className="flex gap-2" style={{ marginBottom: 10 }}>
-                    <div className="glass" style={{ flex: 1, padding: 8, borderRadius: 'var(--radius-sm)' }}>
-                      <div className="text-xs text-muted">Accepted</div>
-                      <div style={{ fontWeight: 700 }}>{selectedEval.accepted_count}</div>
-                    </div>
-                    <div className="glass" style={{ flex: 1, padding: 8, borderRadius: 'var(--radius-sm)' }}>
-                      <div className="text-xs text-muted">Fallback</div>
-                      <div style={{ fontWeight: 700, color: selectedEval.fallback_count ? 'var(--warning, #f59e0b)' : 'inherit' }}>{selectedEval.fallback_count}</div>
-                    </div>
-                  </div>
-                  <div className="flex gap-1" style={{ flexWrap: 'wrap', marginBottom: 8 }}>
-                    {filterOptions.map(([value, label]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        className={`btn btn-sm ${reviewFilter === value ? 'btn-primary' : 'btn-ghost'}`}
-                        style={{ fontSize: 10, padding: '3px 6px' }}
-                        onClick={() => setReviewFilter(value)}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex gap-2" style={{ marginBottom: 10 }}>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      style={{ flex: 1, fontSize: 11, padding: '4px 6px' }}
-                      disabled={!fallbackVisibleChunks.length || batchRetrying}
-                      onClick={() => handleBatchRedoVisible(fallbackVisibleChunks)}
-                      title="Retry visible fallback chunks with the selected profile"
-                    >
-                      {batchRetrying ? 'Retrying…' : `Redo Visible (${fallbackVisibleChunks.length})`}
-                    </button>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      style={{ flex: 1, fontSize: 11, padding: '4px 6px' }}
-                      disabled={!lowRiskVisibleChunks.length}
-                      onClick={() => handleApplyLowRiskCandidates(visibleReviewChunks)}
-                      title="Apply visible low-risk candidates to the editor"
-                    >
-                      Apply Safe ({lowRiskVisibleChunks.length})
-                    </button>
-                  </div>
-                  <div style={{ maxHeight: 240, overflowY: 'auto', paddingRight: 4 }}>
-                    {visibleReviewChunks.map(chunk => (
-                      <div key={chunk.chunk_id} className="glass" style={{ padding: 8, borderRadius: 'var(--radius-sm)', marginBottom: 8 }}>
-                        <div className="flex justify-between items-center gap-2">
-                          <div className="text-xs" style={{ fontWeight: 700 }}>Chunk {chunk.chunk_id + 1}</div>
-                          <div className="flex gap-1">
-                            <span className="text-xs" style={{ color: riskColor(chunk.risk_level) }}>{chunk.risk_level || 'medium'}</span>
-                            <span className="text-xs" style={{ color: chunk.status === 'fallback' ? 'var(--warning, #f59e0b)' : 'var(--success)' }}>
-                              {chunk.status}
-                            </span>
+                  <div style={{ maxHeight: 260, overflowY: 'auto', paddingRight: 4, marginBottom: 10 }}>
+                    {selectedWarningItems.map(item => (
+                      <div key={item.key} style={{ padding: '8px 0', borderBottom: '1px solid var(--glass-border)' }}>
+                        <div className="text-xs" style={{ color: 'var(--warning, #f59e0b)', fontWeight: 700 }}>{item.label}</div>
+                        <div className="text-xs text-muted mt-1">{item.chapterTitle}</div>
+                        {item.snippet && (
+                          <div className="text-xs mt-1" style={{ lineHeight: 1.45 }}>
+                            <span className="text-muted">Context: </span>{item.snippet}
                           </div>
-                        </div>
-                        <div className="text-xs text-muted mt-1">
-                          Words {chunk.metrics?.source_word_count ?? 0} → {chunk.metrics?.output_word_count ?? 0} · {formatRatio(chunk.metrics?.word_count_ratio)}
-                        </div>
-                        {chunk.integrity_issues?.length > 0 && (
-                          <div className="text-xs mt-1" style={{ color: 'var(--warning, #f59e0b)' }}>
-                            {chunk.integrity_issues.join('; ')}
-                          </div>
-                        )}
-                        {chunk.applied_variant_id && (
-                          <div className="text-xs mt-1" style={{ color: 'var(--success)' }}>Applied {chunk.applied_variant_id}</div>
                         )}
                         <div className="flex gap-2 mt-2">
                           <button
                             className="btn btn-ghost btn-sm"
                             style={{ flex: 1, fontSize: 11, padding: '4px 6px' }}
-                            onClick={() => handleRedoChunk(chunk)}
-                            disabled={retryingChunk === `${chunk.chapter_index}:${chunk.chunk_id}`}
-                            title="Retry this chunk with the selected profile"
+                            onClick={() => handleRedoChunk(item.chunk)}
+                            disabled={retryingChunk === `${item.chunk.chapter_index}:${item.chunk.chunk_id}`}
+                            title="Retry cleanup for this passage"
                           >
-                            {retryingChunk === `${chunk.chapter_index}:${chunk.chunk_id}` ? 'Retrying…' : 'Redo'}
+                            {retryingChunk === `${item.chunk.chapter_index}:${item.chunk.chunk_id}` ? 'Retrying…' : 'Redo'}
                           </button>
-                          {chunk.variants?.length > 0 && (
+                          {item.chunk.variants?.length > 0 && (
                             <button
                               className="btn btn-ghost btn-sm"
                               style={{ flex: 1, fontSize: 11, padding: '4px 6px' }}
-                              onClick={() => setComparison({ chapter_index: chunk.chapter_index, chunk, variant: chunk.variants[chunk.variants.length - 1] })}
+                              onClick={() => setComparison({ chapter_index: item.chunk.chapter_index, chunk: item.chunk, variant: item.chunk.variants[item.chunk.variants.length - 1] })}
                             >
                               Compare
                             </button>
@@ -664,13 +677,121 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
                         </div>
                       </div>
                     ))}
-                    {!visibleReviewChunks.length && (
-                      <div className="text-xs text-muted">No chunks match this filter.</div>
+                    {!selectedWarningItems.length && (
+                      <div className="text-xs text-muted">No cleanup warnings in this chapter.</div>
                     )}
                   </div>
-                  <button className="btn btn-ghost btn-sm w-full mt-2" onClick={handleLoadCleaningReport}>
-                    View Cleaning Report
-                  </button>
+
+                  <details style={{ marginTop: 8 }}>
+                    <summary className="text-xs text-muted" style={{ cursor: 'pointer', fontWeight: 600 }}>Advanced cleanup tools</summary>
+                    <div style={{ paddingTop: 10 }}>
+                      <div className="text-xs text-muted mb-2">
+                        {cleaningEval.provider || 'heuristic'} · {cleaningEval.profile || 'heuristic'}
+                      </div>
+                      {cleaningProfiles.length > 0 && (
+                        <div className="field" style={{ marginBottom: 10 }}>
+                          <label style={{ fontSize: 11 }}>Retry Profile</label>
+                          <select value={retryProfile} onChange={e => setRetryProfile(e.target.value)} style={{ fontSize: 12 }}>
+                            {cleaningProfiles.map(profile => (
+                              <option key={profile.id} value={profile.id}>{profile.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      <div className="flex gap-2" style={{ marginBottom: 10 }}>
+                        <div className="glass" style={{ flex: 1, padding: 8, borderRadius: 'var(--radius-sm)' }}>
+                          <div className="text-xs text-muted">Accepted</div>
+                          <div style={{ fontWeight: 700 }}>{selectedEval.accepted_count}</div>
+                        </div>
+                        <div className="glass" style={{ flex: 1, padding: 8, borderRadius: 'var(--radius-sm)' }}>
+                          <div className="text-xs text-muted">Fallback used</div>
+                          <div style={{ fontWeight: 700, color: selectedEval.fallback_count ? 'var(--warning, #f59e0b)' : 'inherit' }}>{selectedEval.fallback_count}</div>
+                        </div>
+                      </div>
+                      <div className="flex gap-1" style={{ flexWrap: 'wrap', marginBottom: 8 }}>
+                        {filterOptions.map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            className={`btn btn-sm ${reviewFilter === value ? 'btn-primary' : 'btn-ghost'}`}
+                            style={{ fontSize: 10, padding: '3px 6px' }}
+                            onClick={() => setReviewFilter(value)}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="flex gap-2" style={{ marginBottom: 10 }}>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          style={{ flex: 1, fontSize: 11, padding: '4px 6px' }}
+                          disabled={!fallbackVisibleChunks.length || batchRetrying}
+                          onClick={() => handleBatchRedoVisible(fallbackVisibleChunks)}
+                          title="Retry visible fallback passages with the selected profile"
+                        >
+                          {batchRetrying ? 'Retrying…' : `Redo fallback (${fallbackVisibleChunks.length})`}
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          style={{ flex: 1, fontSize: 11, padding: '4px 6px' }}
+                          disabled={!lowRiskVisibleChunks.length}
+                          onClick={() => handleApplyLowRiskCandidates(visibleReviewChunks)}
+                          title="Apply visible low-risk candidates to the editor"
+                        >
+                          Apply low-risk ({lowRiskVisibleChunks.length})
+                        </button>
+                      </div>
+                      <div style={{ maxHeight: 240, overflowY: 'auto', paddingRight: 4 }}>
+                        {visibleReviewChunks.map(chunk => (
+                          <div key={chunk.chunk_id} className="glass" style={{ padding: 8, borderRadius: 'var(--radius-sm)', marginBottom: 8 }}>
+                            <div className="flex justify-between items-start gap-2">
+                              <div className="text-xs" style={{ fontWeight: 700 }}>Passage {chunk.chunk_id + 1}</div>
+                              <div className="flex gap-1" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                                <span className="text-xs" style={{ color: riskColor(chunk.risk_level) }}>{riskLabel(chunk.risk_level)}</span>
+                                <span className="text-xs" style={{ color: chunk.status === 'fallback' ? 'var(--warning, #f59e0b)' : 'var(--success)' }}>
+                                  {statusLabel(chunk.status)}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="text-xs text-muted mt-1">
+                              Words {chunk.metrics?.source_word_count ?? 0} -&gt; {chunk.metrics?.output_word_count ?? 0} · {formatRatio(chunk.metrics?.word_count_ratio)}
+                            </div>
+                            {chunk.integrity_issues?.length > 0 && (
+                              <div className="text-xs mt-1" style={{ color: 'var(--warning, #f59e0b)' }}>
+                                {chunk.integrity_issues.map(formatCleaningIssue).join('; ')}
+                              </div>
+                            )}
+                            {chunk.applied_variant_id && (
+                              <div className="text-xs mt-1" style={{ color: 'var(--success)' }}>Candidate applied</div>
+                            )}
+                            <div className="flex gap-2 mt-2">
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                style={{ flex: 1, fontSize: 11, padding: '4px 6px' }}
+                                onClick={() => handleRedoChunk(chunk)}
+                                disabled={retryingChunk === `${chunk.chapter_index}:${chunk.chunk_id}`}
+                                title="Retry this passage with the selected profile"
+                              >
+                                {retryingChunk === `${chunk.chapter_index}:${chunk.chunk_id}` ? 'Retrying…' : 'Redo'}
+                              </button>
+                              {chunk.variants?.length > 0 && (
+                                <button
+                                  className="btn btn-ghost btn-sm"
+                                  style={{ flex: 1, fontSize: 11, padding: '4px 6px' }}
+                                  onClick={() => setComparison({ chapter_index: chunk.chapter_index, chunk, variant: chunk.variants[chunk.variants.length - 1] })}
+                                >
+                                  Compare
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                        {!visibleReviewChunks.length && (
+                          <div className="text-xs text-muted">No passages match this filter.</div>
+                        )}
+                      </div>
+                    </div>
+                  </details>
                 </>
               ) : (
                 <div className="text-xs text-muted">No LLM cleaning data for this chapter.</div>
@@ -757,7 +878,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
               <div>
                 <div style={{ fontWeight: 600, fontSize: 15 }}>Compare Cleaning Candidate</div>
                 <div className="text-xs text-muted mt-0.5">
-                  Chunk {(comparison.chunk?.chunk_id ?? 0) + 1} · {comparison.variant?.profile} · {comparison.variant?.status} · {comparison.variant?.risk_level || 'medium'} risk
+                  Passage {(comparison.chunk?.chunk_id ?? 0) + 1} · {comparison.variant?.profile} · {statusLabel(comparison.variant?.status)} · {riskLabel(comparison.variant?.risk_level)}
                 </div>
               </div>
               <button className="btn btn-ghost btn-sm" onClick={() => setComparison(null)}>✕</button>
@@ -807,36 +928,53 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           >
             <div className="flex items-center justify-between p-4" style={{ borderBottom: '1px solid var(--glass-border)', flexShrink: 0 }}>
               <div>
-                <div style={{ fontWeight: 600, fontSize: 15 }}>Cleaning Report</div>
+                <div style={{ fontWeight: 600, fontSize: 15 }}>Book Cleanup Report</div>
                 <div className="text-xs text-muted mt-0.5">{cleaningReport.project?.title} · {cleaningReport.provider || 'heuristic'} · {cleaningReport.profile}</div>
               </div>
               <button className="btn btn-ghost btn-sm" onClick={() => setCleaningReport(null)}>✕</button>
             </div>
             <div style={{ overflow: 'auto', padding: 16 }}>
+              <div className="section-title">Cleanup Warnings</div>
+              <div style={{ marginBottom: 14 }}>
+                {reportWarningItems.map(item => (
+                  <div key={item.key} style={{ padding: 10, borderRadius: 'var(--radius-sm)', marginBottom: 8, background: 'var(--surface-elevated, rgba(255,255,255,0.06))', border: '1px solid var(--glass-border)' }}>
+                    <div className="text-sm" style={{ color: 'var(--warning, #f59e0b)', fontWeight: 600 }}>{item.label}</div>
+                    <div className="text-xs text-muted mt-1">{item.chapterTitle}</div>
+                    {item.snippet && (
+                      <div className="text-xs mt-1" style={{ lineHeight: 1.5 }}>
+                        <span className="text-muted">Context: </span>{item.snippet}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {!reportWarningItems.length && (
+                  <div className="text-sm text-secondary mb-3">No cleanup warnings were reported.</div>
+                )}
+              </div>
               <div className="flex gap-2" style={{ marginBottom: 12 }}>
                 <div style={{ flex: 1, padding: 10, borderRadius: 'var(--radius-sm)', background: 'var(--surface-elevated, rgba(255,255,255,0.06))', border: '1px solid var(--glass-border)' }}>
-                  <div className="text-xs text-muted">Chunks</div>
+                  <div className="text-xs text-muted">Passages checked</div>
                   <div style={{ fontWeight: 700 }}>{cleaningReport.total_chunks}</div>
                 </div>
                 <div style={{ flex: 1, padding: 10, borderRadius: 'var(--radius-sm)', background: 'var(--surface-elevated, rgba(255,255,255,0.06))', border: '1px solid var(--glass-border)' }}>
-                  <div className="text-xs text-muted">Fallbacks</div>
+                  <div className="text-xs text-muted">Fallbacks used</div>
                   <div style={{ fontWeight: 700 }}>{cleaningReport.total_fallbacks}</div>
                 </div>
                 <div style={{ flex: 1, padding: 10, borderRadius: 'var(--radius-sm)', background: 'var(--surface-elevated, rgba(255,255,255,0.06))', border: '1px solid var(--glass-border)' }}>
-                  <div className="text-xs text-muted">Applied</div>
+                  <div className="text-xs text-muted">Candidates applied</div>
                   <div style={{ fontWeight: 700 }}>{cleaningReport.applied_variants}</div>
                 </div>
               </div>
-              <div className="section-title">Risk</div>
+              <div className="section-title">Advanced Summary</div>
               <div className="text-sm text-secondary mb-3">
-                Low {cleaningReport.risk_counts?.low ?? 0} · Medium {cleaningReport.risk_counts?.medium ?? 0} · High {cleaningReport.risk_counts?.high ?? 0}
+                Low risk {cleaningReport.risk_counts?.low ?? 0} · Review {cleaningReport.risk_counts?.medium ?? 0} · Needs review {cleaningReport.risk_counts?.high ?? 0}
               </div>
               <div className="section-title">Chapters</div>
               {cleaningReport.chapters?.map(chapter => (
                 <div key={chapter.chapter_index} style={{ padding: 10, borderRadius: 'var(--radius-sm)', marginBottom: 8, background: 'var(--surface-elevated, rgba(255,255,255,0.06))', border: '1px solid var(--glass-border)' }}>
                   <div className="text-sm" style={{ fontWeight: 600 }}>{chapter.title || `Chapter ${chapter.chapter_index + 1}`}</div>
                   <div className="text-xs text-muted mt-1">
-                    {chapter.chunk_count} chunks · {chapter.fallback_count} fallbacks · high risk {chapter.risk_counts?.high ?? 0}
+                    {chapter.chunk_count} passages checked · {chapter.fallback_count} fallbacks used · needs review {chapter.risk_counts?.high ?? 0}
                   </div>
                 </div>
               ))}

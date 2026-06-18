@@ -80,8 +80,8 @@ export const TIPS = [
   },
   {
     id: 'w2-cleaning-review', context: 'wizard', step: 2, anchor: 'cleaning-review', placement: 'left',
-    title: 'Review cleaning decisions',
-    body: 'See which chunks the LLM accepted, which fell back to heuristic text, and why a chunk needs review.',
+    title: 'Review cleanup warnings',
+    body: 'Warnings show the chapter and nearby text to check. Advanced cleanup tools keep retry and comparison details nearby.',
   },
 
   // ── Wizard · Step 3 (Voice) ───────────────────────────────────────────

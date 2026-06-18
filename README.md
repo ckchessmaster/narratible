@@ -78,6 +78,26 @@ Open **http://localhost**.
 
 > First build is ~6 GB (PyTorch CUDA + kokoro + f5-tts). Subsequent builds use the cache.
 
+### Docker log and polling controls
+
+You can control request-log verbosity and task polling via environment variables in a root `.env` file.
+
+1. Copy `.env.example` to `.env`.
+2. Set values as needed:
+   - `UVICORN_ACCESS_LOG=0` (backend request logs off, set to `1` to enable)
+   - `NGINX_ACCESS_LOG=0` (frontend nginx access logs off, set to `1` to enable)
+   - `VITE_TASK_POLL_INTERVAL_MS=2000` (frontend task polling interval in ms)
+
+Apply notes:
+- `UVICORN_ACCESS_LOG` and `NGINX_ACCESS_LOG` are runtime settings.
+- `VITE_TASK_POLL_INTERVAL_MS` is a frontend build-time setting and requires rebuilding the frontend image.
+
+Recommended after changing values:
+
+```powershell
+docker compose up --build -d
+```
+
 Project files, config, and the Voice Library persist in Docker named volumes (`projects_data`, `config_data`).  
 The API is also available directly at **http://localhost:8000/docs** (Swagger UI).
 
