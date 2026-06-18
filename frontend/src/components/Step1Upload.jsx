@@ -232,7 +232,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       setProgressMsg('Starting parse...')
       const { task_id } = await parsePdf(activeProjectId, cleaner, enabledModules, cleaningProfile)
 
-      await pollTask(task_id, (t) => {
+      const finalTask = await pollTask(task_id, (t) => {
         if (t.status === 'waiting_input' && t.pending_decision) {
           setStatus('waiting_input')
           const decisionId = t.pending_decision.id || `${t.pending_decision.chapter_index}-${t.pending_decision.chunk_index}`
@@ -255,12 +255,12 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
 
       setStatus('done')
       setProgress(100)
-      setFinalTime(timeElapsed)
+      const durationSeconds = typeof finalTask.duration_seconds === 'number' ? Math.max(0, Math.round(finalTask.duration_seconds)) : timeElapsed
+      setFinalTime(durationSeconds)
       toast('PDF parsed successfully!', 'success')
       onProjectChanged?.()
       setTimeout(onNext, 600)
     } catch (e) {
-      setFinalTime(timeElapsed)
       if (e.cancelled) {
         setStatus('cancelled')
         setTaskError(e.message || 'Processing cancelled.')
@@ -272,6 +272,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
         toast(e.message, 'error')
         setTaskError(e.message)
       }
+      setFinalTime(timeElapsed)
     }
   }
 
