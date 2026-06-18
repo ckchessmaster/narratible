@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { getProject, getChapters, exportEpub, listExports, downloadExportUrl,
          getAbsLibraries, uploadToAbs, synthesizeBook, synthesizeChapter,
-         chapterAudioUrl, pollTask } from '../api'
+         chapterAudioUrl, pollTask, deleteExport } from '../api'
 
 export default function Step4Export({ projectId, isActive, onBack, toast }) {
   const [meta, setMeta] = useState(null)
@@ -53,6 +53,35 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
       .catch(() => {})
   }
 
+  const parseFilenameFromDisposition = (disposition) => {
+    if (!disposition) return ''
+    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+    if (utf8Match?.[1]) {
+      try {
+        return decodeURIComponent(utf8Match[1])
+      } catch {
+        return utf8Match[1]
+      }
+    }
+    const quotedMatch = disposition.match(/filename\s*=\s*"([^"]+)"/i)
+    if (quotedMatch?.[1]) return quotedMatch[1]
+    const plainMatch = disposition.match(/filename\s*=\s*([^;]+)/i)
+    if (plainMatch?.[1]) return plainMatch[1].trim()
+    return ''
+  }
+
+  const epubFallbackName = () => {
+    const title = (meta?.title || '').trim()
+    const author = (meta?.author || '').trim()
+    const sanitize = (value) => value
+      .replace(/[\\/:*?"<>|]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (title && author) return `${sanitize(title)} - ${sanitize(author)}.epub`
+    if (title) return `${sanitize(title)}.epub`
+    return 'book.epub'
+  }
+
   const handleExportEpub = async () => {
     setExporting(true)
     try {
@@ -60,8 +89,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
       if (!res.ok) { const e = await res.json(); throw new Error(e.detail) }
       const blob = await res.blob()
       const cd = res.headers.get('content-disposition') || ''
-      const match = cd.match(/filename="?([^"]+)"?/)
-      const filename = match ? match[1] : 'book.epub'
+      const filename = parseFilenameFromDisposition(cd) || epubFallbackName()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url; a.download = filename; a.click()
@@ -82,7 +110,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
     }
     const session = ++synthesizeSessionRef.current
     setSynthesizing(true)
-    setTaskProgress({ status: 'running', message: 'Queued…', progress: 0 })
+    setTaskProgress({ status: 'running', message: 'Queued…', stage: 'Queued', progress: 0 })
     try {
       const { task_id } = await synthesizeBook(projectId, meta.tts_engine, meta.tts_voice, meta.tts_speed, singleAudio, audioFormat, meta.tts_read_headings ?? true, forceAudio)
       await pollTask(task_id, t => {
@@ -115,6 +143,20 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
       toast(e.message, 'error')
     } finally {
       setChapterTask(null)
+    }
+  }
+
+  const handleDeleteExport = async (filename) => {
+    const confirmed = window.confirm(`Delete '${filename}'?`)
+    if (!confirmed) return
+    try {
+      await deleteExport(projectId, filename)
+      setSelectedFiles(prev => prev.filter(f => f !== filename))
+      toast('File deleted.', 'success')
+      refreshExports()
+      refreshChapters()
+    } catch (e) {
+      toast(e.message, 'error')
     }
   }
 
@@ -170,6 +212,20 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
   }
 
   const ttsStatusClass = (chapter) => ttsStatusLabel(chapter).toLowerCase().replace(/\s+/g, '-')
+
+  useEffect(() => {
+    if (!meta?.last_tts_status || synthesizing) return
+    const persisted = meta.last_tts_status
+    if (['running', 'done', 'error', 'cancelled'].includes(persisted.status)) {
+      setTaskProgress({
+        status: persisted.status,
+        message: persisted.message || '',
+        stage: persisted.stage || '',
+        progress: Number.isFinite(persisted.progress) ? persisted.progress : 0,
+      })
+      if (persisted.status === 'running') setSynthesizing(true)
+    }
+  }, [meta, synthesizing])
 
   return (
     <div className="step-card">
@@ -316,6 +372,18 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
                   >
                     ↓
                   </a>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={e => {
+                      e.stopPropagation()
+                      handleDeleteExport(f)
+                    }}
+                    data-tip-anchor="export-delete"
+                    title="Delete this generated file"
+                  >
+                    ✕
+                  </button>
                 </div>
               ))}
             </div>

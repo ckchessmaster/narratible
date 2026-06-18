@@ -77,15 +77,32 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
         setEnabledModules(meta.enabled_modules || [])
         setExistingPdf(meta.source_pdf || null)
         setFile(null)
-        setStatus(null)
-        setProgress(0)
-        setProgressMsg('')
-        setProgressStage('')
-        setTaskError(null)
+        const parseStatus = meta.last_parse_status || null
+        if (parseStatus && ['running', 'done', 'error', 'cancelled'].includes(parseStatus.status)) {
+          setStatus(parseStatus.status)
+          setProgress(Number.isFinite(parseStatus.progress) ? parseStatus.progress : 0)
+          setProgressMsg(parseStatus.message || '')
+          setProgressStage(parseStatus.stage || '')
+          setTaskError(parseStatus.status === 'error' ? (parseStatus.error || parseStatus.message || null) : null)
+          if (typeof parseStatus.duration_seconds === 'number') {
+            const rounded = Math.max(0, Math.round(parseStatus.duration_seconds))
+            setTimeElapsed(rounded)
+            setFinalTime(parseStatus.status === 'running' ? null : rounded)
+          } else {
+            setTimeElapsed(0)
+            setFinalTime(null)
+          }
+        } else {
+          setStatus(null)
+          setProgress(0)
+          setProgressMsg('')
+          setProgressStage('')
+          setTaskError(null)
+          setTimeElapsed(0)
+          setFinalTime(null)
+        }
         setCurrentProjId(projectId)
         setLlmOutput('')
-        setTimeElapsed(0)
-        setFinalTime(null)
       })
       .catch(e => {
         if (!cancelled) {

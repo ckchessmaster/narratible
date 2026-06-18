@@ -59,6 +59,16 @@ class ReviewedChapterEntry(BaseModel):
 
 class ChapterReviewResponse(BaseModel):
     chapters: list[ReviewedChapterEntry]
+    
+class BookMetadataResponse(BaseModel):
+    title: str = ""
+    author: str = ""
+    language: str = ""
+    description: str = ""
+    publisher: str = ""
+    subject: str = ""
+    isbn: str = ""
+    series: str = ""
 
 logger = logging.getLogger(__name__)
 
@@ -1107,6 +1117,96 @@ def llm_review_chapters(
     except Exception as exc:
         logger.warning("llm_review_chapters failed (%s) — using original chapter boundaries.", exc)
         return chapters
+
+
+def llm_extract_book_metadata(
+    front_matter_text: str,
+    heuristics: dict[str, str] | None = None,
+    provider: str = "gemini",
+) -> dict[str, str]:
+    """Use an LLM to verify/fill metadata extracted from PDF heuristics.
+
+    Returns a dict with the metadata keys used by ProjectMetadata. Any missing or
+    failed provider output yields an empty dict and callers should keep heuristic
+    values.
+    """
+
+    from .config import load_config
+
+    cfg = load_config()
+    heuristics = heuristics or {}
+    if not front_matter_text.strip():
+        return {}
+
+    system_prompt = (
+        "You extract book metadata from noisy front matter. "
+        "Return only JSON with keys: title, author, language, description, "
+        "publisher, subject, isbn, series. Use empty strings when unknown."
+    )
+
+    user_prompt = (
+        "Heuristic metadata from PDF info fields:\n"
+        f"{json.dumps(heuristics, ensure_ascii=True)}\n\n"
+        "Front matter text (may include title pages, copyright, and TOC):\n"
+        f"{front_matter_text[:12000]}"
+    )
+
+    try:
+        if provider == "gemini" and cfg.gemini_api_key:
+            from google import genai
+            from google.genai import types
+
+            client = genai.Client(api_key=cfg.gemini_api_key)
+            response = client.models.generate_content(
+                model=getattr(cfg, "gemini_model", "gemma-4-31b-it"),
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0,
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                    response_schema=BookMetadataResponse,
+                ),
+            )
+            parsed = BookMetadataResponse.model_validate_json((response.text or "").strip())
+            return {
+                "title": parsed.title.strip(),
+                "author": parsed.author.strip(),
+                "language": parsed.language.strip(),
+                "description": parsed.description.strip(),
+                "publisher": parsed.publisher.strip(),
+                "subject": parsed.subject.strip(),
+                "isbn": parsed.isbn.strip(),
+                "series": parsed.series.strip(),
+            }
+
+        if provider == "openai" and cfg.openai_api_key:
+            client = OpenAI(api_key=cfg.openai_api_key)
+            response = client.beta.chat.completions.parse(
+                model="gpt-4o-mini",
+                temperature=0,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format=BookMetadataResponse,
+            )
+            parsed = response.choices[0].message.parsed
+            if parsed is None:
+                return {}
+            return {
+                "title": parsed.title.strip(),
+                "author": parsed.author.strip(),
+                "language": parsed.language.strip(),
+                "description": parsed.description.strip(),
+                "publisher": parsed.publisher.strip(),
+                "subject": parsed.subject.strip(),
+                "isbn": parsed.isbn.strip(),
+                "series": parsed.series.strip(),
+            }
+    except Exception as exc:
+        logger.warning("llm_extract_book_metadata failed (%s)", exc)
+
+    return {}
 
 
 def llm_clean_text(

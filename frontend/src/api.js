@@ -150,6 +150,8 @@ export const deleteVoiceSample = (projectId, filename) =>
 export const exportEpub = (projectId) =>
   fetch(`${BASE}/projects/${projectId}/export/epub`, { method: 'POST' })
 export const listExports = (projectId) => request('GET', `/projects/${projectId}/exports`)
+export const deleteExport = (projectId, filename) =>
+  request('DELETE', `/projects/${projectId}/exports/${encodeURIComponent(filename)}`)
 export const downloadExportUrl = (projectId, filename) =>
   `${BASE}/projects/${projectId}/exports/${encodeURIComponent(filename)}`
 

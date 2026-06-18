@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 import psutil
-from typing import Literal
+from typing import Literal, Any
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,8 +41,8 @@ from .projects import (
     save_cleaning_eval,
     _project_path,
 )
-from .parser import extract_structured_from_pdf
-from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters, list_cleaning_profiles, get_cleaning_profile
+from .parser import extract_structured_from_pdf, extract_pdf_metadata, extract_pdf_cover
+from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters, llm_extract_book_metadata, list_cleaning_profiles, get_cleaning_profile
 from .parsing_modules import list_modules, apply_modules, normalize_module_ids
 from .tts import synthesize_speech, get_available_voices, compose_tts_text
 from .tts_text import prepare_text_for_tts, segment_text_for_tts
@@ -489,9 +489,33 @@ async def upload_pdf(project_id: str, file: UploadFile = File(...)):
 def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] | None = None, cleaning_profile: str = "safe"):
     modules = normalize_module_ids(modules)
     profile = get_cleaning_profile(cleaning_profile)
+    parse_started_at = datetime.now(timezone.utc).isoformat()
+    parse_started_monotonic = time.perf_counter()
+
+    def _persist_parse_status(status: str, stage: str, message: str, progress: int, error: str | None = None, extra: dict[str, Any] | None = None):
+        payload: dict[str, Any] = {
+            "status": status,
+            "stage": stage,
+            "message": message,
+            "progress": progress,
+            "started_at": parse_started_at,
+        }
+        if status in ("done", "error", "cancelled"):
+            payload["completed_at"] = datetime.now(timezone.utc).isoformat()
+            payload["duration_seconds"] = round(max(0.0, time.perf_counter() - parse_started_monotonic), 2)
+        if error:
+            payload["error"] = error
+        if extra:
+            payload.update(extra)
+        try:
+            update_project(project_id, {"last_parse_status": payload})
+        except Exception:
+            logger.exception("Failed to persist parse status for project %s", project_id)
+
     try:
         meta = update_project(project_id, {"enabled_modules": modules})
         _set_task(task_id, "running", "Reading PDF…", 10, stage="Extracting text")
+        _persist_parse_status("running", "Extracting text", "Reading PDF…", 10)
         pdf_path = source_pdf_path(project_id)
         legacy_pdf_path = _project_path(project_id) / "book.pdf"
         if not pdf_path.exists() and legacy_pdf_path.exists():
@@ -500,14 +524,40 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
             raise FileNotFoundError("book.pdf not found. Upload a PDF first.")
 
         def _extract_progress(msg: str, frac: float):
-            # Map extraction fraction (0..1) into the 10–28 progress band.
+            # Map extraction fraction (0..1) into the 10-28 progress band.
             pct = 10 + int(max(0.0, min(1.0, frac)) * 18)
             _set_task(task_id, "running", msg, pct, stage="Extracting text")
 
         pdf_data = extract_structured_from_pdf(pdf_path, progress_callback=_extract_progress)
         raw_text = pdf_data["raw_text"]
         raw_chapters = pdf_data["chapters"]
-        
+
+        _set_task(task_id, "running", "Extracting metadata…", 29, stage="Extracting metadata")
+        heuristic_meta, front_matter_text = extract_pdf_metadata(pdf_path)
+        llm_meta: dict[str, str] = {}
+        cloud_provider = _resolve_cloud_llm_provider(load_config())
+        if cloud_provider and front_matter_text:
+            llm_meta = llm_extract_book_metadata(
+                front_matter_text,
+                heuristics=heuristic_meta,
+                provider=cloud_provider,
+            )
+
+        metadata_updates: dict[str, Any] = {}
+        for field_name in ("title", "author", "language", "description", "publisher", "subject", "isbn", "series"):
+            current_val = (getattr(meta, field_name, "") or "").strip()
+            candidate = (llm_meta.get(field_name) or heuristic_meta.get(field_name) or "").strip()
+            if candidate and not current_val:
+                metadata_updates[field_name] = candidate
+
+        if not (meta.cover_image or ""):
+            cover_dest = _project_path(project_id) / "cover.jpg"
+            if extract_pdf_cover(pdf_path, cover_dest):
+                metadata_updates["cover_image"] = cover_dest.name
+
+        if metadata_updates:
+            meta = update_project(project_id, metadata_updates)
+
         artifacts = artifact_dir(project_id)
         artifacts.mkdir(exist_ok=True)
         raw_path = artifacts / "raw_text.txt"
@@ -542,6 +592,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                     _json.dumps({"method": pdf_data.get("method"), "chapters": debug_snapshot}, indent=2),
                     encoding="utf-8",
                 )
+
             def _review_cancel_check():
                 t = _get_task(task_id)
                 return t and t.get("is_cancelled", False)
@@ -551,7 +602,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
 
             if cleaner in _debug_cleaners and pdf_data.get("method") == "toc":
                 _set_task(task_id, "running",
-                    "PDF has an embedded table of contents — normally chapter review "
+                    "PDF has an embedded table of contents - normally chapter review "
                     "would be skipped. Running it anyway…", 15, stage="Reviewing chapters")
 
             raw_chapters = llm_review_chapters(
@@ -578,33 +629,33 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
             "modules": modules,
             "chapters": [],
         }
-        
+
         if cleaner in ("llm", "embedded"):
             if cleaner == "embedded":
                 provider = "embedded"
             else:
                 provider = _require_cloud_llm_provider(load_config())
             cleaning_eval["provider"] = provider
-                
+
             def _cancel_check():
                 t = _get_task(task_id)
                 return t and t.get("is_cancelled", False)
-                
+
             try:
                 for i, ch in enumerate(raw_chapters):
                     if _cancel_check():
                         break
-                        
+
                     ch_title = ch["title"]
                     current_overall_progress = 30 + int((i / len(raw_chapters)) * 50)
-                    
+
                     def _progress_cb(msg: str, pct: int):
                         nonlocal current_overall_progress
                         # Localize progress over total chapters
                         base_prog = 30 + int((i / len(raw_chapters)) * 50)
                         overall_prog = base_prog + int((pct / 100) * (50 / len(raw_chapters)))
                         current_overall_progress = overall_prog
-                        _set_task(task_id, "running", f"Cleaning '{ch_title}' — {msg}", overall_prog, stage="Cleaning text")
+                        _set_task(task_id, "running", f"Cleaning '{ch_title}' - {msg}", overall_prog, stage="Cleaning text")
 
                     def _output_cb(chunk_text: str):
                         # We just append whatever token/text we received directly
@@ -663,9 +714,9 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
 
                     cleaned_result = llm_clean_text(
                         ch["raw_text"],
-                        provider=provider, 
-                        progress_callback=_progress_cb, 
-                        cancel_check=_cancel_check, 
+                        provider=provider,
+                        progress_callback=_progress_cb,
+                        cancel_check=_cancel_check,
                         output_callback=_output_cb,
                         retry_decision_callback=_gemini_retry_decision_cb if provider == "gemini" else None,
                         known_titles=[meta.title, ch_title],
@@ -691,7 +742,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                     )
                     if review_count and review_count != fallback_count:
                         warnings.append(f"{review_count} cleaning chunk(s) need review")
-                    
+
                     cleaned_chapters.append({
                         "title": ch_title,
                         "text": cleaned_ch_text,
@@ -708,7 +759,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
             total_ch = len(raw_chapters) or 1
             for i, ch in enumerate(raw_chapters):
                 ch_title = ch["title"]
-                # Map regex cleaning across the 30–88 band so the bar keeps moving.
+                # Map regex cleaning across the 30-88 band so the bar keeps moving.
                 overall_prog = 30 + int((i / total_ch) * 58)
                 _set_task(task_id, "running",
                     f"Cleaning chapter {i+1} of {total_ch}: '{ch_title}'…",
@@ -738,6 +789,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
         t = _get_task(task_id)
         if t and t.get("is_cancelled"):
             _set_task(task_id, "cancelled", "Processing cancelled.", t.get("progress", 0), stage="Cancelled")
+            _persist_parse_status("cancelled", "Cancelled", "Processing cancelled.", int(t.get("progress", 0)))
             return
 
         # Apply optional parsing modules (deterministic, offline text transforms)
@@ -751,7 +803,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
 
         cleaned_path = artifacts / "cleaned_text.txt"
         cleaned_path.write_text(full_cleaned_text.strip(), encoding="utf-8")
-        
+
         # We no longer need to auto-split because we split natively!
         _set_task(task_id, "running", "Saving chapters…", 90, stage="Saving")
 
@@ -759,9 +811,17 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
         save_chapters(project_id, chapters)
         update_project(project_id, {"current_step": "edit"})
         _set_task(task_id, "done", f"Parsed {len(chapters)} chapter(s) via {pdf_data.get('method', 'unknown')}.", 100, stage="Done")
+        _persist_parse_status(
+            "done",
+            "Done",
+            f"Parsed {len(chapters)} chapter(s) via {pdf_data.get('method', 'unknown')}.",
+            100,
+            extra={"chapter_count": len(chapters), "method": pdf_data.get("method", "unknown")},
+        )
     except Exception as e:
         logger.exception("Parse task failed")
         _set_task(task_id, "error", str(e), 0, stage="Error")
+        _persist_parse_status("error", "Error", str(e), 0, error=str(e))
 
 
 @app.post("/api/projects/{project_id}/parse")
@@ -1348,6 +1408,16 @@ def _sanitize_filename(name: str, fallback: str) -> str:
     return s or fallback
 
 
+def _preferred_epub_stem(meta: ProjectMetadata) -> str:
+    title_candidate = (meta.title or "").strip()
+    author_candidate = (meta.author or "").strip()
+    if title_candidate and author_candidate:
+        return _sanitize_filename(f"{title_candidate} - {author_candidate}", "book")
+    if title_candidate:
+        return _sanitize_filename(title_candidate, "book")
+    return "book"
+
+
 def resolve_merge_format(audio_format: str):
     """Map a requested merge format to its output extension and ffmpeg codec args.
 
@@ -1374,8 +1444,12 @@ def _find_chapter(chapters: list[dict], chapter_id: str) -> tuple[int, dict]:
     raise FileNotFoundError(f"Chapter '{chapter_id}' not found.")
 
 
-def _chapter_audio_relative_path(chapter: dict) -> str:
-    return f"audio/{chapter.get('id') or uuid.uuid4()}.mp3"
+def _chapter_audio_relative_path(chapter: dict, chapter_index: int) -> str:
+    """Generate a human-readable audio filename using chapter number and sanitized title."""
+    chapter_num = chapter_index + 1
+    chapter_title = chapter.get("title", f"Chapter {chapter_num}")
+    safe_title = _sanitize_filename(chapter_title, f"chapter_{chapter_num}")
+    return f"audio/chapter-{chapter_num:02d}-{safe_title}.mp3"
 
 
 async def synthesize_project_chapter(
@@ -1403,7 +1477,7 @@ async def synthesize_project_chapter(
     if chapter_audio_current(chapter, settings_hash, project_id) and not force:
         return {"status": "skipped", "chapter": chapter, "audio_path": chapter["tts"]["audio_path"]}
 
-    rel_audio_path = chapter.get("tts", {}).get("audio_path") or _chapter_audio_relative_path(chapter)
+    rel_audio_path = chapter.get("tts", {}).get("audio_path") or _chapter_audio_relative_path(chapter, index)
     final_path = project_file(project_id, rel_audio_path)
     if final_path is None:
         raise ValueError("Chapter audio path could not be resolved.")
@@ -1486,6 +1560,29 @@ async def synthesize_project_chapter(
 async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed: float,
                    single_file: bool = False, audio_format: str = "m4b",
                    read_headings: bool = True, force: bool = False):
+    tts_started_at = datetime.now(timezone.utc).isoformat()
+    tts_started_monotonic = time.perf_counter()
+
+    def _persist_tts_status(status: str, stage: str, message: str, progress: int, error: str | None = None, extra: dict[str, Any] | None = None):
+        payload: dict[str, Any] = {
+            "status": status,
+            "stage": stage,
+            "message": message,
+            "progress": progress,
+            "started_at": tts_started_at,
+        }
+        if status in ("done", "error", "cancelled"):
+            payload["completed_at"] = datetime.now(timezone.utc).isoformat()
+            payload["duration_seconds"] = round(max(0.0, time.perf_counter() - tts_started_monotonic), 2)
+        if error:
+            payload["error"] = error
+        if extra:
+            payload.update(extra)
+        try:
+            update_project(project_id, {"last_tts_status": payload})
+        except Exception:
+            logger.exception("Failed to persist TTS status for project %s", project_id)
+
     try:
         meta = update_project(project_id, {
             "tts_engine": engine,
@@ -1494,6 +1591,9 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
             "tts_read_headings": read_headings,
             "current_step": "export",
         })
+        _set_task(task_id, "running", "Preparing synthesis…", 2, stage="Preparing")
+        _persist_tts_status("running", "Preparing", "Preparing synthesis…", 2)
+
         chapters = load_chapters(project_id)
         if not chapters:
             raise ValueError("No chapters found. Parse the PDF first.")
@@ -1506,15 +1606,16 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
         for i, ch in enumerate(chapters):
             t = _get_task(task_id)
             if t and t.get("is_cancelled"):
-                _set_task(task_id, "error", "Task was cancelled.", t.get("progress", 0))
+                _set_task(task_id, "cancelled", "Task was cancelled.", t.get("progress", 0), stage="Cancelled")
+                _persist_tts_status("cancelled", "Cancelled", "Task was cancelled.", int(t.get("progress", 0)))
                 return
 
             progress = int((i / len(chapters)) * 90)
             ch_title = ch.get("title", f"Chapter {i + 1}")
-            _set_task(task_id, "running", f"Chapter {i + 1}/{len(chapters)}: {ch_title} — Synthesizing…", progress)
+            _set_task(task_id, "running", f"Chapter {i + 1}/{len(chapters)}: {ch_title} — Synthesizing…", progress, stage="Synthesizing")
 
             def _tts_progress_cb(msg: str, _pct: int = 0, _task_id: str = task_id, _base: int = progress):
-                _set_task(_task_id, "running", msg, _base)
+                _set_task(_task_id, "running", msg, _base, stage="Synthesizing")
 
             result = await synthesize_project_chapter(
                 project_id,
@@ -1531,14 +1632,22 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 audio_files.append(audio_path)
 
         if single_file and audio_files:
-            _set_task(task_id, "running", "Merging audio files…", 95)
+            _set_task(task_id, "running", "Merging audio files…", 95, stage="Merging")
             import subprocess
             ffmpeg_exe = shutil.which("ffmpeg")
+            ffprobe_exe = shutil.which("ffprobe")
             if ffmpeg_exe is None:
                 logger.warning("FFmpeg not found on PATH; skipping merge.")
                 save_chapters(project_id, chapters)
                 _set_task(task_id, "error",
-                          "FFmpeg not found. Please reinstall narratible to trigger FFmpeg installation.", 95)
+                          "FFmpeg not found. Please reinstall narratible to trigger FFmpeg installation.", 95, stage="Error")
+                _persist_tts_status(
+                    "error",
+                    "Error",
+                    "FFmpeg not found. Please reinstall narratible to trigger FFmpeg installation.",
+                    95,
+                    error="FFmpeg not found",
+                )
                 return
             list_path = exports_dir / "concat_list.txt"
             with open(list_path, "w", encoding="utf-8") as f:
@@ -1549,23 +1658,109 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
             fmt, codec_args = resolve_merge_format(audio_format)
             safe_book = _sanitize_filename(meta.title, "audiobook")
             merged_path = exports_dir / f"{safe_book}.{fmt}"
+
+            # Build ffmetadata with chapter markers if ffprobe is available
+            metadata_path = exports_dir / "ffmetadata.txt"
+            chapters_metadata_written = False
+            if ffprobe_exe:
+                try:
+                    cursor_ms = 0
+                    chapter_entries = []
+                    # audio_files and chapters are parallel - zip by position
+                    for audio_path, ch in zip(audio_files, chapters):
+                        result = subprocess.run(
+                            [ffprobe_exe, "-v", "error", "-show_entries",
+                             "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
+                             str(audio_path)],
+                            capture_output=True, text=True, check=True
+                        )
+                        duration_ms = int(float(result.stdout.strip()) * 1000)
+                        chapter_entries.append((cursor_ms, cursor_ms + duration_ms, ch.get("title", "")))
+                        cursor_ms += duration_ms
+
+                    lines = [";FFMETADATA1\n"]
+                    if meta.title:
+                        lines.append(f"title={meta.title}\n")
+                    if meta.author:
+                        lines.append(f"artist={meta.author}\n")
+                        lines.append(f"album_artist={meta.author}\n")
+                    # album = title groups chapters under the book in audiobook players
+                    if meta.title:
+                        lines.append(f"album={meta.title}\n")
+                    lines.append("genre=Audiobook\n")
+                    # year from created_at (e.g. "2026-06-18T...")
+                    try:
+                        lines.append(f"date={meta.created_at[:4]}\n")
+                    except Exception:
+                        pass
+                    lines.append("\n")
+                    for start_ms, end_ms, ch_title in chapter_entries:
+                        lines.append("[CHAPTER]\n")
+                        lines.append("TIMEBASE=1/1000\n")
+                        lines.append(f"START={start_ms}\n")
+                        lines.append(f"END={end_ms}\n")
+                        if ch_title:
+                            lines.append(f"title={ch_title}\n")
+                        lines.append("\n")
+                    metadata_path.write_text("".join(lines), encoding="utf-8")
+                    chapters_metadata_written = True
+                    logger.info(f"Wrote ffmetadata with {len(chapter_entries)} chapters.")
+                except Exception as e:
+                    logger.warning(f"Failed to build chapter metadata: {e}. Merging without chapters.")
+
+            # Resolve cover art path
+            cover_path: Path | None = None
+            if fmt == "m4b" and meta.cover_image:
+                candidate = _project_path(project_id) / meta.cover_image
+                if candidate.exists():
+                    cover_path = candidate
+
             try:
+                cmd = [ffmpeg_exe, "-y", "-f", "concat", "-safe", "0", "-i", str(list_path)]
+                metadata_input_index: int | None = None
+                cover_input_index: int | None = None
+                next_input = 1
+                if chapters_metadata_written:
+                    cmd += ["-i", str(metadata_path)]
+                    metadata_input_index = next_input
+                    next_input += 1
+                if cover_path:
+                    cmd += ["-i", str(cover_path)]
+                    cover_input_index = next_input
+                    next_input += 1
+                # Map streams: audio from concat input, optionally cover art
+                cmd += ["-map", "0:a"]
+                if cover_input_index is not None:
+                    cmd += ["-map", f"{cover_input_index}:v",
+                            "-c:v", "copy",
+                            f"-disposition:{cover_input_index - 1}:v", "attached_pic"]
+                if metadata_input_index is not None:
+                    cmd += ["-map_metadata", str(metadata_input_index)]
+                cmd += [*codec_args, str(merged_path)]
                 subprocess.run(
-                    [ffmpeg_exe, "-y", "-f", "concat", "-safe", "0", "-i", str(list_path),
-                     *codec_args, str(merged_path)],
+                    cmd,
                     check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
                 )
                 # optionally clean up individual chapters
                 list_path.unlink(missing_ok=True)
+                metadata_path.unlink(missing_ok=True)
             except subprocess.CalledProcessError as e:
                 logger.warning(f"FFmpeg failed to merge audio: {e}\nstderr: {e.stderr}")
             except Exception as e:
                 logger.warning(f"FFmpeg failed to merge audio: {e}")
 
-        _set_task(task_id, "done", "Audio synthesis complete.", 100)
+        _set_task(task_id, "done", "Audio synthesis complete.", 100, stage="Done")
+        _persist_tts_status(
+            "done",
+            "Done",
+            "Audio synthesis complete.",
+            100,
+            extra={"chapter_count": len(audio_files), "single_file": bool(single_file), "format": audio_format},
+        )
     except Exception as e:
         logger.exception("TTS task failed")
-        _set_task(task_id, "error", str(e), 0)
+        _set_task(task_id, "error", str(e), 0, stage="Error")
+        _persist_tts_status("error", "Error", str(e), 0, error=str(e))
 
 
 @app.post("/api/projects/{project_id}/tts/synthesize")
@@ -1588,7 +1783,7 @@ async def synthesize_book(
         raise HTTPException(status_code=404, detail=str(e))
 
     task_id = f"tts-{project_id}"
-    _set_task(task_id, "running", "Queued…", 0)
+    _set_task(task_id, "running", "Queued…", 0, stage="Queued")
     background_tasks.add_task(_run_tts, project_id, task_id, engine, voice, speed, single_file, audio_format, read_headings, force)
     return {"task_id": task_id}
 
@@ -1719,8 +1914,7 @@ async def export_epub(project_id: str):
 
     exports_dir = _project_path(project_id) / "exports"
     exports_dir.mkdir(exist_ok=True)
-    safe_title = "".join(c for c in meta.title if c.isalnum() or c in " _-").strip() or "book"
-    output_path = exports_dir / f"{safe_title}.epub"
+    output_path = exports_dir / f"{_preferred_epub_stem(meta)}.epub"
 
     cover_path = None
     if meta.cover_image:
@@ -1733,6 +1927,12 @@ async def export_epub(project_id: str):
             output_path=output_path,
             title=meta.title,
             author=meta.author,
+            language=meta.language,
+            description=meta.description,
+            publisher=meta.publisher,
+            subject=meta.subject,
+            isbn=meta.isbn,
+            series=meta.series,
             chapters=chapters,
             cover_image_path=cover_path,
         )
@@ -1783,6 +1983,55 @@ async def download_export(project_id: str, filename: str):
         raise HTTPException(status_code=404, detail="File not found.")
 
     return FileResponse(file_path, filename=safe_filename)
+
+
+@app.delete("/api/projects/{project_id}/exports/{filename}")
+async def delete_export(project_id: str, filename: str):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    safe_filename = Path(filename).name
+    if safe_filename != filename:
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+
+    exports_dir = (_project_path(project_id) / "exports").resolve()
+    audio_artifacts_dir = audio_dir(project_id).resolve()
+    export_candidate = (exports_dir / safe_filename).resolve()
+    audio_candidate = (audio_artifacts_dir / safe_filename).resolve()
+
+    file_path: Path | None = None
+    is_chapter_audio = False
+
+    if export_candidate.exists() and str(export_candidate).startswith(str(exports_dir)):
+        file_path = export_candidate
+    elif audio_candidate.exists() and str(audio_candidate).startswith(str(audio_artifacts_dir)):
+        file_path = audio_candidate
+        is_chapter_audio = True
+
+    if file_path is None or not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    file_path.unlink()
+
+    if is_chapter_audio:
+        changed = False
+        now_iso = datetime.now(timezone.utc).isoformat()
+        chapters = load_chapters(project_id)
+        for chapter in chapters:
+            rel_path = (chapter.get("tts") or {}).get("audio_path") or chapter.get("audio_path")
+            if rel_path and Path(rel_path).name == safe_filename:
+                tts_state = dict(chapter.get("tts") or {})
+                tts_state["status"] = "missing"
+                tts_state["error"] = None
+                tts_state["updated_at"] = now_iso
+                chapter["tts"] = tts_state
+                changed = True
+        if changed:
+            save_chapters(project_id, chapters)
+
+    return {"message": "Export removed.", "filename": safe_filename}
 
 
 # ── Audiobookshelf ────────────────────────────────────────────────────────────

@@ -79,6 +79,26 @@ export const TIPS = [
     body: 'Set the title/author and upload a cover image. Your edits auto-save when you click Continue.',
   },
   {
+    id: 'w2-meta-language', context: 'wizard', step: 2, anchor: 'metadata-language', placement: 'left',
+    title: 'Language code',
+    body: 'Use a short language code like "en" or "fr" so ebook readers classify the book correctly.',
+  },
+  {
+    id: 'w2-meta-description', context: 'wizard', step: 2, anchor: 'metadata-description', placement: 'left',
+    title: 'Book description',
+    body: 'Add a short summary for EPUB metadata so library apps show richer details.',
+  },
+  {
+    id: 'w2-meta-publisher', context: 'wizard', step: 2, anchor: 'metadata-publisher', placement: 'left',
+    title: 'Publisher and subject',
+    body: 'Publisher and subject tags make the export easier to organize in reading apps.',
+  },
+  {
+    id: 'w2-meta-isbn', context: 'wizard', step: 2, anchor: 'metadata-isbn', placement: 'left',
+    title: 'ISBN and series',
+    body: 'If available, include ISBN and series info to improve metadata matching in libraries.',
+  },
+  {
     id: 'w2-cleaning-review', context: 'wizard', step: 2, anchor: 'cleaning-review', placement: 'left',
     title: 'Review cleanup warnings',
     body: 'Warnings show the chapter and nearby text to check. Advanced cleanup tools keep retry and comparison details nearby.',
@@ -153,6 +173,11 @@ export const TIPS = [
     id: 'w4-abs', context: 'wizard', step: 4, anchor: 'abs-panel', placement: 'left',
     title: 'Download or upload',
     body: 'Download files from the list, or upload them straight to your Audiobookshelf server (configure it in Settings → Integrations).',
+  },
+  {
+    id: 'w4-export-delete', context: 'wizard', step: 4, anchor: 'export-delete', placement: 'left',
+    title: 'Clean up generated files',
+    body: 'Use the delete button to remove old EPUB or audio files you no longer need.',
   },
 
   // ── Settings · Cloud LLM Keys ─────────────────────────────────────────

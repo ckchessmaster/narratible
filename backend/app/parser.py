@@ -8,6 +8,98 @@ from .page_artifacts import looks_like_small_text_content_line
 
 logger = logging.getLogger(__name__)
 
+
+def extract_pdf_metadata(pdf_path: Path) -> tuple[dict[str, str], str]:
+    """Extract heuristic metadata and front-matter text from a PDF.
+
+    Returns a tuple ``(metadata, front_matter_text)`` where ``metadata`` contains
+    best-effort values for title/author/subject/publisher and
+    ``front_matter_text`` contains text from pages 0-3 for optional LLM
+    verification/fill.
+    """
+
+    metadata: dict[str, str] = {}
+    front_pages_text: list[str] = []
+
+    try:
+        with fitz.open(str(pdf_path)) as doc:
+            raw_meta = doc.metadata or {}
+
+            title = (raw_meta.get("title") or "").strip()
+            author = (raw_meta.get("author") or "").strip()
+            subject = (raw_meta.get("subject") or raw_meta.get("keywords") or "").strip()
+            publisher = (raw_meta.get("publisher") or raw_meta.get("creator") or "").strip()
+
+            if title:
+                metadata["title"] = title
+            if author:
+                metadata["author"] = author
+            if subject:
+                metadata["subject"] = subject
+            if publisher:
+                metadata["publisher"] = publisher
+
+            front_page_limit = min(len(doc), 4)
+            for page_index in range(front_page_limit):
+                text = (doc[page_index].get_text() or "").strip()
+                if text:
+                    front_pages_text.append(text)
+
+            front_matter_text = "\n\n".join(front_pages_text)
+            if front_matter_text:
+                isbn_match = re.search(r"\b97[89][-\s]?(?:\d[-\s]?){9}\d\b", front_matter_text)
+                if isbn_match:
+                    metadata["isbn"] = isbn_match.group(0).replace(" ", "")
+
+                series_match = re.search(
+                    r"(?:series|book\s+\d+\s+of)\s*[:\-]?\s*([^\n]{3,120})",
+                    front_matter_text,
+                    re.IGNORECASE,
+                )
+                if series_match:
+                    metadata["series"] = series_match.group(1).strip()
+
+                language_match = re.search(r"\blanguage\s*[:\-]\s*([A-Za-z\-]{2,32})\b", front_matter_text, re.IGNORECASE)
+                if language_match:
+                    metadata["language"] = language_match.group(1).strip().lower()
+
+                summary_line = next(
+                    (
+                        ln.strip()
+                        for ln in front_matter_text.splitlines()
+                        if len(ln.strip()) >= 40 and not ln.strip().lower().startswith(("copyright", "isbn", "all rights reserved"))
+                    ),
+                    "",
+                )
+                if summary_line:
+                    metadata["description"] = summary_line
+    except Exception as exc:
+        logger.warning("Failed to extract PDF metadata from %s: %s", pdf_path, exc)
+
+    front_matter_text = "\n\n".join(front_pages_text).strip()
+    return metadata, front_matter_text
+
+
+def extract_pdf_cover(pdf_path: Path, output_path: Path) -> bool:
+    """Render page 0 as JPEG and save it to output_path.
+
+    Returns True when cover extraction succeeds, otherwise False.
+    """
+
+    try:
+        with fitz.open(str(pdf_path)) as doc:
+            if len(doc) == 0:
+                return False
+            page = doc[0]
+            scale = 150 / 72
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            pix.save(str(output_path), output="jpg")
+            return True
+    except Exception as exc:
+        logger.warning("Failed to extract PDF cover from %s: %s", pdf_path, exc)
+        return False
+
 def extract_structured_from_pdf(pdf_path: Path, progress_callback=None) -> Dict[str, Any]:
     """
     Extracts text and detects chapters using native TOC or layout analysis.

@@ -2,7 +2,17 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { getProject, updateProject, getChapters, saveChapters, uploadCover, getDebugChapters, getDebugPrompt, getCleaningEval, saveCleaningEval, getCleaningProfiles, redoCleaningChunk, applyCleaningVariant, batchRedoCleaning, getCleaningReport } from '../api'
 
 export default function Step2Editor({ projectId, isActive, onNext, onBack, toast, debugMode = false }) {
-  const [meta, setMeta] = useState({ title: '', author: '', cover_image: null })
+  const [meta, setMeta] = useState({
+    title: '',
+    author: '',
+    language: 'en',
+    description: '',
+    publisher: '',
+    subject: '',
+    isbn: '',
+    series: '',
+    cover_image: null,
+  })
   const [chapters, setChapters] = useState([])
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [saving, setSaving] = useState(false)
@@ -29,7 +39,17 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     if (!projectId) {
       // Resetting all state when the project is cleared — batched by React 18
       /* eslint-disable react-hooks/set-state-in-effect */
-      setMeta({ title: '', author: '', cover_image: null })
+      setMeta({
+        title: '',
+        author: '',
+        language: 'en',
+        description: '',
+        publisher: '',
+        subject: '',
+        isbn: '',
+        series: '',
+        cover_image: null,
+      })
       setChapters([])
       setSelectedIdx(0)
       setLoading(true)
@@ -54,7 +74,17 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
       getCleaningProfiles().catch(() => []),
     ])
       .then(([p, chs, dbg, prompt, evalReport, profiles]) => {
-        setMeta({ title: p.title, author: p.author, cover_image: p.cover_image })
+        setMeta({
+          title: p.title || '',
+          author: p.author || '',
+          language: p.language || 'en',
+          description: p.description || '',
+          publisher: p.publisher || '',
+          subject: p.subject || '',
+          isbn: p.isbn || '',
+          series: p.series || '',
+          cover_image: p.cover_image,
+        })
         setChapters(chs)
         setDebugComparison(dbg ?? null)
         setDebugPrompt(prompt ?? null)
@@ -223,7 +253,16 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     try {
       await Promise.all([
         saveChapters(projectId, chapters),
-        updateProject(projectId, { title: meta.title, author: meta.author }),
+        updateProject(projectId, {
+          title: meta.title,
+          author: meta.author,
+          language: meta.language,
+          description: meta.description,
+          publisher: meta.publisher,
+          subject: meta.subject,
+          isbn: meta.isbn,
+          series: meta.series,
+        }),
         cleaningEval ? saveCleaningEval(projectId, cleaningEval) : Promise.resolve(),
       ])
       if (dirtyVersionRef.current === saveVersion) {
@@ -239,7 +278,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     } finally {
       setSaving(false)
     }
-  }, [projectId, chapters, meta.title, meta.author, cleaningEval, toast])
+  }, [projectId, chapters, meta.title, meta.author, meta.language, meta.description, meta.publisher, meta.subject, meta.isbn, meta.series, cleaningEval, toast])
 
   useEffect(() => {
     if (!projectId || !isActive || !dirtyRef.current || saveStatus !== 'dirty') return
@@ -808,6 +847,36 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           <div className="field">
             <label>Author</label>
             <input type="text" value={meta.author} onChange={e => updateMeta({ author: e.target.value })} autoComplete="off" />
+          </div>
+          <div className="field" data-tip-anchor="metadata-language">
+            <label>Language</label>
+            <input type="text" value={meta.language || ''} onChange={e => updateMeta({ language: e.target.value })} placeholder="en" autoComplete="off" />
+          </div>
+          <div className="field" data-tip-anchor="metadata-description">
+            <label>Description</label>
+            <textarea
+              value={meta.description || ''}
+              onChange={e => updateMeta({ description: e.target.value })}
+              rows={3}
+              placeholder="Short summary used in EPUB metadata"
+              style={{ resize: 'vertical' }}
+            />
+          </div>
+          <div className="field" data-tip-anchor="metadata-publisher">
+            <label>Publisher</label>
+            <input type="text" value={meta.publisher || ''} onChange={e => updateMeta({ publisher: e.target.value })} autoComplete="off" />
+          </div>
+          <div className="field" data-tip-anchor="metadata-subject">
+            <label>Subject</label>
+            <input type="text" value={meta.subject || ''} onChange={e => updateMeta({ subject: e.target.value })} autoComplete="off" />
+          </div>
+          <div className="field" data-tip-anchor="metadata-isbn">
+            <label>ISBN</label>
+            <input type="text" value={meta.isbn || ''} onChange={e => updateMeta({ isbn: e.target.value })} autoComplete="off" />
+          </div>
+          <div className="field" data-tip-anchor="metadata-series">
+            <label>Series</label>
+            <input type="text" value={meta.series || ''} onChange={e => updateMeta({ series: e.target.value })} autoComplete="off" />
           </div>
 
           <div className="field">

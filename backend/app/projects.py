@@ -24,6 +24,12 @@ class ProjectMetadata(BaseModel):
     id: str
     title: str
     author: str = ""
+    language: str = "en"
+    description: str = ""
+    publisher: str = ""
+    subject: str = ""
+    isbn: str = ""
+    series: str = ""
     created_at: str = Field(default_factory=lambda: _utc_now())
     updated_at: str = Field(default_factory=lambda: _utc_now())
     current_step: str = "upload"
@@ -35,6 +41,8 @@ class ProjectMetadata(BaseModel):
     tts_read_headings: bool = True
     enabled_modules: list[str] = Field(default_factory=list)
     chapter_count: int = 0
+    last_parse_status: dict[str, Any] | None = None
+    last_tts_status: dict[str, Any] | None = None
 
 
 def _utc_now() -> str:

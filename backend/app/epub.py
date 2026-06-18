@@ -27,9 +27,14 @@ OPF_TEMPLATE = """\
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">{book_id}</dc:identifier>
+    {isbn_identifier}
     <dc:title>{title}</dc:title>
     <dc:creator>{author}</dc:creator>
-    <dc:language>en</dc:language>
+    <dc:language>{language}</dc:language>
+    {description}
+    {publisher}
+    {subject}
+    {series}
     <meta property="dcterms:modified">{modified}</meta>
   </metadata>
   <manifest>
@@ -91,6 +96,12 @@ def build_epub(
     output_path: Path,
     title: str,
     author: str,
+  language: str,
+  description: str,
+  publisher: str,
+  subject: str,
+  isbn: str,
+  series: str,
     chapters: list[dict],
     cover_image_path: Optional[Path] = None,
 ) -> Path:
@@ -163,12 +174,26 @@ def build_epub(
         )
 
         # content.opf
+        safe_language = (language or "en").strip() or "en"
+        isbn_value = (isbn or "").strip()
+        isbn_identifier = f'<dc:identifier id="isbn">urn:isbn:{escape(isbn_value)}</dc:identifier>' if isbn_value else ""
+        description_tag = f"<dc:description>{escape((description or '').strip())}</dc:description>" if (description or "").strip() else ""
+        publisher_tag = f"<dc:publisher>{escape((publisher or '').strip())}</dc:publisher>" if (publisher or "").strip() else ""
+        subject_tag = f"<dc:subject>{escape((subject or '').strip())}</dc:subject>" if (subject or "").strip() else ""
+        series_tag = f"<meta property=\"belongs-to-collection\">{escape((series or '').strip())}</meta>" if (series or "").strip() else ""
+
         epub.writestr(
             "OEBPS/content.opf",
             OPF_TEMPLATE.format(
                 book_id=book_id,
+            isbn_identifier=isbn_identifier,
                 title=escape(title),
                 author=escape(author),
+            language=escape(safe_language),
+            description=description_tag,
+            publisher=publisher_tag,
+            subject=subject_tag,
+            series=series_tag,
                 modified=modified,
                 cover_item=cover_item,
                 chapter_items="\n    ".join(chapter_items),
