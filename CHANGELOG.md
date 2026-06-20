@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.6.0 - 2026-06-19
+
+### Features
+- Added a full text modernization workflow with selectable profiles, per-chunk variants, and commit/undo/discard session controls across backend APIs and the Step 2 editor.
+- Added richer parse-time metadata extraction (title/author/subject/publisher, ISBN, series, language, description) plus automatic PDF cover extraction and project metadata updates.
+- Expanded the guided review experience with persisted review-flow state, modernization checkpoints, and improved chapter/edit synchronization in the review UI.
+- Enhanced TTS and voice-library support for F5 voices, including multi-sample management and improved reference transcript handling.
+
+### Bugfixes
+- Fixed modernization review actions so selecting, skipping, or clearing chunk variants does not overwrite chapter text until an explicit commit.
+- Fixed parsing and synthesis progress UX issues by improving persisted task-status hydration and preventing stale polling/session updates in export flows.
+- Fixed stale-audio handling so chapter audio is marked stale when text/settings change, skips regeneration when current, and supports targeted forced regeneration.
+- Fixed F5 reference transcript mismatches by validating transcript plausibility against clip duration and preferring transcribed text when supplied text is unsuitable.
+
 ## v1.5.0 - 2026-06-17
 
 ### Features

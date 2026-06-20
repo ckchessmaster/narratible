@@ -7,7 +7,8 @@
     "/.*npm run lint.*/": true,
     "/.*npx eslint.*/": true,
     "/git status.*/": true,
-    "/git diff.*/": true
+    "/git diff.*/": true,
+    "/.*git tag --sort.*/": true
   }
 }
 
