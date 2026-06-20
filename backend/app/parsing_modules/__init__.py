@@ -7,6 +7,8 @@ and selected per-project via the parse endpoint.
 
 from . import bible, prose_reflow
 
+MODERNIZATION_MODULE_ID = "modernize_text"
+
 # id -> module descriptor. ``transform`` is a callable ``str -> str``.
 # ``tts_transform`` is optional and receives ``(text, engine)``.
 MODULES: dict[str, dict] = {
@@ -29,13 +31,25 @@ MODULES: dict[str, dict] = {
         "transform": bible.transform,
         "tts_transform": bible.tts_transform,
     },
+    MODERNIZATION_MODULE_ID: {
+        "id": MODERNIZATION_MODULE_ID,
+        "name": "Text Modernization",
+        "description": (
+            "Uses an LLM to create reviewable modern-language candidates for older, "
+            "hard-to-read prose while preserving meaning."
+        ),
+        "kind": "llm_modernization",
+        "requires_llm": True,
+        "warning": "Slower and less predictable than deterministic enhancements. Review candidates before TTS or export.",
+        "profiles_endpoint": "/api/modernization-profiles",
+    },
 }
 
 
 def list_modules() -> list[dict]:
     """Return module metadata (without the transform callable) for the API."""
     return [
-        {"id": m["id"], "name": m["name"], "description": m["description"]}
+        {key: value for key, value in m.items() if key not in {"transform", "tts_transform"}}
         for m in MODULES.values()
     ]
 

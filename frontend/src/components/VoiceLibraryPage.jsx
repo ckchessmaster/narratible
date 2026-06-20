@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  addLibraryVoiceSample,
   createLibraryVoice,
   deleteLibraryVoice,
+  deleteLibraryVoiceSample,
   listLibraryVoices,
+  setLibraryVoiceSample,
   testDraftLibraryVoice,
   testLibraryVoice,
   updateLibraryVoice,
@@ -38,15 +41,23 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [sampleBusy, setSampleBusy] = useState('')
   const [testText, setTestText] = useState(DEFAULT_TEST_TEXT)
   const [previewUrl, setPreviewUrl] = useState('')
   const audioRef = useRef(null)
   const formRef = useRef(null)
+  const sampleInputRef = useRef(null)
 
   const selectedVoice = useMemo(
     () => voices.find(voice => voice.id === selectedId) || null,
     [voices, selectedId]
   )
+  const selectedSampleFilenames = useMemo(() => {
+    if (!selectedVoice) return []
+    const filenames = [selectedVoice.sample_filename, ...(selectedVoice.sample_filenames || [])]
+      .filter(Boolean)
+    return [...new Set(filenames)]
+  }, [selectedVoice])
   const isNew = !selectedVoice
 
   const refresh = useCallback(async (nextSelectedId) => {
@@ -148,6 +159,57 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
     }
   }
 
+  const handleSampleUpload = async (event) => {
+    const file = event.target.files?.[0]
+    if (!selectedVoice || !file) return
+    setSampleBusy('upload')
+    try {
+      const updated = await addLibraryVoiceSample(selectedVoice.id, file, true)
+      await refresh(updated.id)
+      setDraft(draftFromVoice(updated))
+      notifyChanged()
+      toast('Reference audio uploaded and set active.', 'success')
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setSampleBusy('')
+      event.target.value = ''
+    }
+  }
+
+  const handleSetActiveSample = async (sampleFilename) => {
+    if (!selectedVoice || sampleFilename === selectedVoice.sample_filename) return
+    setSampleBusy(`activate:${sampleFilename}`)
+    try {
+      const updated = await setLibraryVoiceSample(selectedVoice.id, sampleFilename)
+      await refresh(updated.id)
+      setDraft(draftFromVoice(updated))
+      notifyChanged()
+      toast('Active reference audio updated.', 'success')
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setSampleBusy('')
+    }
+  }
+
+  const handleDeleteSample = async (sampleFilename) => {
+    if (!selectedVoice) return
+    if (!window.confirm(`Remove "${sampleFilename}" from this voice?`)) return
+    setSampleBusy(`delete:${sampleFilename}`)
+    try {
+      const updated = await deleteLibraryVoiceSample(selectedVoice.id, sampleFilename)
+      await refresh(updated.id)
+      setDraft(draftFromVoice(updated))
+      notifyChanged()
+      toast('Reference audio removed.', 'success')
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setSampleBusy('')
+    }
+  }
+
   const handleTest = async () => {
     if (isNew && !draft.file) {
       toast('Add a reference audio file first.', 'error')
@@ -161,7 +223,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
     try {
       const response = isNew
         ? await testDraftLibraryVoice({ text: testText, speed: draft.speed, temperature: draft.temperature, file: draft.file })
-        : await testLibraryVoice(selectedVoice.id, testText)
+        : await testLibraryVoice(selectedVoice.id, testText, { speed: draft.speed, temperature: draft.temperature })
       if (!response.ok) throw await responseError(response)
       const blob = await response.blob()
       if (previewUrl) URL.revokeObjectURL(previewUrl)
@@ -250,7 +312,65 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                     accept=".wav,.mp3,.flac"
                     onChange={event => updateDraft({ file: event.target.files?.[0] || null })}
                   />
-                  <div className="text-xs text-muted mt-1">Use a clean 5-15 second clip with one speaker and no music.</div>
+                  <div className="text-xs text-muted mt-1">Use a clean single-speaker clip with no music. narratible will transcribe the usable F5 reference clip automatically.</div>
+                </div>
+              )}
+              {!isNew && (
+                <div className="field">
+                  <label>Reference audio files</label>
+                  <input
+                    ref={sampleInputRef}
+                    type="file"
+                    accept=".wav,.mp3,.flac"
+                    style={{ display: 'none' }}
+                    onChange={handleSampleUpload}
+                  />
+                  <div className="flex flex-col gap-2">
+                    {selectedSampleFilenames.map(sampleFilename => {
+                      const isActive = sampleFilename === selectedVoice.sample_filename
+                      return (
+                        <div key={sampleFilename} className="glass" style={{ padding: 8, borderRadius: 'var(--radius-sm)' }}>
+                          <div className="flex justify-between items-start gap-2">
+                            <div style={{ minWidth: 0 }}>
+                              <div className="text-xs truncate" style={{ fontWeight: 700 }} title={sampleFilename}>{sampleFilename}</div>
+                              {isActive && <div className="text-xs" style={{ color: 'var(--success)' }}>Active reference</div>}
+                            </div>
+                            <div className="flex gap-1" style={{ flexShrink: 0 }}>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                style={{ fontSize: 11, padding: '3px 6px' }}
+                                disabled={isActive || Boolean(sampleBusy)}
+                                onClick={() => handleSetActiveSample(sampleFilename)}
+                              >
+                                {sampleBusy === `activate:${sampleFilename}` ? 'Using...' : 'Use'}
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                style={{ fontSize: 11, padding: '3px 6px', color: 'var(--danger)' }}
+                                disabled={selectedSampleFilenames.length <= 1 || Boolean(sampleBusy)}
+                                onClick={() => handleDeleteSample(sampleFilename)}
+                              >
+                                {sampleBusy === `delete:${sampleFilename}` ? 'Removing...' : 'Remove'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm w-full"
+                      disabled={Boolean(sampleBusy)}
+                      onClick={() => sampleInputRef.current?.click()}
+                    >
+                      {sampleBusy === 'upload' ? 'Uploading...' : '+ Add reference audio'}
+                    </button>
+                  </div>
+                  <div className="text-xs text-muted mt-1">
+                    The active file is used for Voice Library generation. Switch files here when you want to test or use a different reference clip.
+                  </div>
                 </div>
               )}
               <div className="field">

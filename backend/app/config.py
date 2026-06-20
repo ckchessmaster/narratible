@@ -26,7 +26,6 @@ class AppConfig(BaseModel):
     audiobookshelf_token: str = ""
     default_tts_engine: str = "edge-tts"
     selected_gpu_index: int = 0  # -1 = CPU; 0, 1, 2... = CUDA device index
-    f5_ref_max_seconds: int = 10  # Maximum reference audio duration in seconds for F5-TTS voice cloning
     debug_mode: bool = False
 
 def load_config() -> AppConfig:

@@ -3,6 +3,7 @@
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -67,6 +68,23 @@ def test_tts_settings_change_marks_current_audio_stale(tmp_path, monkeypatch):
     assert updated["tts"]["audio_path"]
 
 
+def test_project_review_flow_fields_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path)
+    project = projects.create_project("Book", "Author")
+
+    updated = projects.update_project(project.id, {
+        "review_flow_step": "chapter_setup",
+        "review_flow_completed_steps": ["cleanup_metadata"],
+        "review_flow_unlocked_at": "2026-06-19T00:00:00+00:00",
+    })
+    reloaded = projects.get_project(project.id)
+
+    assert updated.review_flow_step == "chapter_setup"
+    assert reloaded.review_flow_step == "chapter_setup"
+    assert reloaded.review_flow_completed_steps == ["cleanup_metadata"]
+    assert reloaded.review_flow_unlocked_at == "2026-06-19T00:00:00+00:00"
+
+
 def test_chapter_tts_skips_when_audio_is_current(tmp_path, monkeypatch):
     project_id = _project_with_current_audio(tmp_path, monkeypatch)
     chapter = projects.load_chapters(project_id)[0]
@@ -122,3 +140,48 @@ def test_chapter_tts_regenerates_only_requested_stale_chapter(tmp_path, monkeypa
     assert updated[0]["tts"]["status"] == "not_generated"
     assert updated[1]["tts"]["status"] == "complete"
     assert projects.project_file(project.id, updated[1]["tts"]["audio_path"]).exists()
+
+
+def test_library_voice_reference_resolution_ignores_saved_transcript(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "get_library_voice",
+        lambda voice_id: SimpleNamespace(reference_text="This saved transcript is ignored.", temperature=0.8),
+    )
+    monkeypatch.setattr(main, "get_library_voice_sample_path", lambda voice_id: tmp_path / "reference.wav")
+
+    voice_sample_path, voice_samples_dir, voice_reference_text, temperature = main._resolve_f5_voice_reference(
+        "project-1",
+        "voice-1",
+    )
+
+    assert voice_sample_path == tmp_path / "reference.wav"
+    assert voice_samples_dir is None
+    assert voice_reference_text is None
+    assert temperature == 0.8
+
+
+def test_voice_library_test_ignores_request_reference_text(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_synthesize_speech(**kwargs):
+        calls.append(kwargs)
+        kwargs["output_path"].write_bytes(b"audio")
+
+    monkeypatch.setattr(
+        main,
+        "get_library_voice",
+        lambda voice_id: SimpleNamespace(id=voice_id, speed=1.0, temperature=0.7, reference_text="Saved text"),
+    )
+    monkeypatch.setattr(main, "get_library_voice_preview_path", lambda voice_id: tmp_path / "preview.mp3")
+    monkeypatch.setattr(main, "get_library_voice_sample_path", lambda voice_id: tmp_path / "reference.wav")
+    monkeypatch.setattr(main, "synthesize_speech", fake_synthesize_speech)
+
+    asyncio.run(
+        main.api_test_voice_library_item(
+            "voice-1",
+            main.VoiceLibraryTestRequest(text="Test generation text.", reference_text="Request text"),
+        )
+    )
+
+    assert calls[0]["voice_reference_text"] is None

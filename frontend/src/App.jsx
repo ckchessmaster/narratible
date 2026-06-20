@@ -13,7 +13,7 @@ import useTips from './useTips'
 
 const STEPS = [
   { label: 'Upload' },
-  { label: 'Edit' },
+  { label: 'Review' },
   { label: 'Voice' },
   { label: 'Export' },
 ]
@@ -35,6 +35,7 @@ export default function App() {
   const [toasts, setToasts] = useState([])
   const [cudaEnabled, setCudaEnabled] = useState(true)
   const [hasCloudKey, setHasCloudKey] = useState(false)
+  const [hasModernizationLlm, setHasModernizationLlm] = useState(false)
   const [debugMode, setDebugMode] = useState(false)
   const [projects, setProjects] = useState([])
   const [projectsLoading, setProjectsLoading] = useState(false)
@@ -50,8 +51,11 @@ export default function App() {
       const gpus = info?.gpus ?? []
       const selectedIdx = cfg?.selected_gpu_index ?? 0
       const selectedGpu = gpus.find(g => g.index === selectedIdx) ?? gpus[0]
+      const cloudConfigured = !!(cfg?.gemini_api_key || cfg?.openai_api_key)
+      const localConfigured = cfg?.llm_provider === 'local' && !!cfg?.embedded_llm_model && !!selectedGpu?.cuda
       setCudaEnabled(selectedGpu?.cuda ?? true)
-      setHasCloudKey(!!(cfg?.gemini_api_key || cfg?.openai_api_key))
+      setHasCloudKey(cloudConfigured)
+      setHasModernizationLlm(cloudConfigured || localConfigured)
       setDebugMode(!!(cfg?.debug_mode))
     }).catch(() => {})
   }, [])
@@ -240,6 +244,7 @@ export default function App() {
                 toast={toast}
                 cudaEnabled={cudaEnabled}
                 hasCloudKey={hasCloudKey}
+                hasModernizationLlm={hasModernizationLlm}
                 debugMode={debugMode}
                 onProjectChanged={refreshProjects}
               />

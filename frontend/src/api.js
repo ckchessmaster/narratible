@@ -54,13 +54,14 @@ export const uploadPdf = (projectId, file) => {
   return request('POST', `/projects/${projectId}/upload-pdf`, fd, true)
 }
 
-export const parsePdf = (projectId, cleaner = 'regex', modules = [], cleaningProfile = 'safe') => {
+export const parsePdf = (projectId, cleaner = 'regex', modules = [], cleaningProfile = 'safe', modernizationProfile = 'standard_modern') => {
   const moduleParams = modules.map(m => `&modules=${encodeURIComponent(m)}`).join('')
-  return request('POST', `/projects/${projectId}/parse?cleaner=${cleaner}&cleaning_profile=${encodeURIComponent(cleaningProfile)}${moduleParams}`)
+  return request('POST', `/projects/${projectId}/parse?cleaner=${cleaner}&cleaning_profile=${encodeURIComponent(cleaningProfile)}&modernization_profile=${encodeURIComponent(modernizationProfile)}${moduleParams}`)
 }
 
 export const getParsingModules = () => request('GET', '/parsing-modules')
 export const getCleaningProfiles = () => request('GET', '/cleaning-profiles')
+export const getModernizationProfiles = () => request('GET', '/modernization-profiles')
 
 export const cancelTask = (projectId) => request('POST', `/projects/${projectId}/cancel`)
 
@@ -80,6 +81,28 @@ export const applyCleaningVariant = (id, chapterIndex, chunkId, variantId, apply
 export const batchRedoCleaning = (id, chunks, cleaningProfile = 'balanced', provider = null) =>
   request('POST', `/projects/${id}/batch-redo-cleaning`, { chunks, cleaning_profile: cleaningProfile, provider })
 export const getCleaningReport = (id) => request('GET', `/projects/${id}/cleaning-report`)
+export const getModernizationEval = (id) => request('GET', `/projects/${id}/modernization-eval`)
+export const saveModernizationEval = (id, evaluation) => request('PUT', `/projects/${id}/modernization-eval`, evaluation)
+export const modernizeChapter = (id, chapterIndex, modernizationProfile = 'standard_modern', provider = null) =>
+  request('POST', `/projects/${id}/chapters/${chapterIndex}/modernize`, { modernization_profile: modernizationProfile, provider })
+export const modernizeProject = (id, modernizationProfile = 'standard_modern', provider = null) =>
+  request('POST', `/projects/${id}/modernize`, { modernization_profile: modernizationProfile, provider })
+export const redoModernizationChunk = (id, chapterIndex, chunkId, modernizationProfile = 'standard_modern', provider = null, redoMode = 'try_again', instruction = null) =>
+  request('POST', `/projects/${id}/chapters/${chapterIndex}/modernization-chunks/${chunkId}/redo`, { modernization_profile: modernizationProfile, provider, redo_mode: redoMode, instruction })
+export const applyModernizationVariant = (id, chapterIndex, chunkId, variantId, applyToChapterText = false) =>
+  request('POST', `/projects/${id}/chapters/${chapterIndex}/modernization-chunks/${chunkId}/apply-variant`, { variant_id: variantId, apply_to_chapter_text: applyToChapterText })
+export const selectModernizationVariant = (id, chapterIndex, chunkId, variantId) =>
+  request('POST', `/projects/${id}/chapters/${chapterIndex}/modernization-chunks/${chunkId}/select-variant`, { variant_id: variantId })
+export const skipModernizationChunk = (id, chapterIndex, chunkId) =>
+  request('POST', `/projects/${id}/chapters/${chapterIndex}/modernization-chunks/${chunkId}/skip`)
+export const clearModernizationSelection = (id, chapterIndex, chunkId) =>
+  request('POST', `/projects/${id}/chapters/${chapterIndex}/modernization-chunks/${chunkId}/clear-selection`)
+export const commitModernizationSession = (id, chapterIndex) =>
+  request('POST', `/projects/${id}/chapters/${chapterIndex}/modernization/commit`)
+export const undoLastModernizationCommit = (id, chapterIndex) =>
+  request('POST', `/projects/${id}/chapters/${chapterIndex}/modernization/undo-last-commit`)
+export const discardModernizationSession = (id, chapterIndex) =>
+  request('POST', `/projects/${id}/chapters/${chapterIndex}/modernization/discard`)
 
 // Cover
 export const uploadCover = (projectId, file) => {
@@ -118,6 +141,16 @@ export const createLibraryVoice = ({ name, notes, speed, temperature, file }) =>
 }
 export const updateLibraryVoice = (id, updates) => request('PATCH', `/voice-library/${encodeURIComponent(id)}`, updates)
 export const deleteLibraryVoice = (id) => request('DELETE', `/voice-library/${encodeURIComponent(id)}`)
+export const addLibraryVoiceSample = (id, file, activate = true) => {
+  const fd = new FormData()
+  fd.append('activate', activate)
+  fd.append('file', file)
+  return request('POST', `/voice-library/${encodeURIComponent(id)}/samples`, fd, true)
+}
+export const setLibraryVoiceSample = (id, sampleFilename) =>
+  request('POST', `/voice-library/${encodeURIComponent(id)}/samples/active`, { sample_filename: sampleFilename })
+export const deleteLibraryVoiceSample = (id, sampleFilename) =>
+  request('DELETE', `/voice-library/${encodeURIComponent(id)}/samples/${encodeURIComponent(sampleFilename)}`)
 export const testDraftLibraryVoice = ({ text, speed, temperature, file }) => {
   const fd = new FormData()
   fd.append('text', text)
@@ -129,11 +162,11 @@ export const testDraftLibraryVoice = ({ text, speed, temperature, file }) => {
     body: fd,
   })
 }
-export const testLibraryVoice = (id, text) =>
+export const testLibraryVoice = (id, text, options = {}) =>
   fetch(`${BASE}/voice-library/${encodeURIComponent(id)}/test`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, ...options }),
   })
 
 // Voice samples

@@ -9,7 +9,38 @@ from pathlib import Path
 # Ensure the backend root (containing the ``app`` package) is importable.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.parser import _assemble_chapters_from_blocks  # noqa: E402
+from app import parser  # noqa: E402
+from app.parser import _assemble_chapters_from_blocks, extract_pdf_metadata  # noqa: E402
+
+
+def test_extract_pdf_metadata_uses_supplied_front_matter_without_page_text(monkeypatch, tmp_path):
+    class FakeDoc:
+        metadata = {"title": "PDF Title", "author": "PDF Author"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __len__(self):
+            return 4
+
+        def __getitem__(self, index):
+            raise AssertionError("page text should not be read when front matter is supplied")
+
+    monkeypatch.setattr(parser.fitz, "open", lambda path: FakeDoc())
+
+    metadata, front_matter = extract_pdf_metadata(
+        tmp_path / "book.pdf",
+        front_matter_text="ISBN 978-1-234-56789-7\nLanguage: en",
+    )
+
+    assert metadata["title"] == "PDF Title"
+    assert metadata["author"] == "PDF Author"
+    assert metadata["isbn"] == "978-1-234-56789-7"
+    assert metadata["language"] == "en"
+    assert front_matter.startswith("ISBN")
 
 
 def test_small_attribution_blocks_are_preserved():

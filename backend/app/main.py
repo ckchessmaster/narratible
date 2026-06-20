@@ -5,6 +5,7 @@ import sys
 import tempfile
 import uuid
 import time
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 import psutil
@@ -39,22 +40,28 @@ from .projects import (
     chapter_audio_current,
     load_cleaning_eval,
     save_cleaning_eval,
+    load_modernization_eval,
+    save_modernization_eval,
     _project_path,
 )
 from .parser import extract_structured_from_pdf, extract_pdf_metadata, extract_pdf_cover
 from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters, llm_extract_book_metadata, list_cleaning_profiles, get_cleaning_profile
-from .parsing_modules import list_modules, apply_modules, normalize_module_ids
+from .parsing_modules import MODERNIZATION_MODULE_ID, list_modules, apply_modules, normalize_module_ids
+from .parsing_modules.modernizer import list_modernization_profiles, llm_modernize_text
 from .tts import synthesize_speech, get_available_voices, compose_tts_text
 from .tts_text import prepare_text_for_tts, segment_text_for_tts
 from .epub import build_epub
 from .uploader import AudiobookshelfUploader
 from .voices import (
+    add_library_voice_sample,
     create_library_voice,
     delete_library_voice,
+    delete_library_voice_sample,
     get_library_voice,
     get_library_voice_preview_path,
     get_library_voice_sample_path,
     list_library_voices,
+    set_library_voice_sample,
     update_library_voice,
 )
 from .runtime_state import save_task_snapshot
@@ -150,6 +157,12 @@ async def api_cancel_task(project_id: str):
     tts_task = _get_task(tts_task_id)
     if tts_task:
         tts_task["is_cancelled"] = True
+        save_task_snapshot(_tasks)
+
+    modernize_task_id = f"modernize-{project_id}"
+    modernize_task = _get_task(modernize_task_id)
+    if modernize_task:
+        modernize_task["is_cancelled"] = True
         save_task_snapshot(_tasks)
 
     return {"message": "Task cancelled"}
@@ -321,6 +334,10 @@ class ApplyVariantRequest(BaseModel):
     apply_to_chapter_text: bool = False
 
 
+class SelectVariantRequest(BaseModel):
+    variant_id: str
+
+
 class BatchRedoChunkRequest(BaseModel):
     chapter_index: int
     chunk_id: int
@@ -330,6 +347,18 @@ class BatchRedoCleaningRequest(BaseModel):
     chunks: list[BatchRedoChunkRequest]
     cleaning_profile: str = "balanced"
     provider: str | None = None
+
+
+class ModernizationRequest(BaseModel):
+    modernization_profile: str = "standard_modern"
+    provider: str | None = None
+
+
+class RedoModernizationRequest(BaseModel):
+    modernization_profile: str = "standard_modern"
+    provider: str | None = None
+    redo_mode: str = "try_again"
+    instruction: str | None = None
 
 
 class ChapterPatchRequest(BaseModel):
@@ -486,8 +515,20 @@ async def upload_pdf(project_id: str, file: UploadFile = File(...)):
     return {"message": "PDF uploaded successfully.", "path": str(dest)}
 
 
-def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] | None = None, cleaning_profile: str = "safe"):
-    modules = normalize_module_ids(modules)
+def _modernization_provider_for_cleaner(cleaner: str, cfg: AppConfig) -> str:
+    if cleaner == "embedded":
+        return "embedded"
+    if cleaner == "llm":
+        return _require_cloud_llm_provider(cfg)
+    raise RuntimeError("Text Modernization requires a configured cloud or local LLM in Settings.")
+
+
+def _normalize_query_modules(modules: list[str] | Any | None) -> list[str]:
+    return normalize_module_ids(modules if isinstance(modules, list) else [])
+
+
+def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] | None = None, cleaning_profile: str = "safe", modernization_profile: str = "standard_modern"):
+    modules = _normalize_query_modules(modules)
     profile = get_cleaning_profile(cleaning_profile)
     parse_started_at = datetime.now(timezone.utc).isoformat()
     parse_started_monotonic = time.perf_counter()
@@ -533,10 +574,24 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
         raw_chapters = pdf_data["chapters"]
 
         _set_task(task_id, "running", "Extracting metadata…", 29, stage="Extracting metadata")
-        heuristic_meta, front_matter_text = extract_pdf_metadata(pdf_path)
+
+        def _metadata_progress(msg: str):
+            _set_task(task_id, "running", msg, 29, stage="Extracting metadata")
+
+        front_matter_seed = "\n\n".join(
+            (chapter.get("raw_text") or "")
+            for chapter in raw_chapters[:2]
+            if chapter.get("raw_text")
+        ).strip() or raw_text[:12000]
+        heuristic_meta, front_matter_text = extract_pdf_metadata(
+            pdf_path,
+            front_matter_text=front_matter_seed,
+            progress_callback=_metadata_progress,
+        )
         llm_meta: dict[str, str] = {}
         cloud_provider = _resolve_cloud_llm_provider(load_config())
         if cloud_provider and front_matter_text:
+            _set_task(task_id, "running", "Refining metadata with configured LLM…", 29, stage="Extracting metadata")
             llm_meta = llm_extract_book_metadata(
                 front_matter_text,
                 heuristics=heuristic_meta,
@@ -831,11 +886,14 @@ async def parse_pdf(
     cleaner: str = "regex",
     modules: list[str] = Query(default=[]),
     cleaning_profile: str = "safe",
+    modernization_profile: str = "standard_modern",
 ):
     try:
         get_project(project_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+    requested_modules = _normalize_query_modules(modules)
 
     if cleaner in ("llm", "llm_chapters_only"):
         try:
@@ -845,13 +903,18 @@ async def parse_pdf(
 
     task_id = f"parse-{project_id}"
     _set_task(task_id, "running", "Queued…", 0, stage="Queued")
-    background_tasks.add_task(_run_parse, project_id, task_id, cleaner, modules, cleaning_profile)
+    background_tasks.add_task(_run_parse, project_id, task_id, cleaner, requested_modules, cleaning_profile, modernization_profile)
     return {"task_id": task_id}
 
 
 @app.get("/api/cleaning-profiles")
 async def get_cleaning_profiles():
     return list_cleaning_profiles()
+
+
+@app.get("/api/modernization-profiles")
+async def get_modernization_profiles():
+    return list_modernization_profiles()
 
 
 @app.get("/api/parsing-modules")
@@ -900,6 +963,31 @@ async def update_project_cleaning_eval(project_id: str, evaluation: dict):
     return evaluation
 
 
+@app.get("/api/projects/{project_id}/modernization-eval")
+async def get_project_modernization_eval(project_id: str):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    evaluation = _ensure_modernization_sessions(load_modernization_eval(project_id))
+    if evaluation:
+        save_modernization_eval(project_id, evaluation)
+    return evaluation
+
+
+@app.put("/api/projects/{project_id}/modernization-eval")
+async def update_project_modernization_eval(project_id: str, evaluation: dict):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    evaluation["project_id"] = project_id
+    _ensure_modernization_sessions(evaluation)
+    save_modernization_eval(project_id, evaluation)
+    return evaluation
+
+
 def _find_eval_chunk(evaluation: dict, chapter_index: int, chunk_id: int) -> tuple[dict, dict]:
     chapters_eval = evaluation.get("chapters") or []
     chapter_eval = next((ch for ch in chapters_eval if ch.get("chapter_index") == chapter_index), None)
@@ -911,6 +999,633 @@ def _find_eval_chunk(evaluation: dict, chapter_index: int, chunk_id: int) -> tup
     if chunk_eval is None:
         raise HTTPException(status_code=404, detail="No cleaning evaluation is available for this chunk.")
     return chapter_eval, chunk_eval
+
+
+def _find_modernization_eval_chunk(evaluation: dict, chapter_index: int, chunk_id: int) -> tuple[dict, dict]:
+    chapters_eval = evaluation.get("chapters") or []
+    chapter_eval = next((ch for ch in chapters_eval if ch.get("chapter_index") == chapter_index), None)
+    if chapter_eval is None:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this chapter.")
+
+    chunks = chapter_eval.get("chunks") or []
+    chunk_eval = next((chunk for chunk in chunks if chunk.get("chunk_id") == chunk_id), None)
+    if chunk_eval is None:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this chunk.")
+    return chapter_eval, chunk_eval
+
+
+def _utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def _normalize_modernization_chunk(chunk_eval: dict) -> dict:
+    source_text = chunk_eval.get("source_text") or ""
+    variants = chunk_eval.setdefault("variants", [])
+    if not variants and (chunk_eval.get("candidate_text") or chunk_eval.get("accepted_text")):
+        candidate_text = chunk_eval.get("candidate_text") or chunk_eval.get("accepted_text") or ""
+        if candidate_text.strip() and candidate_text != source_text:
+            variants.append({
+                "variant_id": f"{chunk_eval.get('chunk_id', 0)}-1",
+                "provider": chunk_eval.get("provider"),
+                "profile": chunk_eval.get("profile"),
+                "status": chunk_eval.get("status", "candidate"),
+                "candidate_text": candidate_text,
+                "accepted_text": candidate_text,
+                "integrity_issues": chunk_eval.get("integrity_issues", []),
+                "metrics": chunk_eval.get("metrics", {}),
+                "risk_level": chunk_eval.get("risk_level", "medium"),
+                "risk_reasons": chunk_eval.get("risk_reasons", []),
+                "recommended_action": chunk_eval.get("recommended_action", "review"),
+            })
+
+    selected_variant_id = chunk_eval.get("selected_variant_id") or chunk_eval.get("applied_variant_id")
+    if selected_variant_id:
+        chunk_eval["selected_variant_id"] = selected_variant_id
+        chunk_eval["status"] = "selected"
+    elif chunk_eval.get("status") not in {"skipped", "unselected", "selected"}:
+        chunk_eval["status"] = "unselected"
+
+    for variant in variants:
+        is_selected = variant.get("variant_id") == chunk_eval.get("selected_variant_id")
+        variant["is_selected"] = is_selected
+        variant["is_applied"] = is_selected
+    return chunk_eval
+
+
+def _legacy_session_id(chapter_index: int) -> str:
+    return f"legacy-modernization-{chapter_index}"
+
+
+def _ensure_modernization_session(chapter_eval: dict, evaluation: dict | None = None) -> dict:
+    sessions = chapter_eval.setdefault("sessions", [])
+    if sessions:
+        active_session_id = chapter_eval.get("active_session_id")
+        session = next((item for item in sessions if item.get("session_id") == active_session_id), None)
+        if session is None and active_session_id:
+            session = sessions[-1]
+        if session is None:
+            session = next((item for item in reversed(sessions) if item.get("status") != "superseded"), None)
+        if session is None:
+            chapter_eval["active_session_id"] = None
+            chapter_eval["status"] = "superseded"
+            chapter_eval["chunks"] = []
+            chapter_eval["last_commit"] = None
+            return sessions[-1]
+        chapter_eval["active_session_id"] = session.get("session_id")
+        for chunk in session.get("chunks") or []:
+            _normalize_modernization_chunk(chunk)
+        chapter_eval["chunks"] = session.get("chunks", [])
+        for key in ("status", "source_text", "source_text_hash", "last_commit", "created_at", "committed_at", "superseded_at"):
+            if key in session:
+                chapter_eval[key] = session.get(key)
+        return session
+
+    source_text = chapter_eval.get("source_text")
+    if source_text is None:
+        source_text = "\n\n".join((chunk.get("source_text") or "") for chunk in chapter_eval.get("chunks") or [])
+    status = chapter_eval.get("status") or "reviewing"
+    session = {
+        "session_id": chapter_eval.get("active_session_id") or _legacy_session_id(chapter_eval.get("chapter_index", 0)),
+        "status": status,
+        "created_at": chapter_eval.get("created_at") or _utc_iso(),
+        "committed_at": chapter_eval.get("committed_at"),
+        "superseded_at": chapter_eval.get("superseded_at"),
+        "source_text": source_text or "",
+        "source_text_hash": chapter_eval.get("source_text_hash") or _text_hash(source_text or ""),
+        "chunks": chapter_eval.get("chunks") or [],
+        "last_commit": chapter_eval.get("last_commit"),
+    }
+    for chunk in session["chunks"]:
+        _normalize_modernization_chunk(chunk)
+    sessions.append(session)
+    chapter_eval["active_session_id"] = session["session_id"]
+    chapter_eval["chunks"] = session["chunks"]
+    chapter_eval["status"] = session["status"]
+    chapter_eval["source_text"] = session["source_text"]
+    chapter_eval["source_text_hash"] = session["source_text_hash"]
+    chapter_eval["last_commit"] = session["last_commit"]
+    if evaluation is not None:
+        evaluation["version"] = max(int(evaluation.get("version") or 1), 2)
+    return session
+
+
+def _ensure_modernization_sessions(evaluation: dict | None) -> dict | None:
+    if not evaluation:
+        return evaluation
+    for chapter_eval in evaluation.get("chapters") or []:
+        _ensure_modernization_session(chapter_eval, evaluation)
+    evaluation["version"] = max(int(evaluation.get("version") or 1), 2)
+    return evaluation
+
+
+def _set_active_modernization_session(chapter_eval: dict, session: dict):
+    chapter_eval["active_session_id"] = session["session_id"]
+    chapter_eval["status"] = session.get("status", "reviewing")
+    chapter_eval["source_text"] = session.get("source_text", "")
+    chapter_eval["source_text_hash"] = session.get("source_text_hash") or _text_hash(session.get("source_text", ""))
+    chapter_eval["chunks"] = session.get("chunks", [])
+    chapter_eval["last_commit"] = session.get("last_commit")
+    chapter_eval["committed_at"] = session.get("committed_at")
+    chapter_eval["superseded_at"] = session.get("superseded_at")
+
+
+def _find_modernization_variant(chunk_eval: dict, variant_id: str) -> dict:
+    variant = next((item for item in chunk_eval.get("variants") or [] if item.get("variant_id") == variant_id), None)
+    if variant is None:
+        raise HTTPException(status_code=404, detail="Variant not found for this chunk.")
+    replacement_text = variant.get("accepted_text") or variant.get("candidate_text") or ""
+    if not replacement_text.strip():
+        raise HTTPException(status_code=400, detail="Variant has no text to select.")
+    return variant
+
+
+def _select_modernization_variant(evaluation: dict, chapter_index: int, chunk_id: int, variant_id: str) -> tuple[dict, dict, dict]:
+    chapter_eval, chunk_eval = _find_modernization_eval_chunk(evaluation, chapter_index, chunk_id)
+    session = _ensure_modernization_session(chapter_eval, evaluation)
+    chunk_eval = next((chunk for chunk in session.get("chunks") or [] if chunk.get("chunk_id") == chunk_id), chunk_eval)
+    variant = _find_modernization_variant(chunk_eval, variant_id)
+    selected_at = _utc_iso()
+    for item in chunk_eval.get("variants") or []:
+        item["is_selected"] = item.get("variant_id") == variant_id
+        item["is_applied"] = item["is_selected"]
+        if item["is_selected"]:
+            item["selected_at"] = selected_at
+            item["applied_at"] = selected_at
+        else:
+            item.pop("selected_at", None)
+            item.pop("applied_at", None)
+    chunk_eval["selected_variant_id"] = variant_id
+    chunk_eval["applied_variant_id"] = variant_id
+    chunk_eval["status"] = "selected"
+    chunk_eval["selected_at"] = selected_at
+    chunk_eval["applied_at"] = selected_at
+    chunk_eval["accepted_text"] = chunk_eval.get("source_text") or ""
+    _set_active_modernization_session(chapter_eval, session)
+    return chapter_eval, chunk_eval, variant
+
+
+def _clear_modernization_chunk_selection(evaluation: dict, chapter_index: int, chunk_id: int, status: str = "unselected") -> tuple[dict, dict]:
+    chapter_eval, chunk_eval = _find_modernization_eval_chunk(evaluation, chapter_index, chunk_id)
+    session = _ensure_modernization_session(chapter_eval, evaluation)
+    chunk_eval = next((chunk for chunk in session.get("chunks") or [] if chunk.get("chunk_id") == chunk_id), chunk_eval)
+    for item in chunk_eval.get("variants") or []:
+        item["is_selected"] = False
+        item["is_applied"] = False
+        item.pop("selected_at", None)
+        item.pop("applied_at", None)
+    chunk_eval["status"] = status
+    chunk_eval["accepted_text"] = chunk_eval.get("source_text") or chunk_eval.get("accepted_text") or ""
+    chunk_eval.pop("selected_variant_id", None)
+    chunk_eval.pop("applied_variant_id", None)
+    chunk_eval.pop("selected_at", None)
+    chunk_eval.pop("applied_at", None)
+    _set_active_modernization_session(chapter_eval, session)
+    return chapter_eval, chunk_eval
+
+
+def _build_modernization_commit_text(session: dict) -> tuple[str, list[str]]:
+    selected_variant_ids: list[str] = []
+    parts: list[str] = []
+    for chunk in sorted(session.get("chunks") or [], key=lambda item: item.get("chunk_id", 0)):
+        selected_variant_id = chunk.get("selected_variant_id")
+        selected_variant = None
+        if selected_variant_id:
+            selected_variant = next((variant for variant in chunk.get("variants") or [] if variant.get("variant_id") == selected_variant_id), None)
+        if selected_variant:
+            parts.append(selected_variant.get("accepted_text") or selected_variant.get("candidate_text") or chunk.get("source_text") or "")
+            selected_variant_ids.append(selected_variant_id)
+        else:
+            parts.append(chunk.get("source_text") or "")
+    return "\n\n".join(part.strip() for part in parts if part is not None).strip(), selected_variant_ids
+
+
+def _resolve_modernization_provider(provider: str | None = None) -> str:
+    if provider == "embedded":
+        return "embedded"
+    if provider in ("gemini", "openai"):
+        return provider
+    cfg = load_config()
+    if cfg.llm_provider == "local":
+        return "embedded"
+    return _require_cloud_llm_provider(cfg)
+
+
+def _upsert_modernization_chapter_eval(evaluation: dict, chapter_eval: dict):
+    chapter_index = chapter_eval.get("chapter_index")
+    chapters_eval = evaluation.setdefault("chapters", [])
+    for index, item in enumerate(chapters_eval):
+        if item.get("chapter_index") == chapter_index:
+            chapters_eval[index] = chapter_eval
+            return
+    chapters_eval.append(chapter_eval)
+    chapters_eval.sort(key=lambda item: item.get("chapter_index", 0))
+
+
+def _modernize_saved_chapter(project_id: str, chapter_index: int, modernization_profile: str, provider: str | None = None, progress_callback=None, cancel_check=None, output_callback=None, retry_decision_callback=None) -> dict:
+    meta = get_project(project_id)
+    chapters = load_chapters(project_id)
+    if chapter_index < 0 or chapter_index >= len(chapters):
+        raise HTTPException(status_code=404, detail="Chapter not found.")
+    resolved_provider = _resolve_modernization_provider(provider)
+    chapter = chapters[chapter_index]
+    now = _utc_iso()
+    source_text = chapter.get("text", "")
+    _, chapter_eval = llm_modernize_text(
+        source_text,
+        provider=resolved_provider,
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+        output_callback=output_callback,
+        retry_decision_callback=retry_decision_callback,
+        modernization_profile=modernization_profile,
+    )
+    for chunk in chapter_eval.get("chunks") or []:
+        chunk["status"] = "unselected"
+        chunk["selected_variant_id"] = None
+        chunk.pop("applied_variant_id", None)
+        for variant in chunk.get("variants") or []:
+            variant["is_selected"] = False
+            variant["is_applied"] = False
+
+    session = {
+        "session_id": str(uuid.uuid4()),
+        "status": "reviewing",
+        "created_at": now,
+        "committed_at": None,
+        "superseded_at": None,
+        "source_text": source_text,
+        "source_text_hash": _text_hash(source_text),
+        "chunks": chapter_eval.get("chunks", []),
+        "last_commit": None,
+    }
+    chapter_eval = {
+        "chapter_index": chapter_index,
+        "title": chapter.get("title") or f"Chapter {chapter_index + 1}",
+        "active_session_id": session["session_id"],
+        "sessions": [session],
+        "status": session["status"],
+        "created_at": now,
+        "committed_at": None,
+        "superseded_at": None,
+        "source_text": source_text,
+        "source_text_hash": session["source_text_hash"],
+        "last_commit": None,
+        **chapter_eval,
+    }
+    evaluation = load_modernization_eval(project_id) or {
+        "version": 2,
+        "project_id": project_id,
+        "profile": modernization_profile,
+        "provider": resolved_provider,
+        "modules": meta.enabled_modules,
+        "source_language": meta.language or "same",
+        "target_style": "modern readable prose",
+        "chapters": [],
+    }
+    evaluation.update({
+        "version": 2,
+        "project_id": project_id,
+        "profile": modernization_profile,
+        "provider": resolved_provider,
+        "modules": meta.enabled_modules,
+        "source_language": meta.language or "same",
+    })
+    _ensure_modernization_sessions(evaluation)
+    existing = next((item for item in evaluation.get("chapters") or [] if item.get("chapter_index") == chapter_index), None)
+    if existing:
+        existing_session = _ensure_modernization_session(existing, evaluation)
+        if existing_session.get("status") == "reviewing":
+            existing_session["status"] = "superseded"
+            existing_session["superseded_at"] = now
+            _set_active_modernization_session(existing, existing_session)
+        chapter_eval["sessions"] = (existing.get("sessions") or []) + [session]
+    _upsert_modernization_chapter_eval(evaluation, chapter_eval)
+    save_modernization_eval(project_id, evaluation)
+    return {"evaluation": evaluation, "chapter": chapter_eval}
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_index}/modernize")
+async def modernize_chapter(project_id: str, chapter_index: int, req: ModernizationRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return _modernize_saved_chapter(project_id, chapter_index, req.modernization_profile, req.provider)
+
+
+def _run_modernize_project(project_id: str, task_id: str, modernization_profile: str, provider: str | None = None):
+    started_at = datetime.now(timezone.utc).isoformat()
+    try:
+        chapters = load_chapters(project_id)
+        total = len(chapters) or 1
+        resolved_provider = _resolve_modernization_provider(provider)
+
+        def _cancel_check():
+            t = _get_task(task_id)
+            return t and t.get("is_cancelled", False)
+
+        for index, chapter in enumerate(chapters):
+            if _cancel_check():
+                _set_task(task_id, "cancelled", "Text modernization cancelled.", _get_task(task_id).get("progress", 0), stage="Cancelled")
+                return
+            title = chapter.get("title") or f"Chapter {index + 1}"
+            current_progress = int((index / total) * 100)
+
+            def _progress_cb(msg: str, pct: int):
+                nonlocal current_progress
+                current_progress = int((index / total) * 100 + (pct / 100) * (100 / total))
+                _set_task(task_id, "running", f"Modernizing '{title}' - {msg}", current_progress, stage="Modernizing text")
+
+            def _output_cb(chunk_text: str):
+                _set_task(task_id, "running", append_output=chunk_text)
+
+            _modernize_saved_chapter(
+                project_id,
+                index,
+                modernization_profile,
+                resolved_provider,
+                progress_callback=_progress_cb,
+                cancel_check=_cancel_check,
+                output_callback=_output_cb,
+            )
+
+        _set_task(task_id, "done", f"Modernized {len(chapters)} chapter(s).", 100, stage="Done")
+        task = _get_task(task_id) or {}
+        task["started_at"] = started_at
+        task["completed_at"] = datetime.now(timezone.utc).isoformat()
+        _tasks[task_id] = task
+        save_task_snapshot(_tasks)
+    except Exception as e:
+        logger.exception("Modernization task failed")
+        _set_task(task_id, "error", str(e), 0, stage="Error")
+
+
+@app.post("/api/projects/{project_id}/modernize")
+async def modernize_project(project_id: str, background_tasks: BackgroundTasks, req: ModernizationRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    try:
+        _resolve_modernization_provider(req.provider)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    task_id = f"modernize-{project_id}"
+    _set_task(task_id, "running", "Queued…", 0, stage="Queued")
+    background_tasks.add_task(_run_modernize_project, project_id, task_id, req.modernization_profile, req.provider)
+    return {"task_id": task_id}
+
+
+def _run_modernization_chunk_redo(evaluation: dict, chapter_index: int, chunk_id: int, modernization_profile: str, provider: str | None = None, redo_mode: str = "try_again", instruction: str | None = None) -> dict:
+    chapter_eval, chunk_eval = _find_modernization_eval_chunk(evaluation, chapter_index, chunk_id)
+    session = _ensure_modernization_session(chapter_eval, evaluation)
+    chunk_eval = next((chunk for chunk in session.get("chunks") or [] if chunk.get("chunk_id") == chunk_id), chunk_eval)
+    retry_provider = _resolve_modernization_provider(provider or chapter_eval.get("provider") or evaluation.get("provider"))
+    source_text = chunk_eval.get("source_text") or chunk_eval.get("accepted_text") or ""
+    if not source_text.strip():
+        raise HTTPException(status_code=400, detail="This chunk has no source text to modernize.")
+
+    _, retry_eval = llm_modernize_text(
+        source_text,
+        provider=retry_provider,
+        modernization_profile=modernization_profile,
+        redo_context={
+            "previous_candidates": [
+                variant.get("accepted_text") or variant.get("candidate_text") or ""
+                for variant in chunk_eval.get("variants") or []
+            ],
+            "integrity_issues": chunk_eval.get("integrity_issues") or [],
+            "redo_mode": redo_mode,
+            "instruction": instruction,
+        },
+    )
+    retry_chunks = retry_eval.get("chunks") or []
+    if not retry_chunks:
+        raise HTTPException(status_code=400, detail="Modernization retry did not return a candidate.")
+    retry_chunk = retry_chunks[0]
+    variant_text = retry_chunk.get("candidate_text") or retry_chunk.get("variants", [{}])[0].get("candidate_text", "")
+    variant = {
+        "variant_id": f"{chunk_id}-{len(chunk_eval.get('variants') or []) + 1}",
+        "created_at": _utc_iso(),
+        "provider": retry_provider,
+        "profile": retry_eval.get("profile"),
+        "redo_mode": redo_mode,
+        "redo_instruction": instruction,
+        "similarity_to_previous": retry_chunk.get("similarity_to_previous"),
+        "status": retry_chunk.get("status"),
+        "candidate_text": variant_text,
+        "accepted_text": variant_text,
+        "integrity_issues": retry_chunk.get("integrity_issues", []),
+        "metrics": retry_chunk.get("metrics", {}),
+        "risk_level": retry_chunk.get("risk_level", "medium"),
+        "risk_reasons": retry_chunk.get("risk_reasons", []),
+        "recommended_action": retry_chunk.get("recommended_action", "review"),
+    }
+    chunk_eval.setdefault("variants", []).append(variant)
+    _set_active_modernization_session(chapter_eval, session)
+    return {"chapter": chapter_eval, "chunk": chunk_eval, "variant": variant}
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_index}/modernization-chunks/{chunk_id}/redo")
+async def redo_modernization_chunk(project_id: str, chapter_index: int, chunk_id: int, req: RedoModernizationRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    evaluation = load_modernization_eval(project_id)
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this project.")
+    _ensure_modernization_sessions(evaluation)
+    result = _run_modernization_chunk_redo(evaluation, chapter_index, chunk_id, req.modernization_profile, req.provider, req.redo_mode, req.instruction)
+    save_modernization_eval(project_id, evaluation)
+    return {"evaluation": evaluation, "chunk": result["chunk"], "variant": result["variant"]}
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_index}/modernization-chunks/{chunk_id}/select-variant")
+async def select_modernization_variant(project_id: str, chapter_index: int, chunk_id: int, req: SelectVariantRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    evaluation = _ensure_modernization_sessions(load_modernization_eval(project_id))
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this project.")
+    _, chunk_eval, variant = _select_modernization_variant(evaluation, chapter_index, chunk_id, req.variant_id)
+    save_modernization_eval(project_id, evaluation)
+    return {"evaluation": evaluation, "chunk": chunk_eval, "variant": variant}
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_index}/modernization-chunks/{chunk_id}/skip")
+async def skip_modernization_chunk(project_id: str, chapter_index: int, chunk_id: int):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    evaluation = _ensure_modernization_sessions(load_modernization_eval(project_id))
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this project.")
+    _, chunk_eval = _clear_modernization_chunk_selection(evaluation, chapter_index, chunk_id, "skipped")
+    save_modernization_eval(project_id, evaluation)
+    return {"evaluation": evaluation, "chunk": chunk_eval}
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_index}/modernization-chunks/{chunk_id}/clear-selection")
+async def clear_modernization_selection(project_id: str, chapter_index: int, chunk_id: int):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    evaluation = _ensure_modernization_sessions(load_modernization_eval(project_id))
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this project.")
+    _, chunk_eval = _clear_modernization_chunk_selection(evaluation, chapter_index, chunk_id, "unselected")
+    save_modernization_eval(project_id, evaluation)
+    return {"evaluation": evaluation, "chunk": chunk_eval}
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_index}/modernization/commit")
+async def commit_modernization_session(project_id: str, chapter_index: int):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    chapters = load_chapters(project_id)
+    if chapter_index < 0 or chapter_index >= len(chapters):
+        raise HTTPException(status_code=404, detail="Chapter not found.")
+    evaluation = _ensure_modernization_sessions(load_modernization_eval(project_id))
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this project.")
+    chapter_eval = next((ch for ch in evaluation.get("chapters") or [] if ch.get("chapter_index") == chapter_index), None)
+    if not chapter_eval:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this chapter.")
+    session = _ensure_modernization_session(chapter_eval, evaluation)
+    after_text, selected_variant_ids = _build_modernization_commit_text(session)
+    if not after_text and session.get("source_text"):
+        after_text = session["source_text"]
+    before_text = chapters[chapter_index].get("text", "")
+    committed_at = _utc_iso()
+    chapters[chapter_index]["text"] = after_text
+    save_chapters(project_id, chapters)
+    last_commit = {
+        "committed_at": committed_at,
+        "before_text": before_text,
+        "after_text": after_text,
+        "selected_variant_ids": selected_variant_ids,
+    }
+    session["status"] = "committed"
+    session["committed_at"] = committed_at
+    session["last_commit"] = last_commit
+    _set_active_modernization_session(chapter_eval, session)
+    save_modernization_eval(project_id, evaluation)
+    return {"evaluation": evaluation, "chapter": load_chapters(project_id)[chapter_index], "last_commit": last_commit}
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_index}/modernization/undo-last-commit")
+async def undo_last_modernization_commit(project_id: str, chapter_index: int):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    chapters = load_chapters(project_id)
+    if chapter_index < 0 or chapter_index >= len(chapters):
+        raise HTTPException(status_code=404, detail="Chapter not found.")
+    evaluation = _ensure_modernization_sessions(load_modernization_eval(project_id))
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this project.")
+    chapter_eval = next((ch for ch in evaluation.get("chapters") or [] if ch.get("chapter_index") == chapter_index), None)
+    if not chapter_eval:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this chapter.")
+    session = _ensure_modernization_session(chapter_eval, evaluation)
+    last_commit = session.get("last_commit") or {}
+    before_text = last_commit.get("before_text")
+    if before_text is None:
+        raise HTTPException(status_code=400, detail="No modernization commit is available to undo.")
+    chapters[chapter_index]["text"] = before_text
+    save_chapters(project_id, chapters)
+    session["status"] = "commit_undone"
+    session["commit_undone_at"] = _utc_iso()
+    _set_active_modernization_session(chapter_eval, session)
+    save_modernization_eval(project_id, evaluation)
+    return {"evaluation": evaluation, "chapter": load_chapters(project_id)[chapter_index], "last_commit": last_commit}
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_index}/modernization/discard")
+async def discard_modernization_session(project_id: str, chapter_index: int):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    evaluation = _ensure_modernization_sessions(load_modernization_eval(project_id))
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this project.")
+    chapter_eval = next((ch for ch in evaluation.get("chapters") or [] if ch.get("chapter_index") == chapter_index), None)
+    if not chapter_eval:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this chapter.")
+    session = _ensure_modernization_session(chapter_eval, evaluation)
+    if session.get("status") == "committed":
+        raise HTTPException(status_code=400, detail="Undo the committed modernization before discarding this session.")
+    session["status"] = "superseded"
+    session["superseded_at"] = _utc_iso()
+    reviewing = [item for item in chapter_eval.get("sessions") or [] if item is not session and item.get("status") in {"reviewing", "commit_undone"}]
+    if reviewing:
+        _set_active_modernization_session(chapter_eval, reviewing[-1])
+    else:
+        chapter_eval["active_session_id"] = None
+        chapter_eval["status"] = "superseded"
+        chapter_eval["chunks"] = []
+        chapter_eval["last_commit"] = None
+    save_modernization_eval(project_id, evaluation)
+    return {"evaluation": evaluation, "chapter": chapter_eval}
+
+
+@app.post("/api/projects/{project_id}/chapters/{chapter_index}/modernization-chunks/{chunk_id}/apply-variant")
+async def apply_modernization_variant(project_id: str, chapter_index: int, chunk_id: int, req: ApplyVariantRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    evaluation = load_modernization_eval(project_id)
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="No modernization evaluation is available for this project.")
+    _ensure_modernization_sessions(evaluation)
+
+    _, chunk_eval, variant = _select_modernization_variant(evaluation, chapter_index, chunk_id, req.variant_id)
+    replacement_text = variant.get("accepted_text") or variant.get("candidate_text") or ""
+    previous_text = chunk_eval.get("source_text") or ""
+
+    chapter_text_updated = False
+    if req.apply_to_chapter_text:
+        chapters = load_chapters(project_id)
+        if chapter_index >= len(chapters):
+            raise HTTPException(status_code=404, detail="Chapter not found.")
+        current_chapter_text = chapters[chapter_index].get("text", "")
+        source_text = chunk_eval.get("source_text") or ""
+        if previous_text and previous_text in current_chapter_text:
+            chapters[chapter_index]["text"] = current_chapter_text.replace(previous_text, replacement_text, 1)
+            save_chapters(project_id, chapters)
+            chapter_text_updated = True
+        elif source_text and source_text in current_chapter_text:
+            chapters[chapter_index]["text"] = current_chapter_text.replace(source_text, replacement_text, 1)
+            save_chapters(project_id, chapters)
+            chapter_text_updated = True
+        else:
+            raise HTTPException(status_code=409, detail="Could not find the original chunk text in the chapter. Apply it in the editor instead.")
+
+    save_modernization_eval(project_id, evaluation)
+    return {
+        "evaluation": evaluation,
+        "chunk": chunk_eval,
+        "variant": variant,
+        "replacement_text": replacement_text,
+        "previous_text": previous_text,
+        "chapter_text_updated": chapter_text_updated,
+    }
 
 
 def _run_chunk_redo(evaluation: dict, chapter_index: int, chunk_id: int, cleaning_profile: str, provider: str | None = None) -> dict:
@@ -1211,13 +1926,19 @@ class VoiceLibraryUpdateRequest(BaseModel):
 
 class VoiceLibraryTestRequest(BaseModel):
     text: str
+    reference_text: str | None = None
     speed: float | None = None
+    temperature: float | None = None
+
+
+class VoiceLibrarySampleRequest(BaseModel):
+    sample_filename: str
 
 
 def _resolve_f5_voice_reference(project_id: str, voice: str):
     if voice and voice != "__uploaded__":
         library_voice = get_library_voice(voice)
-        return get_library_voice_sample_path(voice), None, library_voice.reference_text, library_voice.temperature
+        return get_library_voice_sample_path(voice), None, None, library_voice.temperature
     return None, _voices_dir(project_id), None, None
 
 
@@ -1331,9 +2052,42 @@ async def api_delete_voice_library_item(voice_id: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@app.post("/api/voice-library/{voice_id}/samples")
+async def api_add_voice_library_sample(
+    voice_id: str,
+    activate: bool = Form(True),
+    file: UploadFile = File(...),
+):
+    try:
+        return add_library_voice_sample(voice_id, file.filename or "reference.wav", file.file, activate)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/voice-library/{voice_id}/samples/active")
+async def api_set_voice_library_sample(voice_id: str, req: VoiceLibrarySampleRequest):
+    try:
+        return set_library_voice_sample(voice_id, req.sample_filename)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/api/voice-library/{voice_id}/samples/{sample_filename}")
+async def api_delete_voice_library_sample(voice_id: str, sample_filename: str):
+    try:
+        return delete_library_voice_sample(voice_id, sample_filename)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.post("/api/voice-library/test-draft")
 async def api_test_voice_library_draft(
     text: str = Form(...),
+    reference_text: str = Form(""),
     speed: float = Form(1.0),
     temperature: float = Form(0.7),
     file: UploadFile = File(...),
@@ -1356,6 +2110,7 @@ async def api_test_voice_library_draft(
             speed=speed,
             temperature=temperature,
             voice_sample_path=sample_path,
+            voice_reference_text=None,
         )
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -1380,9 +2135,9 @@ async def api_test_voice_library_item(voice_id: str, req: VoiceLibraryTestReques
             engine="f5-tts",
             voice=voice.id,
             speed=req.speed if req.speed is not None else voice.speed,
-            temperature=voice.temperature,
+            temperature=req.temperature if req.temperature is not None else voice.temperature,
             voice_sample_path=get_library_voice_sample_path(voice_id),
-            voice_reference_text=voice.reference_text,
+            voice_reference_text=None,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

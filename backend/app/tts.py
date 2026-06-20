@@ -89,6 +89,57 @@ _f5tts_model = None
 _whisper_model = None
 _whisper_processor = None
 
+_F5_REFERENCE_PLACEHOLDER_TEXT = "This is only used while preparing the reference audio."
+_MIN_F5_REFERENCE_CHARS_PER_SECOND = 2.0
+_MAX_F5_REFERENCE_CHARS_PER_SECOND = 18.0
+
+
+def _normalize_f5_reference_text(text: Optional[str]) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if cleaned and cleaned[-1] not in ".!?。！？":
+        cleaned += "."
+    return cleaned
+
+
+def _is_plausible_f5_reference_text(text: str, duration_seconds: float) -> bool:
+    cleaned = _normalize_f5_reference_text(text)
+    if len(cleaned) < 4 or duration_seconds <= 0:
+        return False
+    chars_per_second = len(cleaned.encode("utf-8")) / duration_seconds
+    return _MIN_F5_REFERENCE_CHARS_PER_SECOND <= chars_per_second <= _MAX_F5_REFERENCE_CHARS_PER_SECOND
+
+
+def _select_f5_reference_text(
+    provided_text: Optional[str],
+    transcribed_text: Optional[str],
+    duration_seconds: float,
+) -> str:
+    provided = _normalize_f5_reference_text(provided_text)
+    if _is_plausible_f5_reference_text(provided, duration_seconds):
+        return provided
+
+    transcribed = _normalize_f5_reference_text(transcribed_text)
+    if transcribed and len(transcribed) >= 4:
+        if provided:
+            logger.warning(
+                "Ignoring supplied F5-TTS reference transcript because its length "
+                "does not match the preprocessed reference clip."
+            )
+        return transcribed
+
+    if provided:
+        raise ValueError(
+            "The F5-TTS reference transcript does not appear to match the usable "
+            "reference audio after preprocessing. Use a shorter reference clip or "
+            "provide the exact transcript for the first 6-12 seconds of speech."
+        )
+
+    raise ValueError(
+        "F5-TTS could not transcribe the reference audio. Provide an exact "
+        "reference transcript for the first 6-12 seconds of speech."
+    )
+
+
 def unload_tts():
     """Explicitly unload TTS models to free up VRAM."""
     global _kokoro_pipeline, _f5tts_model, _whisper_model, _whisper_processor
@@ -287,7 +338,7 @@ async def _synthesize_f5tts(
     """
     Voice cloning via F5-TTS (https://github.com/SWivid/F5-TTS).
     Downloads the F5-TTS model on first run (~800 MB).
-    voice_sample_path: a short (~5-15s) WAV/MP3 reference clip to clone from.
+    voice_sample_path: WAV/MP3/FLAC reference clip to clone from.
     voice_reference_text: optional transcript matching that reference clip.
     voice_samples_dir: directory containing multiple voice samples; auto-selects best one.
     """
@@ -366,11 +417,6 @@ async def _synthesize_f5tts(
         _f5tts_model = F5TTS(device=device)
         logger.info(f"F5-TTS loaded on {device}")
 
-    from .config import load_config
-
-    cfg = load_config()
-    max_ref_seconds = getattr(cfg, "f5_ref_max_seconds", 10)
-
     logger.info(f"F5-TTS cloning from {voice_sample_path}")
 
     # F5-TTS inference — runs in a thread to avoid blocking the event loop
@@ -378,13 +424,6 @@ async def _synthesize_f5tts(
     loop = asyncio.get_event_loop()
 
     def _infer():
-        # F5-TTS clips the reference *audio* to ~12s internally but uses
-        # whatever ref_text we pass.  If we transcribe a longer clip in full,
-        # the text describes far more speech than the clipped audio contains,
-        # which breaks alignment and produces garbled output.  So we clip the
-        # audio to ~10s ourselves, transcribe exactly that clip, and hand the
-        # clipped file to F5-TTS — keeping audio and text in sync.
-        #
         # Transcription is done with Whisper's processor + model on a numpy
         # array (NOT the transformers pipeline), which never touches
         # torchcodec-backed file loading.  An accurate ref_text is also
@@ -396,123 +435,107 @@ async def _synthesize_f5tts(
         import soundfile as sf
         import numpy as np
         import torch
-        import tempfile
-        import os
         import inspect
+        from f5_tts.infer.utils_infer import preprocess_ref_audio_text
 
-        audio_arr, orig_sr = sf.read(str(voice_sample_path), dtype="float32")
+        reference_text_override = _normalize_f5_reference_text(voice_reference_text)
+        preprocess_text = reference_text_override or _F5_REFERENCE_PLACEHOLDER_TEXT
+        ref_file, _ = preprocess_ref_audio_text(
+            str(voice_sample_path),
+            preprocess_text,
+            show_info=logger.info,
+        )
+
+        audio_arr, orig_sr = sf.read(ref_file, dtype="float32")
         if audio_arr.ndim > 1:
             audio_arr = audio_arr.mean(axis=1)
+        reference_duration_seconds = len(audio_arr) / float(orig_sr) if orig_sr else 0.0
 
-        max_samples = int(max_ref_seconds * orig_sr)
-        was_clipped = len(audio_arr) > max_samples
-        clipped = audio_arr[:max_samples] if was_clipped else audio_arr
+        # Resample the full reference clip to 16 kHz for Whisper when the user
+        # did not provide a usable transcript. The clip has already gone
+        # through F5's reference preprocessing, so ASR and ref_text describe
+        # the same audio that conditions the model.
+        asr_arr = audio_arr
+        if orig_sr != 16000:
+            n_out = int(round(len(audio_arr) * 16000 / orig_sr))
+            indices = np.round(
+                np.linspace(0, len(audio_arr) - 1, n_out)
+            ).astype(int)
+            asr_arr = audio_arr[indices]
 
-        # Reference file handed to F5-TTS: a temp clip if we trimmed it,
-        # otherwise the original file untouched.
-        ref_file = str(voice_sample_path)
-        tmp_ref = None
-        if was_clipped:
-            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            tmp_ref = tmp.name
-            tmp.close()
-            sf.write(tmp_ref, clipped, orig_sr)
-            ref_file = tmp_ref
+        transcribed_ref_text = ""
+        if reference_text_override and _is_plausible_f5_reference_text(
+            reference_text_override,
+            reference_duration_seconds,
+        ):
+            logger.info("Using saved F5-TTS reference transcript.")
+        else:
+            try:
+                from transformers import WhisperProcessor, WhisperForConditionalGeneration
 
-        try:
-            reference_text_override = (voice_reference_text or "").strip()
-            # Resample the clip to 16 kHz for Whisper.
-            asr_arr = clipped
-            if orig_sr != 16000:
-                n_out = int(round(len(clipped) * 16000 / orig_sr))
-                indices = np.round(
-                    np.linspace(0, len(clipped) - 1, n_out)
-                ).astype(int)
-                asr_arr = clipped[indices]
-
-            ref_text = reference_text_override
-            if ref_text:
-                logger.info("Using saved F5-TTS reference transcript.")
-            else:
-                try:
-                    from transformers import WhisperProcessor, WhisperForConditionalGeneration
-
-                    if _whisper_processor is None or _whisper_model is None:
-                        _whisper_processor = WhisperProcessor.from_pretrained(
-                            "openai/whisper-base"
-                        )
-                        _whisper_model = WhisperForConditionalGeneration.from_pretrained(
-                            "openai/whisper-base"
-                        )
-                        if torch.cuda.is_available():
-                            _whisper_model = _whisper_model.to("cuda")
-
-                    inputs = _whisper_processor(
-                        asr_arr, sampling_rate=16000, return_tensors="pt"
+                if _whisper_processor is None or _whisper_model is None:
+                    _whisper_processor = WhisperProcessor.from_pretrained(
+                        "openai/whisper-base"
                     )
-                    input_features = inputs.input_features
+                    _whisper_model = WhisperForConditionalGeneration.from_pretrained(
+                        "openai/whisper-base"
+                    )
                     if torch.cuda.is_available():
-                        input_features = input_features.to("cuda")
-                    with torch.no_grad():
-                        generated_ids = _whisper_model.generate(input_features)
-                    ref_text = _whisper_processor.batch_decode(
-                        generated_ids, skip_special_tokens=True
-                    )[0].strip()
-                    logger.info(
-                        f"Pre-transcribed reference "
-                        f"({'~' + str(max_ref_seconds) + 's clip' if was_clipped else 'full'}): "
-                        f"{ref_text!r}"
-                    )
-                except Exception as exc:
-                    ref_text = ""
-                    logger.warning(f"Reference audio pre-transcription failed ({exc}).")
+                        _whisper_model = _whisper_model.to("cuda")
 
-            # Guard against a missing/too-short transcription: F5-TTS divides
-            # the duration estimate by len(ref_text), so a very short ref_text
-            # blows up the generated length.  Fall back to a neutral sentence
-            # rather than a single character.
-            if len(ref_text) < 4:
-                ref_text = "This is a reference sample of the speaker's voice."
-                logger.warning(
-                    "Using neutral fallback ref_text to keep F5-TTS duration sane."
+                inputs = _whisper_processor(
+                    asr_arr, sampling_rate=16000, return_tensors="pt"
                 )
+                input_features = inputs.input_features
+                if torch.cuda.is_available():
+                    input_features = input_features.to("cuda")
+                with torch.no_grad():
+                    generated_ids = _whisper_model.generate(input_features)
+                transcribed_ref_text = _whisper_processor.batch_decode(
+                    generated_ids, skip_special_tokens=True
+                )[0].strip()
+                logger.info(f"Pre-transcribed F5 reference clip: {transcribed_ref_text!r}")
+            except Exception as exc:
+                transcribed_ref_text = ""
+                logger.warning(f"Reference audio pre-transcription failed ({exc}).")
 
-            generated = []
-            sample_rate = None
-            segments = segment_text_for_tts(text, engine="f5-tts")
-            for idx, segment in enumerate(segments):
-                logger.info(
-                    f"F5-TTS synthesizing segment {idx + 1}/{len(segments)} "
-                    f"({len(segment.text)} chars)."
-                )
-                infer_kwargs = {
-                    "ref_file": ref_file,
-                    "ref_text": ref_text,
-                    "gen_text": segment.text,
-                    "speed": speed,
-                }
-                if "temperature" in inspect.signature(_f5tts_model.infer).parameters:
-                    infer_kwargs["temperature"] = temperature
-                wav, sr, _ = _f5tts_model.infer(**infer_kwargs)
-                sample_rate = sr
-                wav_arr = np.asarray(wav)
-                generated.append(wav_arr)
-                if segment.pause_after_ms:
-                    pause_samples = int(sr * segment.pause_after_ms / 1000)
-                    generated.append(np.zeros(pause_samples, dtype=wav_arr.dtype))
+        ref_text = _select_f5_reference_text(
+            reference_text_override,
+            transcribed_ref_text,
+            reference_duration_seconds,
+        )
 
-            if not generated or sample_rate is None:
-                raise ValueError("F5-TTS produced no audio output.")
-            return np.concatenate(generated), sample_rate
-        finally:
-            if tmp_ref and os.path.exists(tmp_ref):
-                try:
-                    os.remove(tmp_ref)
-                except OSError:
-                    pass
+        generated = []
+        sample_rate = None
+        segments = segment_text_for_tts(text, engine="f5-tts")
+        for idx, segment in enumerate(segments):
+            logger.info(
+                f"F5-TTS synthesizing segment {idx + 1}/{len(segments)} "
+                f"({len(segment.text)} chars)."
+            )
+            infer_kwargs = {
+                "ref_file": ref_file,
+                "ref_text": ref_text,
+                "gen_text": segment.text,
+                "speed": speed,
+            }
+            if "temperature" in inspect.signature(_f5tts_model.infer).parameters:
+                infer_kwargs["temperature"] = temperature
+            wav, sr, _ = _f5tts_model.infer(**infer_kwargs)
+            sample_rate = sr
+            wav_arr = np.asarray(wav)
+            generated.append(wav_arr)
+            if segment.pause_after_ms:
+                pause_samples = int(sr * segment.pause_after_ms / 1000)
+                generated.append(np.zeros(pause_samples, dtype=wav_arr.dtype))
+
+        if not generated or sample_rate is None:
+            raise ValueError("F5-TTS produced no audio output.")
+        return np.concatenate(generated), sample_rate
 
     wav, sr = await loop.run_in_executor(None, _infer)
 
+    import soundfile as sf
     sf.write(str(output_path), wav, sr)
     logger.info(f"F5-TTS wrote {output_path}")
 

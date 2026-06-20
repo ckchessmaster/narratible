@@ -22,7 +22,8 @@ backend/projects/
 backend/voice_library/
 backend/logs/
 .narratible_config.json
-/reports
+reports/
+runtime/
 
 # Packaging
 desktop_app.spec

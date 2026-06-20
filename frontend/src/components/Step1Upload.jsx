@@ -7,17 +7,22 @@ import {
   pollTask,
   getParsingModules,
   getCleaningProfiles,
+  getModernizationProfiles,
   submitTaskDecision,
   getProject,
   updateProject,
 } from '../api'
 
-export default function Step1Upload({ projectId, setProjectId, onNext, toast, cudaEnabled = true, hasCloudKey = false, debugMode = false, onProjectChanged }) {
+const MODERNIZATION_MODULE_ID = 'modernize_text'
+
+export default function Step1Upload({ projectId, setProjectId, onNext, toast, cudaEnabled = true, hasCloudKey = false, hasModernizationLlm = false, debugMode = false, onProjectChanged }) {
   const [title, setTitle] = useState('')
   const [author, setAuthor] = useState('')
   const [cleaner, setCleaner] = useState('regex')
   const [cleaningProfile, setCleaningProfile] = useState('safe')
   const [cleaningProfiles, setCleaningProfiles] = useState([])
+  const [modernizationProfile, setModernizationProfile] = useState('standard_modern')
+  const [modernizationProfiles, setModernizationProfiles] = useState([])
   const [parsingModules, setParsingModules] = useState([])
   const [enabledModules, setEnabledModules] = useState([])
   const [file, setFile] = useState(null)
@@ -158,12 +163,29 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
     getCleaningProfiles()
       .then(profiles => setCleaningProfiles(profiles ?? []))
       .catch(e => console.warn('Failed to load cleaning profiles', e))
+
+    getModernizationProfiles()
+      .then(profiles => setModernizationProfiles(profiles ?? []))
+      .catch(e => console.warn('Failed to load modernization profiles', e))
   }, [])
 
   const toggleModule = (id) => {
+    const mod = parsingModules.find(item => item.id === id)
+    if (id === MODERNIZATION_MODULE_ID && !hasModernizationLlm) {
+      toast('Text Modernization requires a configured cloud or local LLM in Settings.', 'error')
+      return
+    }
+    if (mod?.requires_llm && mod.id !== MODERNIZATION_MODULE_ID && cleaner === 'regex') {
+      toast('Text Modernization requires an LLM cleanup method.', 'error')
+      return
+    }
     setEnabledModules(prev =>
       prev.includes(id) ? prev.filter(m => m !== id) : [...prev, id]
     )
+  }
+
+  const chooseCleaner = (value) => {
+    setCleaner(value)
   }
 
   const handleDrop = (e) => {
@@ -190,7 +212,10 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       toast('Cloud LLM cleanup requires a Gemini or OpenAI key in Settings.', 'error')
       return
     }
-
+    if (enabledModules.includes(MODERNIZATION_MODULE_ID) && !hasModernizationLlm) {
+      toast('Text Modernization requires a configured cloud or local LLM in Settings.', 'error')
+      return
+    }
     try {
       setStatus('creating')
       setTaskError(null)
@@ -230,7 +255,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       setProgress(9)
       setProgressStage('Starting parse')
       setProgressMsg('Starting parse...')
-      const { task_id } = await parsePdf(activeProjectId, cleaner, enabledModules, cleaningProfile)
+      const { task_id } = await parsePdf(activeProjectId, cleaner, enabledModules, cleaningProfile, modernizationProfile)
 
       const finalTask = await pollTask(task_id, (t) => {
         if (t.status === 'waiting_input' && t.pending_decision) {
@@ -408,7 +433,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
                   name="cleaner"
                   value={opt.value}
                   checked={cleaner === opt.value}
-                  onChange={() => !opt.disabled && setCleaner(opt.value)}
+                  onChange={() => !opt.disabled && chooseCleaner(opt.value)}
                   disabled={busy || opt.disabled}
                   style={{ marginTop: 3, width: 'auto' }}
                 />
@@ -434,7 +459,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
                   name="cleaner"
                   value="llm_chapters_only"
                   checked={cleaner === 'llm_chapters_only' || cleaner === 'llm_chapters_only_embedded'}
-                  onChange={() => setCleaner('llm_chapters_only')}
+                  onChange={() => chooseCleaner('llm_chapters_only')}
                   disabled={busy}
                   style={{ marginTop: 3, width: 'auto' }}
                 />
@@ -450,7 +475,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
                           type="radio"
                           name="debug_provider"
                           checked={cleaner === 'llm_chapters_only'}
-                          onChange={() => setCleaner('llm_chapters_only')}
+                          onChange={() => chooseCleaner('llm_chapters_only')}
                           disabled={busy || !hasCloudKey}
                           style={{ width: 'auto' }}
                         />
@@ -461,7 +486,7 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
                           type="radio"
                           name="debug_provider"
                           checked={cleaner === 'llm_chapters_only_embedded'}
-                          onChange={() => setCleaner('llm_chapters_only_embedded')}
+                          onChange={() => chooseCleaner('llm_chapters_only_embedded')}
                           disabled={busy || !cudaEnabled}
                           style={{ width: 'auto' }}
                         />
@@ -503,31 +528,71 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
           <div className="field mt-4" data-tip-anchor="parsing-modules">
             <label>Reading Enhancements</label>
             <div className="flex gap-3 mt-1" style={{ flexWrap: 'wrap' }}>
-              {parsingModules.map(mod => (
+              {parsingModules.map(mod => {
+                const requiresModernizationLlm = mod.id === MODERNIZATION_MODULE_ID && !hasModernizationLlm
+                const requiresUnavailableLlm = mod.requires_llm && mod.id !== MODERNIZATION_MODULE_ID && cleaner === 'regex'
+                return (
                 <label
                   key={mod.id}
                   className="glass flex gap-3 p-3"
                   style={{
                     flex: 1,
                     minWidth: 220,
-                    cursor: busy ? 'not-allowed' : 'pointer',
+                    cursor: (busy || requiresUnavailableLlm || requiresModernizationLlm) ? 'not-allowed' : 'pointer',
                     borderRadius: 'var(--radius-sm)',
                     alignItems: 'flex-start',
+                    opacity: (requiresUnavailableLlm || requiresModernizationLlm) ? 0.45 : 1,
                   }}
                 >
                   <input
                     type="checkbox"
                     checked={enabledModules.includes(mod.id)}
-                    onChange={() => !busy && toggleModule(mod.id)}
-                    disabled={busy}
+                    onChange={() => !busy && !requiresUnavailableLlm && !requiresModernizationLlm && toggleModule(mod.id)}
+                    disabled={busy || requiresUnavailableLlm || requiresModernizationLlm}
                     style={{ marginTop: 3, width: 'auto' }}
                   />
                   <div>
                     <div style={{ fontWeight: 500, fontSize: 14 }}>{mod.name}</div>
                     <div className="text-xs text-muted mt-1">{mod.description}</div>
+                    {mod.warning && (
+                      <div className="text-xs mt-2" style={{ color: 'var(--warning, #f59e0b)', lineHeight: 1.4 }}>{mod.warning}</div>
+                    )}
+                    {requiresUnavailableLlm && (
+                      <div className="text-xs mt-2" style={{ color: 'var(--warning, #f59e0b)' }}>Choose LLM or Embedded Local LLM to enable this module.</div>
+                    )}
+                    {requiresModernizationLlm && (
+                      <div className="text-xs mt-2" style={{ color: 'var(--warning, #f59e0b)' }}>Configure a cloud or local LLM in Settings to enable this later Review step.</div>
+                    )}
                   </div>
                 </label>
+              )})}
+            </div>
+          </div>
+        )}
+
+        {enabledModules.includes(MODERNIZATION_MODULE_ID) && modernizationProfiles.length > 0 && (
+          <div className="field mt-4" data-tip-anchor="modernization-profile">
+            <label>Modernization Profile</label>
+            <div className="flex gap-2 mt-1" style={{ flexWrap: 'wrap' }}>
+              {modernizationProfiles.map(profile => (
+                <button
+                  key={profile.id}
+                  type="button"
+                  className={`btn btn-sm ${modernizationProfile === profile.id ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => !busy && setModernizationProfile(profile.id)}
+                  disabled={busy}
+                  title={`${profile.description} ${profile.warning || ''}`.trim()}
+                  style={{ flex: 1, minWidth: 140, justifyContent: 'center' }}
+                >
+                  {profile.label}
+                </button>
               ))}
+            </div>
+            <div className="text-xs text-muted mt-2" style={{ lineHeight: 1.5 }}>
+              {modernizationProfiles.find(profile => profile.id === modernizationProfile)?.description}
+            </div>
+            <div className="text-xs mt-1" style={{ color: 'var(--warning, #f59e0b)', lineHeight: 1.5 }}>
+              {modernizationProfiles.find(profile => profile.id === modernizationProfile)?.warning}
             </div>
           </div>
         )}

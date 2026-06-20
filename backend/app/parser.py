@@ -9,19 +9,26 @@ from .page_artifacts import looks_like_small_text_content_line
 logger = logging.getLogger(__name__)
 
 
-def extract_pdf_metadata(pdf_path: Path) -> tuple[dict[str, str], str]:
+def extract_pdf_metadata(pdf_path: Path, front_matter_text: str | None = None, progress_callback=None) -> tuple[dict[str, str], str]:
     """Extract heuristic metadata and front-matter text from a PDF.
 
     Returns a tuple ``(metadata, front_matter_text)`` where ``metadata`` contains
     best-effort values for title/author/subject/publisher and
-    ``front_matter_text`` contains text from pages 0-3 for optional LLM
-    verification/fill.
+    ``front_matter_text`` contains text for optional LLM verification/fill.
+    When callers already extracted text from the PDF, they can pass a front
+    matter excerpt to avoid a second PyMuPDF page-text pass.
     """
 
     metadata: dict[str, str] = {}
-    front_pages_text: list[str] = []
+    front_pages_text: list[str] = [front_matter_text.strip()] if front_matter_text and front_matter_text.strip() else []
+
+    def report(msg: str):
+        logger.info(msg)
+        if progress_callback:
+            progress_callback(msg)
 
     try:
+        report(f"Reading PDF info metadata from {pdf_path}")
         with fitz.open(str(pdf_path)) as doc:
             raw_meta = doc.metadata or {}
 
@@ -39,11 +46,13 @@ def extract_pdf_metadata(pdf_path: Path) -> tuple[dict[str, str], str]:
             if publisher:
                 metadata["publisher"] = publisher
 
-            front_page_limit = min(len(doc), 4)
-            for page_index in range(front_page_limit):
-                text = (doc[page_index].get_text() or "").strip()
-                if text:
-                    front_pages_text.append(text)
+            if not front_pages_text:
+                front_page_limit = min(len(doc), 4)
+                for page_index in range(front_page_limit):
+                    report(f"Reading metadata front matter page {page_index + 1} of {front_page_limit}")
+                    text = (doc[page_index].get_text() or "").strip()
+                    if text:
+                        front_pages_text.append(text)
 
             front_matter_text = "\n\n".join(front_pages_text)
             if front_matter_text:

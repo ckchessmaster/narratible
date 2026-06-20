@@ -151,7 +151,7 @@ def segment_text_for_tts(text: str, engine: str = "edge-tts") -> list[TTSSegment
             segments.append(TTSSegment(piece, pause))
 
     if engine == "f5-tts":
-        return _merge_short_reference_segments(segments, max_chars)
+        return _merge_f5_segments(segments, max_chars)
     return segments
 
 
@@ -220,32 +220,25 @@ def _split_long_sentence(sentence: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def _merge_short_reference_segments(
+def _merge_f5_segments(
     segments: list[TTSSegment],
     max_chars: int,
 ) -> list[TTSSegment]:
     merged: list[TTSSegment] = []
     for segment in segments:
-        if (
-            merged
-            and _looks_like_spoken_scripture_reference(segment.text)
-            and len(merged[-1].text) + len(segment.text) + 2 <= max_chars
-        ):
+        if not merged:
+            merged.append(segment)
+            continue
+
+        previous = merged[-1]
+        separator = "\n\n" if previous.pause_after_ms >= 500 else " "
+        merged_text = f"{previous.text}{separator}{segment.text}"
+        if len(merged_text) <= max_chars:
             previous = merged[-1]
             merged[-1] = TTSSegment(
-                f"{previous.text}\n\n{segment.text}",
+                merged_text,
                 segment.pause_after_ms,
             )
         else:
             merged.append(segment)
     return merged
-
-
-def _looks_like_spoken_scripture_reference(text: str) -> bool:
-    return bool(
-        re.fullmatch(
-            r"(?:[1-3]\s+)?[A-Z][A-Za-z]*(?:\s+[A-Z][A-Za-z]*){0,3} "
-            r"chapter \d{1,3}, verses? .+",
-            text.strip(),
-        )
-    )

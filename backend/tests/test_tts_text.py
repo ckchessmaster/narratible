@@ -117,6 +117,22 @@ def test_f5_segments_long_text():
     assert all(len(segment.text) <= 420 for segment in segments)
 
 
+def test_f5_merges_short_preview_sentences_into_one_generation():
+    text = (
+        "The main topic of the doctrinal section of this letter is the free grace of God "
+        "in saving people through Christ Jesus; especially as it appears in the doctrine "
+        "of justification by faith alone. To show this doctrine more clearly and explain "
+        "why it is true, the apostle first establishes this point: that no living person "
+        "can be justified by the actions of the law."
+    )
+
+    segments = segment_text_for_tts(text, "f5-tts")
+
+    assert len(segments) == 1
+    assert segments[0].text == text
+    assert segments[0].pause_after_ms == 0
+
+
 def test_f5_merges_short_spoken_scripture_reference_segment():
     text = (
         "O God, you are my God;\n"

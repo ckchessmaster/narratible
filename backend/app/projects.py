@@ -43,6 +43,9 @@ class ProjectMetadata(BaseModel):
     chapter_count: int = 0
     last_parse_status: dict[str, Any] | None = None
     last_tts_status: dict[str, Any] | None = None
+    review_flow_step: str | None = None
+    review_flow_completed_steps: list[str] = Field(default_factory=list)
+    review_flow_unlocked_at: str | None = None
 
 
 def _utc_now() -> str:
@@ -183,6 +186,10 @@ def _cleaning_eval_path(project_id: str) -> Path:
     return _project_path(project_id) / "cleaning_eval.json"
 
 
+def _modernization_eval_path(project_id: str) -> Path:
+    return _project_path(project_id) / "modernization_eval.json"
+
+
 def load_chapters(project_id: str) -> list[dict]:
     path = _chapters_path(project_id)
     if not path.exists():
@@ -314,6 +321,18 @@ def load_cleaning_eval(project_id: str) -> dict | None:
 
 def save_cleaning_eval(project_id: str, evaluation: dict):
     _write_json_atomic(_cleaning_eval_path(project_id), evaluation)
+
+
+def load_modernization_eval(project_id: str) -> dict | None:
+    path = _modernization_eval_path(project_id)
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_modernization_eval(project_id: str, evaluation: dict):
+    _write_json_atomic(_modernization_eval_path(project_id), evaluation)
 
 
 def auto_split_chapters(text: str) -> list[dict]:

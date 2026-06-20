@@ -54,7 +54,12 @@ export const TIPS = [
   {
     id: 'w1-parsing-modules', context: 'wizard', step: 1, anchor: 'parsing-modules', placement: 'top',
     title: 'Reading enhancements',
-    body: 'Optional add-ons that rewrite text so it reads correctly. The Bible expander turns references like “Ps 1:4” into “Psalms 1:4”.',
+    body: 'Optional add-ons that prepare text for reading. Text Modernization uses an LLM and should be reviewed before voice generation.',
+  },
+  {
+    id: 'w1-modernization-profile', context: 'wizard', step: 1, anchor: 'modernization-profile', placement: 'top',
+    title: 'Modernization strength',
+    body: 'Light Update changes the least, Standard Modern is the default, and Plain Language prioritizes readability with more review risk.',
   },
   {
     id: 'w1-parse', context: 'wizard', step: 1, anchor: 'parse-button', placement: 'top',
@@ -62,7 +67,7 @@ export const TIPS = [
     body: 'Drop a PDF above, then click Parse to extract and clean the text.',
   },
 
-  // ── Wizard · Step 2 (Edit) ────────────────────────────────────────────
+  // ── Wizard · Step 2 (Review) ─────────────────────────────────────────
   {
     id: 'w2-chapters', context: 'wizard', step: 2, anchor: 'chapter-list', placement: 'right',
     title: 'Review chapters',
@@ -103,6 +108,11 @@ export const TIPS = [
     title: 'Review cleanup warnings',
     body: 'Warnings show the chapter and nearby text to check. Advanced cleanup tools keep retry and comparison details nearby.',
   },
+  {
+    id: 'w2-modernization-review', context: 'wizard', step: 2, anchor: 'modernization-review', placement: 'left',
+    title: 'Review modernized text',
+    body: 'Modernization creates candidates first. Select passages during review, then commit selected changes to the chapter when ready.',
+  },
 
   // ── Wizard · Step 3 (Voice) ───────────────────────────────────────────
   {
@@ -135,7 +145,7 @@ export const TIPS = [
   {
     id: 'vl-create', context: 'voice-library', anchor: 'voice-library-create', placement: 'right',
     title: 'Create once',
-    body: 'Save a clean reference clip here so the voice can be reused across future projects. Speed and temperature are saved with the voice.',
+    body: 'Save clean reference audio here and narratible will transcribe the usable F5 reference clip automatically.',
   },
   {
     id: 'vl-test', context: 'voice-library', anchor: 'voice-library-test', placement: 'left',

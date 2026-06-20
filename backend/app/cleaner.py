@@ -81,6 +81,7 @@ GEMINI_MAX_RETRIES = 5
 GEMINI_RETRY_BASE_SECONDS = 10
 GEMINI_RETRY_MAX_SECONDS = 90
 GEMINI_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+METADATA_LLM_TIMEOUT_SECONDS = 20.0
 
 CLEANING_PROFILES: dict[str, CleaningProfile] = {
     "safe": CleaningProfile(
@@ -1156,6 +1157,7 @@ def llm_extract_book_metadata(
             from google import genai
             from google.genai import types
 
+            logger.info("Extracting book metadata via Gemini...")
             client = genai.Client(api_key=cfg.gemini_api_key)
             response = client.models.generate_content(
                 model=getattr(cfg, "gemini_model", "gemma-4-31b-it"),
@@ -1180,7 +1182,8 @@ def llm_extract_book_metadata(
             }
 
         if provider == "openai" and cfg.openai_api_key:
-            client = OpenAI(api_key=cfg.openai_api_key)
+            logger.info("Extracting book metadata via OpenAI...")
+            client = OpenAI(api_key=cfg.openai_api_key, timeout=METADATA_LLM_TIMEOUT_SECONDS)
             response = client.beta.chat.completions.parse(
                 model="gpt-4o-mini",
                 temperature=0,
@@ -1206,6 +1209,7 @@ def llm_extract_book_metadata(
     except Exception as exc:
         logger.warning("llm_extract_book_metadata failed (%s)", exc)
 
+    logger.info("Using heuristic metadata fallback.")
     return {}
 
 
