@@ -61,6 +61,7 @@ Frontend:
 
 - Treat implementation_plan.md as a roadmap, not guaranteed current behavior.
 - Always use the backend virtualenv interpreter for backend commands and tests: backend/.venv/Scripts/python.exe.
+- Prefer `git diff <path>` for path-limited diffs; use `git diff -- <path>` only when the path could be confused with a revision or option.
 - Verify behavior from code before adding features or tests.
 - Preserve async patterns in backend processing functions.
 - Keep frontend changes consistent with existing React function-component style.

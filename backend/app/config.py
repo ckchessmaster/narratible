@@ -1,7 +1,7 @@
 import os
 import sys
 import json
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pathlib import Path
 
 if getattr(sys, 'frozen', False):
@@ -27,6 +27,8 @@ class AppConfig(BaseModel):
     default_tts_engine: str = "edge-tts"
     selected_gpu_index: int = 0  # -1 = CPU; 0, 1, 2... = CUDA device index
     debug_mode: bool = False
+    custom_instructions_enabled: bool = False
+    custom_prompt_overrides: dict[str, str] = Field(default_factory=dict)
 
 def load_config() -> AppConfig:
     if CONFIG_FILE.exists():

@@ -19,6 +19,7 @@ from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from .config import AppConfig, load_config, save_config, get_device_string
+from .custom_instructions import list_custom_prompt_templates, validate_prompt_overrides
 from .logging_config import configure_logging
 from .mcp_server import create_mcp_server
 from .projects import (
@@ -48,6 +49,7 @@ from .parser import extract_structured_from_pdf, extract_pdf_metadata, extract_p
 from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters, llm_extract_book_metadata, list_cleaning_profiles, get_cleaning_profile
 from .parsing_modules import MODERNIZATION_MODULE_ID, list_modules, apply_modules, normalize_module_ids
 from .parsing_modules.modernizer import list_modernization_profiles, llm_modernize_text
+from .notes import EXTENDED_NOTE_DETECTION_MODULE_ID, normalize_chapter_notes, notes_from_text
 from .tts import synthesize_speech, get_available_voices, compose_tts_text
 from .tts_text import prepare_text_for_tts, segment_text_for_tts
 from .epub import build_epub
@@ -248,8 +250,20 @@ async def get_settings():
 
 @app.put("/api/settings", response_model=AppConfig)
 async def update_settings(config: AppConfig):
+    try:
+        validate_prompt_overrides(config.custom_prompt_overrides)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     save_config(config)
     return config
+
+
+@app.get("/api/custom-instructions/prompts")
+async def get_custom_instruction_prompts():
+    return {
+        "enabled": load_config().custom_instructions_enabled,
+        "prompts": list_custom_prompt_templates(),
+    }
 
 
 # ── Key Validation ────────────────────────────────────────────────────────────
@@ -569,7 +583,11 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
             pct = 10 + int(max(0.0, min(1.0, frac)) * 18)
             _set_task(task_id, "running", msg, pct, stage="Extracting text")
 
-        pdf_data = extract_structured_from_pdf(pdf_path, progress_callback=_extract_progress)
+        pdf_data = extract_structured_from_pdf(
+            pdf_path,
+            progress_callback=_extract_progress,
+            extended_note_detection=EXTENDED_NOTE_DETECTION_MODULE_ID in modules,
+        )
         raw_text = pdf_data["raw_text"]
         raw_chapters = pdf_data["chapters"]
 
@@ -785,6 +803,17 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                         **chapter_eval,
                     }
                     cleaning_eval["chapters"].append(chapter_eval)
+                    chapter_notes = [
+                        *normalize_chapter_notes(ch.get("notes", [])),
+                        *[
+                            note
+                            for chunk_eval in chapter_eval.get("chunks", [])
+                            for note in notes_from_text(
+                                chunk_eval.get("notes_text", ""),
+                                source="llm_cleanup",
+                            )
+                        ],
+                    ]
 
                     warnings = list(ch.get("warnings", []))
                     fallback_count = chapter_eval.get("fallback_count", 0)
@@ -801,6 +830,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                     cleaned_chapters.append({
                         "title": ch_title,
                         "text": cleaned_ch_text,
+                        "notes": chapter_notes,
                         "audio_path": None,
                         "confidence": ch.get("confidence", 1.0),
                         "warnings": warnings,
@@ -826,6 +856,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                 cleaned_chapters.append({
                     "title": ch["title"],
                     "text": cleaned_txt,
+                    "notes": normalize_chapter_notes(ch.get("notes", [])),
                     "audio_path": None,
                     "confidence": ch.get("confidence", 1.0),
                     "warnings": ch.get("warnings", [])
@@ -1718,6 +1749,10 @@ async def apply_cleaning_variant(project_id: str, chapter_index: int, chunk_id: 
     chunk_eval["applied_variant_id"] = req.variant_id
     chunk_eval["applied_at"] = applied_at
     chunk_eval["accepted_text"] = replacement_text
+    variant_notes = notes_from_text(
+        variant.get("notes_text") or chunk_eval.get("notes_text", ""),
+        source="llm_cleanup_variant",
+    )
 
     chapter_text_updated = False
     if req.apply_to_chapter_text:
@@ -1727,10 +1762,20 @@ async def apply_cleaning_variant(project_id: str, chapter_index: int, chunk_id: 
         current_chapter_text = chapters[chapter_index].get("text", "")
         if previous_text and previous_text in current_chapter_text:
             chapters[chapter_index]["text"] = current_chapter_text.replace(previous_text, replacement_text, 1)
+            if variant_notes:
+                chapters[chapter_index]["notes"] = [
+                    *normalize_chapter_notes(chapters[chapter_index].get("notes", [])),
+                    *variant_notes,
+                ]
             save_chapters(project_id, chapters)
             chapter_text_updated = True
         elif source_text and source_text in current_chapter_text:
             chapters[chapter_index]["text"] = current_chapter_text.replace(source_text, replacement_text, 1)
+            if variant_notes:
+                chapters[chapter_index]["notes"] = [
+                    *normalize_chapter_notes(chapters[chapter_index].get("notes", [])),
+                    *variant_notes,
+                ]
             save_chapters(project_id, chapters)
             chapter_text_updated = True
         else:
@@ -1877,6 +1922,36 @@ async def api_update_chapter(project_id: str, chapter_id: str, req: ChapterPatch
 
 
 # ── Cover Image Upload ────────────────────────────────────────────────────────
+
+@app.get("/api/projects/{project_id}/cover")
+async def get_cover(project_id: str):
+    try:
+        meta = get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    cover_path = project_file(project_id, meta.cover_image)
+    if not cover_path:
+        raise HTTPException(status_code=404, detail="No cover image uploaded.")
+
+    project_root = _project_path(project_id).resolve()
+    cover_path = cover_path.resolve()
+    try:
+        cover_path.relative_to(project_root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid cover image path.")
+
+    media_types = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+    }
+    media_type = media_types.get(cover_path.suffix.lower())
+    if not media_type or not cover_path.exists() or not cover_path.is_file():
+        raise HTTPException(status_code=404, detail="Cover image not found.")
+
+    return FileResponse(cover_path, media_type=media_type)
+
 
 @app.post("/api/projects/{project_id}/upload-cover")
 async def upload_cover(project_id: str, file: UploadFile = File(...)):
@@ -2657,7 +2732,7 @@ async def delete_voice_sample(project_id: str, filename: str):
 # ── Export ────────────────────────────────────────────────────────────────────
 
 @app.post("/api/projects/{project_id}/export/epub")
-async def export_epub(project_id: str):
+async def export_epub(project_id: str, include_notes: bool = False):
     try:
         meta = get_project(project_id)
     except FileNotFoundError as e:
@@ -2690,6 +2765,7 @@ async def export_epub(project_id: str):
             series=meta.series,
             chapters=chapters,
             cover_image_path=cover_path,
+            include_notes=include_notes,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

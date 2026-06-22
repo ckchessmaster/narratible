@@ -22,6 +22,7 @@ from ..cleaner import (
     unload_llm,
 )
 from ..config import get_device_string, load_config
+from ..custom_instructions import render_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -400,11 +401,9 @@ def _evaluate_modernization_chunk(
 
 
 def _build_system_prompt(profile: ModernizationProfile) -> str:
-    return (
-        "You modernize difficult older text for present-day readers while preserving original meaning. "
-        "Never summarize, omit, add interpretation, or change the author's claims. "
-        "Preserve every source paragraph, names, numbers, sequence, quotations, speaker intent, theological/legal/technical terms, and paragraph order. "
-        f"Profile guidance: {profile.prompt_guidance}"
+    return render_prompt(
+        "modernization_system",
+        profile_guidance=profile.prompt_guidance,
     )
 
 
@@ -430,15 +429,12 @@ def _build_user_prompt(chunk_text: str, profile: ModernizationProfile, redo_cont
                 f"{previous_preview}\n"
             )
 
-    return (
-        "Modernize the following passage into clear present-day English while preserving its meaning. "
-        f"Modernization profile: {profile.label}. {profile.prompt_guidance}\n"
-        f"{redo_block}"
-        "Output only the modernized passage in <text>...</text> tags. "
-        "Do not include a preamble, analysis, notes, summaries, or placeholders. "
-        "Do not drop or combine away a paragraph; each source paragraph must be represented in order.\n\n"
-        "Passage:\n\n"
-        + chunk_text
+    return render_prompt(
+        "modernization_user",
+        profile_label=profile.label,
+        profile_guidance=profile.prompt_guidance,
+        redo_block=redo_block,
+        chunk_text=chunk_text,
     )
 
 

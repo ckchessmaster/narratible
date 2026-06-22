@@ -71,7 +71,7 @@ export const TIPS = [
   {
     id: 'w2-chapters', context: 'wizard', step: 2, anchor: 'chapter-list', placement: 'right',
     title: 'Review chapters',
-    body: 'Select, reorder (▲▼), or delete (✕) chapters here. ⚠️ flags possible boundary issues to double-check.',
+    body: 'Select, reorder (▲▼), merge, delete (✕), or undo recent chapter actions here. ⚠️ flags possible boundary issues to double-check.',
   },
   {
     id: 'w2-split', context: 'wizard', step: 2, anchor: 'split-button', placement: 'bottom',
@@ -165,6 +165,11 @@ export const TIPS = [
     body: 'Generate a complete EPUB 3 with all chapters, metadata, and cover.',
   },
   {
+    id: 'w4-export-notes', context: 'wizard', step: 4, anchor: 'export-notes', placement: 'bottom',
+    title: 'Optional notes',
+    body: 'Collected footnotes and margin notes stay out of audio. Turn this on only when you want them embedded in the EPUB.',
+  },
+  {
     id: 'w4-audio', context: 'wizard', step: 4, anchor: 'generate-audio', placement: 'bottom',
     title: 'Generate the audiobook',
     body: 'Synthesize audio using the voice from Step 3. Optionally merge everything into one file (needs FFmpeg).',
@@ -200,6 +205,18 @@ export const TIPS = [
     id: 's-temperature', context: 'settings', tab: 'ai', anchor: 'settings-temperature', placement: 'top',
     title: 'Temperature',
     body: 'Lower = stricter adherence to the text; higher = more variation. Bump to 0.1–0.2 if a local model gets stuck looping.',
+  },
+
+  // ── Settings · Custom Instructions ───────────────────────────────────────
+  {
+    id: 's-custom-instructions', context: 'settings', tab: 'instructions', anchor: 'settings-custom-instructions', placement: 'bottom',
+    title: 'Customize LLM behavior',
+    body: 'Enable this to send your edited prompt templates to every configured LLM call.',
+  },
+  {
+    id: 's-prompt-editor', context: 'settings', tab: 'instructions', anchor: 'settings-prompt-editor', placement: 'top',
+    title: 'Edit from the base prompt',
+    body: 'Each template starts with narratible’s built-in prompt. Keep the required placeholders so the book text and context are still included.',
   },
 
   // ── Settings · Local AI ───────────────────────────────────────────────

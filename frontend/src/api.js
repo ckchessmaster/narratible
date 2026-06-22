@@ -34,6 +34,7 @@ async function request(method, path, body, isFormData = false) {
 export const getSettings = () => request('GET', '/settings')
 export const saveSettings = (cfg) => request('PUT', '/settings', cfg)
 export const getSystemInfo = () => request('GET', '/system/info')
+export const getCustomInstructionPrompts = () => request('GET', '/custom-instructions/prompts')
 
 // Key validation
 export const validateGeminiKey = (api_key) => request('POST', '/validate/gemini-key', { api_key })
@@ -110,6 +111,8 @@ export const uploadCover = (projectId, file) => {
   fd.append('file', file)
   return request('POST', `/projects/${projectId}/upload-cover`, fd, true)
 }
+export const coverImageUrl = (projectId, coverImage) =>
+  `${BASE}/projects/${encodeURIComponent(projectId)}/cover?v=${encodeURIComponent(coverImage || '')}`
 
 // TTS
 export const getVoices = (engine = 'edge-tts') => request('GET', `/tts/voices?engine=${engine}`)
@@ -180,8 +183,8 @@ export const deleteVoiceSample = (projectId, filename) =>
   request('DELETE', `/projects/${projectId}/voices/${encodeURIComponent(filename)}`)
 
 // Exports
-export const exportEpub = (projectId) =>
-  fetch(`${BASE}/projects/${projectId}/export/epub`, { method: 'POST' })
+export const exportEpub = (projectId, includeNotes = false) =>
+  fetch(`${BASE}/projects/${projectId}/export/epub?include_notes=${includeNotes}`, { method: 'POST' })
 export const listExports = (projectId) => request('GET', `/projects/${projectId}/exports`)
 export const deleteExport = (projectId, filename) =>
   request('DELETE', `/projects/${projectId}/exports/${encodeURIComponent(filename)}`)

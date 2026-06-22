@@ -20,6 +20,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
   const [loadingLibs, setLoadingLibs] = useState(false)
   const [chapterTask, setChapterTask] = useState(null)
   const [forceAudio, setForceAudio] = useState(false)
+  const [includeNotes, setIncludeNotes] = useState(false)
 
   // Incremented every time a new synthesis starts or the project is cleared.
   // The pollTask callback checks this to discard results from a stale session.
@@ -85,7 +86,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
   const handleExportEpub = async () => {
     setExporting(true)
     try {
-      const res = await exportEpub(projectId)
+      const res = await exportEpub(projectId, includeNotes)
       if (!res.ok) { const e = await res.json(); throw new Error(e.detail) }
       const blob = await res.blob()
       const cd = res.headers.get('content-disposition') || ''
@@ -212,6 +213,7 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
   }
 
   const ttsStatusClass = (chapter) => ttsStatusLabel(chapter).toLowerCase().replace(/\s+/g, '-')
+  const noteCount = chapters.reduce((count, chapter) => count + (chapter.notes?.length || 0), 0)
 
   useEffect(() => {
     if (!meta?.last_tts_status || synthesizing) return
@@ -249,6 +251,15 @@ export default function Step4Export({ projectId, isActive, onBack, toast }) {
               <div className="text-sm text-muted mb-4">
                 Generates a valid EPUB 3 file with all chapters, metadata, and cover.
               </div>
+              <label className="flex items-center gap-2 mb-3 text-sm cursor-pointer" data-tip-anchor="export-notes">
+                <input
+                  type="checkbox"
+                  checked={includeNotes}
+                  onChange={e => setIncludeNotes(e.target.checked)}
+                  disabled={exporting || noteCount === 0}
+                />
+                Include collected notes{noteCount > 0 ? ` (${noteCount})` : ''}
+              </label>
               <button className="btn btn-primary w-full" onClick={handleExportEpub} disabled={exporting}>
                 {exporting ? '⏳ Building…' : '↓ Export EPUB'}
               </button>

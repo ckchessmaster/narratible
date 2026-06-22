@@ -10,6 +10,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import Optional, Any
 
+from .notes import normalize_chapter_notes, notes_from_text, split_legacy_notes_section
+
 logger = logging.getLogger(__name__)
 
 if getattr(sys, 'frozen', False):
@@ -220,16 +222,30 @@ def update_chapter(project_id: str, chapter_id: str, updates: dict) -> dict:
 def normalize_chapters(chapters: list[dict], previous: list[dict] | None = None) -> list[dict]:
     previous = previous or []
     previous_by_id = {ch.get("id"): ch for ch in previous if ch.get("id")}
+    incoming_has_ids = any(chapter.get("id") for chapter in chapters)
+    used_prior_ids: set[str] = set()
     normalized = []
     now = _utc_now()
 
     for index, chapter in enumerate(chapters):
-        prior = previous_by_id.get(chapter.get("id")) or (previous[index] if index < len(previous) else {})
+        explicit_id = chapter.get("id")
+        prior = previous_by_id.get(explicit_id) if explicit_id else None
+        if prior is None and not incoming_has_ids and index < len(previous):
+            prior = previous[index]
+        elif prior is None:
+            prior = {}
         title = chapter.get("title") or f"Chapter {index + 1}"
-        text = chapter.get("text") or ""
+        text, legacy_notes_text = split_legacy_notes_section(chapter.get("text") or "")
+        notes = normalize_chapter_notes(chapter.get("notes", prior.get("notes", [])))
+        if legacy_notes_text:
+            notes.extend(notes_from_text(legacy_notes_text, source="legacy_notes_section"))
         text_hash = chapter_text_hash(title, text)
         old_hash = prior.get("text_hash")
-        chapter_id = chapter.get("id") or prior.get("id") or str(uuid.uuid4())
+        prior_id = prior.get("id")
+        chapter_id = explicit_id or (
+            prior_id if prior_id and prior_id not in used_prior_ids else None
+        ) or str(uuid.uuid4())
+        used_prior_ids.add(chapter_id)
         tts = dict(chapter.get("tts") or prior.get("tts") or {})
         legacy_audio_path = chapter.get("audio_path") or prior.get("audio_path")
         if legacy_audio_path and not tts.get("audio_path"):
@@ -258,6 +274,7 @@ def normalize_chapters(chapters: list[dict], previous: list[dict] | None = None)
             "order": index + 1,
             "title": title,
             "text": text,
+            "notes": notes,
             "text_hash": text_hash,
             "updated_at": now if old_hash != text_hash else chapter.get("updated_at") or prior.get("updated_at") or now,
             "tts": tts,

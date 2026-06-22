@@ -2,13 +2,12 @@
   "chat.tools.terminal.autoApprove": {
     "/.*run-test-validation\\.ps1.*/": true,
     "/.*\\.venv\\\\Scripts\\\\python\\.exe\" -m pytest.*/": true,
-    "/.*docker build.*": true,
+    "/.*docker build.*/": true,
     "/.*npm run build.*/": true,
     "/.*npm run lint.*/": true,
     "/.*npx eslint.*/": true,
-    "/git status.*/": true,
-    "/git diff.*/": true,
+    "/.*git status.*/": true,
+    "/.*git diff.*/": true,
     "/.*git tag --sort.*/": true
   }
 }
-

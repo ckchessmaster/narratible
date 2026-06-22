@@ -344,6 +344,7 @@ input[type="range"]::-webkit-slider-thumb {
 .flex-col { flex-direction: column; }
 .items-center { align-items: center; }
 .justify-between { justify-content: space-between; }
+.gap-1 { gap: 4px; }
 .gap-2 { gap: 8px; }
 .gap-3 { gap: 12px; }
 .gap-4 { gap: 16px; }
@@ -386,4 +387,3 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--text-muted);
   margin-bottom: 12px;
 }
-

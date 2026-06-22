@@ -7,6 +7,7 @@ from typing import Callable, Literal, Any
 from openai import OpenAI
 from pydantic import BaseModel
 from .config import get_device_string
+from .custom_instructions import render_prompt
 from .page_artifacts import remove_running_headers
 
 class CleanedTextResponse(BaseModel):
@@ -876,11 +877,6 @@ def llm_review_chapters(
 
     contents_reference = _find_contents_text(chapters)
 
-    SYSTEM_PROMPT = (
-        "You are reviewing chapter boundaries detected in a PDF book by a visual heuristic. "
-        "Your job is to classify each candidate, correct malformed titles (OCR artifacts), and "
-        "reconstruct full titles that the heuristic truncated. Do not add or split chapters."
-    )
     reference_block = ""
     if contents_reference:
         reference_block = (
@@ -888,26 +884,11 @@ def llm_review_chapters(
             "when a candidate title is truncated or malformed):\n"
             f'"{contents_reference}"\n\n'
         )
-    USER_PROMPT = (
-        "Review the candidate chapters below. Each entry may include a [before: \"…\"] lead-in "
-        "showing the end of the previous candidate, to help you judge the break.\n\n"
-        "For each entry, set section_type to one of:\n"
-        "  • \"front_matter\" — cover, title page, copyright, dedication, contents, preface/foreword "
-        "BEFORE the first real chapter.\n"
-        "  • \"chapter\" — a genuine body chapter.\n"
-        "  • \"back_matter\" — notes, bibliography, indexes (scripture/person/subject), appendices "
-        "AFTER the last real chapter.\n"
-        "  • \"continuation\" — a FALSE chapter break (stray subheading, running footer, or "
-        "page-number artifact) that belongs to the PRECEDING entry. The FIRST entry must never be "
-        "\"continuation\".\n\n"
-        "Also: correct any title that is an OCR artifact (e.g. letter-spaced 'G O D' → 'GOD') and "
-        "restore the full title when it was truncated (e.g. 'Delight?' → the complete chapter title), "
-        "using the reference table of contents and lead-in context where available.\n"
-        "Do NOT add chapters or split existing ones.\n\n"
-        f"{reference_block}"
-        f"Candidates:\n{chapter_list}\n\n"
-        'Return ONLY valid JSON in this exact format: '
-        '{"chapters": [{"title": "...", "section_type": "chapter", "note": null}]}'
+    SYSTEM_PROMPT = render_prompt("chapter_review_system")
+    USER_PROMPT = render_prompt(
+        "chapter_review_user",
+        reference_block=reference_block,
+        chapter_list=chapter_list,
     )
 
     # Friendly label for the status line — avoids exposing the raw internal
@@ -1139,17 +1120,11 @@ def llm_extract_book_metadata(
     if not front_matter_text.strip():
         return {}
 
-    system_prompt = (
-        "You extract book metadata from noisy front matter. "
-        "Return only JSON with keys: title, author, language, description, "
-        "publisher, subject, isbn, series. Use empty strings when unknown."
-    )
-
-    user_prompt = (
-        "Heuristic metadata from PDF info fields:\n"
-        f"{json.dumps(heuristics, ensure_ascii=True)}\n\n"
-        "Front matter text (may include title pages, copyright, and TOC):\n"
-        f"{front_matter_text[:12000]}"
+    system_prompt = render_prompt("metadata_system")
+    user_prompt = render_prompt(
+        "metadata_user",
+        heuristics_json=json.dumps(heuristics, ensure_ascii=True),
+        front_matter_text=front_matter_text[:12000],
     )
 
     try:
@@ -1259,31 +1234,19 @@ def llm_clean_text(
     report(f"Split document into {len(chunks)} chunks for LLM processing.", 20)
 
     def build_prompt(chunk_text: str) -> str:
-        return (
-            "Please clean the following text extracted from a PDF. It has already had basic line breaks fixed. "
-            f"Cleaning profile: {profile.label}. {profile.prompt_guidance}\n"
-            "Your instructions:\n"
-            "1. Output the cleaned main text inside <text>...</text> tags.\n"
-            "2. Identify any footnotes and margin notes, and output them inside <notes>...</notes> tags.\n"
-            "3. Strip entirely any running headers, footers, and floating page numbers.\n"
-            "4. Preserve epigraph, poetry, scripture, and source attribution lines such as 'C. S. LEWIS', 'Till We Have Faces', 'PSALM 63:1', and spaced OCR forms like 'P S A L M 6 3 : 1'. Do not treat them as headers/footers.\n"
-            "5. Fix OCR errors: Reconstruct mangled or fragmented words (e.g., 'T E R T U L L I A N' -> 'TERTULLIAN'). Correct obvious typos caused by bad scanning.\n"
-            "6. Format all major structural headings (e.g., Chapters, Prefaces, Introductions, Prologues, Epilogues) by prefixing them with a Markdown '# ' (e.g., '# Chapter 1', '# Introduction').\n"
-            "7. NEVER include any conversational preamble, summary, or analysis. DO NOT output 'Here is the cleaned text'.\n"
-            "8. DO NOT omit, summarize, or truncate any text. Do not use placeholders like '...(rest of text)'. You MUST output the full text unaltered except for the requested formatting.\n\n"
-            "Here is the text:\n\n"
-            + chunk_text
+        return render_prompt(
+            "cleanup_user_streaming",
+            profile_label=profile.label,
+            profile_guidance=profile.prompt_guidance,
+            chunk_text=chunk_text,
         )
 
-    SYSTEM_PROMPT = (
-        "You are a strict text editor. NEVER output conversational filler or preamble. "
-        "Output ONLY the intended text formatting, no analysis. Fix fragmented OCR characters into proper words. "
-        "Never omit, truncate, or summarize text. "
-        f"Profile guidance: {profile.prompt_guidance}"
+    SYSTEM_PROMPT = render_prompt(
+        "cleanup_system",
+        profile_guidance=profile.prompt_guidance,
     )
 
     cleaned_chunks = []
-    all_notes = []
     evaluated_chunks: list[ChunkCleaningEvaluation] = []
 
     def parse_output(response_text: str):
@@ -1322,11 +1285,9 @@ def llm_clean_text(
             report("Source text may have page-split artifacts; flagged this chunk for review.", 85)
         if main_text:
             cleaned_chunks.append(main_text)
-        if notes_text:
-            all_notes.append(notes_text)
         # Avoid duplicating output for streaming providers by only appending separators
         if provider != "embedded" and output_callback:
-            output_callback(main_text + ("\n\n[Notes: " + notes_text + "]" if notes_text else "") + "\n\n")
+            output_callback(main_text + "\n\n")
         elif provider == "embedded" and output_callback:
             output_callback("\n\n---\n\n")
 
@@ -1509,13 +1470,11 @@ def llm_clean_text(
         client = genai.Client(api_key=cfg.gemini_api_key)
         
         def build_cloud_prompt(chunk_text: str) -> str:
-            return (
-                "Please clean the following text extracted from a PDF. Ensure basic line breaks are fixed. "
-                f"Cleaning profile: {profile.label}. {profile.prompt_guidance}\n"
-                "Output the cleaned text into `main_text`. Output any footnotes/margin notes into `notes_text`. "
-                "Strip running headers/footers/page numbers, but preserve epigraph, poetry, scripture, and source attribution lines such as 'C. S. LEWIS', 'Till We Have Faces', 'PSALM 63:1', and spaced OCR forms like 'P S A L M 6 3 : 1'.\n"
-                "Fix OCR errors: Reconstruct mangled or fragmented words (e.g., 'T E R T U L L I A N' -> 'TERTULLIAN'). Catch obvious spelling errors.\n\n"
-                "Here is the text:\n\n" + chunk_text
+            return render_prompt(
+                "cleanup_user_structured",
+                profile_label=profile.label,
+                profile_guidance=profile.prompt_guidance,
+                chunk_text=chunk_text,
             )
             
         for i, chunk in enumerate(chunks):
@@ -1649,13 +1608,11 @@ def llm_clean_text(
         client = OpenAI(api_key=cfg.openai_api_key)
         
         def build_cloud_prompt(chunk_text: str) -> str:
-            return (
-                "Please clean the following text extracted from a PDF. Ensure basic line breaks are fixed. "
-                f"Cleaning profile: {profile.label}. {profile.prompt_guidance}\n"
-                "Output the cleaned text into `main_text`. Output any footnotes/margin notes into `notes_text`. "
-                "Strip running headers/footers/page numbers, but preserve epigraph, poetry, scripture, and source attribution lines such as 'C. S. LEWIS', 'Till We Have Faces', 'PSALM 63:1', and spaced OCR forms like 'P S A L M 6 3 : 1'.\n"
-                "Fix OCR errors: Reconstruct mangled or fragmented words (e.g., 'T E R T U L L I A N' -> 'TERTULLIAN'). Catch obvious spelling errors.\n\n"
-                "Here is the text:\n\n" + chunk_text
+            return render_prompt(
+                "cleanup_user_structured",
+                profile_label=profile.label,
+                profile_guidance=profile.prompt_guidance,
+                chunk_text=chunk_text,
             )
 
         for i, chunk in enumerate(chunks):
@@ -1694,8 +1651,6 @@ def llm_clean_text(
 
     report("Cleanup complete! Merging document…", 95)
     final_doc = "\n\n".join(cleaned_chunks)
-    if all_notes:
-        final_doc += "\n\n--- NOTES ---\n\n" + "\n\n".join(all_notes)
 
     if return_evaluation:
         fallback_count = sum(1 for chunk in evaluated_chunks if chunk.status == "fallback")

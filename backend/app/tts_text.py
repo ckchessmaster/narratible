@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import re
 import unicodedata
 
+from .notes import strip_legacy_notes_section
 from .parsing_modules import apply_tts_modules
 
 
@@ -26,6 +27,7 @@ class TTSSegment:
 def strip_tts_artifacts(text: str) -> str:
     """Remove markup artifacts that should not be spoken."""
     text = text or ""
+    text = strip_legacy_notes_section(text)
     text = re.sub(r"(?m)^\[\^\d+\]:.*$", "", text)
     text = re.sub(r"\[\^\d+\]", "", text)
     return text.strip()

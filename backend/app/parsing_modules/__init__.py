@@ -6,6 +6,7 @@ and selected per-project via the parse endpoint.
 """
 
 from . import bible, prose_reflow
+from ..notes import EXTENDED_NOTE_DETECTION_MODULE_ID
 
 MODERNIZATION_MODULE_ID = "modernize_text"
 
@@ -30,6 +31,16 @@ MODULES: dict[str, dict] = {
         ),
         "transform": bible.transform,
         "tts_transform": bible.tts_transform,
+    },
+    EXTENDED_NOTE_DETECTION_MODULE_ID: {
+        "id": EXTENDED_NOTE_DETECTION_MODULE_ID,
+        "name": "Extended Note Detection",
+        "description": (
+            "Uses PDF layout geometry to strip margin notes and collect them with "
+            "footnotes for optional EPUB export. Audio never includes collected notes."
+        ),
+        "kind": "layout_detection",
+        "warning": "Best for scholarly or messy scans; review extracted text when page margins contain real prose.",
     },
     MODERNIZATION_MODULE_ID: {
         "id": MODERNIZATION_MODULE_ID,

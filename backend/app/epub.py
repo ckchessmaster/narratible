@@ -9,6 +9,8 @@ from pathlib import Path
 from html import escape
 from typing import Optional
 
+from .notes import normalize_chapter_notes, notes_from_text, split_legacy_notes_section
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,11 +80,12 @@ NAV_TEMPLATE = """\
 CHAPTER_TEMPLATE = """\
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
 <head><meta charset="UTF-8"/><title>{title}</title></head>
 <body>
   <h1>{title}</h1>
   {paragraphs}
+  {notes}
 </body>
 </html>"""
 
@@ -90,6 +93,28 @@ CHAPTER_TEMPLATE = """\
 def _paragraphs_html(text: str) -> str:
     paras = [p.strip() for p in text.split("\n\n") if p.strip()]
     return "\n  ".join(f"<p>{escape(p)}</p>" for p in paras)
+
+
+def _notes_html(notes: list[dict]) -> str:
+    normalized = normalize_chapter_notes(notes)
+    if not normalized:
+        return ""
+    items = []
+    for index, note in enumerate(normalized, start=1):
+        label_parts = []
+        if note.get("marker"):
+            label_parts.append(str(note["marker"]))
+        if note.get("page"):
+            label_parts.append(f"p. {note['page']}")
+        label = f"<strong>{escape(' / '.join(label_parts))}</strong> " if label_parts else ""
+        items.append(f'<li id="note-{index}"><p>{label}{escape(note["text"])}</p></li>')
+    joined_items = "\n      ".join(items)
+    return (
+        '<section epub:type="endnotes" class="notes">\n'
+        '    <h2>Notes</h2>\n'
+        f"    <ol>\n      {joined_items}\n    </ol>\n"
+        "  </section>"
+    )
 
 
 def build_epub(
@@ -104,10 +129,11 @@ def build_epub(
   series: str,
     chapters: list[dict],
     cover_image_path: Optional[Path] = None,
+  include_notes: bool = False,
 ) -> Path:
     """
     Build an EPUB file at output_path.
-    chapters: list of {"title": str, "text": str}
+    chapters: list of {"title": str, "text": str, "notes": list}
     Returns the path to the written EPUB file.
     """
     from datetime import datetime, timezone
@@ -143,9 +169,14 @@ def build_epub(
             ch_id = f"chapter{i + 1:03d}"
             ch_file = f"{ch_id}.xhtml"
             ch_title = escape(ch.get("title", f"Chapter {i + 1}"))
+            chapter_text, legacy_notes = split_legacy_notes_section(ch.get("text", ""))
+            notes = normalize_chapter_notes(ch.get("notes", []))
+            if include_notes and legacy_notes:
+                notes.extend(notes_from_text(legacy_notes, source="legacy_notes_section"))
             ch_html = CHAPTER_TEMPLATE.format(
                 title=ch_title,
-                paragraphs=_paragraphs_html(ch.get("text", "")),
+                paragraphs=_paragraphs_html(chapter_text),
+                notes=_notes_html(notes) if include_notes else "",
             )
             epub.writestr(f"OEBPS/{ch_file}", ch_html)
             chapter_items.append(f'<item id="{ch_id}" href="{ch_file}" media-type="application/xhtml+xml"/>')

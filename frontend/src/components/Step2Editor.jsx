@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { getProject, updateProject, getChapters, saveChapters, uploadCover, getDebugChapters, getDebugPrompt, getCleaningEval, saveCleaningEval, redoCleaningChunk, applyCleaningVariant, batchRedoCleaning, getCleaningReport, getModernizationEval, saveModernizationEval, getModernizationProfiles, modernizeChapter, modernizeProject, redoModernizationChunk, selectModernizationVariant, skipModernizationChunk, clearModernizationSelection, commitModernizationSession, undoLastModernizationCommit, discardModernizationSession, pollTask } from '../api'
+import { getProject, updateProject, getChapters, saveChapters, uploadCover, coverImageUrl, getDebugChapters, getDebugPrompt, getCleaningEval, saveCleaningEval, redoCleaningChunk, applyCleaningVariant, batchRedoCleaning, getCleaningReport, getModernizationEval, saveModernizationEval, getModernizationProfiles, modernizeChapter, modernizeProject, redoModernizationChunk, selectModernizationVariant, skipModernizationChunk, clearModernizationSelection, commitModernizationSession, undoLastModernizationCommit, discardModernizationSession, pollTask } from '../api'
 
 const MODERNIZATION_MODULE_ID = 'modernize_text'
 const REVIEW_STEP_IDS = {
@@ -9,6 +9,13 @@ const REVIEW_STEP_IDS = {
   REVIEW_MODERNIZATION: 'review_modernization',
   FINAL_REVIEW: 'final_review',
 }
+const RESOLVED_CLEANUP_REVIEW_STATES = new Set(['reviewed', 'manual_edit', 'applied'])
+const DOWNSTREAM_REVIEW_STEP_IDS = new Set([
+  REVIEW_STEP_IDS.CHAPTER_SETUP,
+  REVIEW_STEP_IDS.RUN_MODERNIZATION,
+  REVIEW_STEP_IDS.REVIEW_MODERNIZATION,
+  REVIEW_STEP_IDS.FINAL_REVIEW,
+])
 
 export default function Step2Editor({ projectId, isActive, onNext, onBack, toast, debugMode = false }) {
   const [meta, setMeta] = useState({
@@ -54,7 +61,9 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   const [showModernizationCommitPreview, setShowModernizationCommitPreview] = useState(false)
   const [reviewFlowStep, setReviewFlowStep] = useState(REVIEW_STEP_IDS.CLEANUP_METADATA)
   const [reviewFlowCompletedSteps, setReviewFlowCompletedSteps] = useState([])
+  const [chapterUndo, setChapterUndo] = useState(null)
   const [showPromptModal, setShowPromptModal] = useState(false)
+  const [focusedCleanupChunkKey, setFocusedCleanupChunkKey] = useState(null)
   const coverRef = useRef()
   const textareaRef = useRef()
   const dirtyRef = useRef(false)
@@ -89,6 +98,8 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
       setShowModernizationCommitPreview(false)
       setReviewFlowStep(REVIEW_STEP_IDS.CLEANUP_METADATA)
       setReviewFlowCompletedSteps([])
+      setChapterUndo(null)
+      setFocusedCleanupChunkKey(null)
       setSaveStatus('saved')
       dirtyRef.current = false
       dirtyVersionRef.current = 0
@@ -128,8 +139,9 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
         setCleaningEval(evalReport ?? null)
         setModernizationEval(modernEval ?? null)
         setModernizationProfiles(modernProfiles ?? [])
-        setReviewFlowStep(p.review_flow_step || REVIEW_STEP_IDS.CLEANUP_METADATA)
-        setReviewFlowCompletedSteps(p.review_flow_completed_steps || [])
+        setReviewFlowStep(p.review_flow_step === REVIEW_STEP_IDS.CHAPTER_SETUP ? REVIEW_STEP_IDS.CLEANUP_METADATA : (p.review_flow_step || REVIEW_STEP_IDS.CLEANUP_METADATA))
+        setReviewFlowCompletedSteps((p.review_flow_completed_steps || []).filter(stepId => stepId !== REVIEW_STEP_IDS.CHAPTER_SETUP))
+        setChapterUndo(null)
         setSaveStatus('saved')
         dirtyRef.current = false
         dirtyVersionRef.current = 0
@@ -148,18 +160,129 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   }, [])
 
   const markCleaningEvalDirty = useCallback(() => {
+    setChapterUndo(null)
     cleaningEvalDirtyRef.current = true
     markDirty()
   }, [markDirty])
 
   const markModernizationEvalDirty = useCallback(() => {
+    setChapterUndo(null)
     modernizationEvalDirtyRef.current = true
     markDirty()
   }, [markDirty])
 
+  const cleanupReviewState = (chunk) => chunk?.review_status || chunk?.review_state || null
+  const isCleanupResolved = (chunk) => RESOLVED_CLEANUP_REVIEW_STATES.has(cleanupReviewState(chunk))
+
+  const updateCleaningChunkEval = (evaluation, chapterIndex, chunkId, updater) => {
+    if (!evaluation?.chapters?.length) return evaluation
+    return {
+      ...evaluation,
+      chapters: evaluation.chapters.map(chapterEval => {
+        if (chapterEval.chapter_index !== chapterIndex) return chapterEval
+        return {
+          ...chapterEval,
+          chunks: (chapterEval.chunks || []).map(chunk => (
+            chunk.chunk_id === chunkId ? updater(chunk) : chunk
+          )),
+        }
+      }),
+    }
+  }
+
+  const markCleanupChunkReviewState = (chapterIndex, chunkId, reviewStatus) => {
+    const reviewedAt = new Date().toISOString()
+    setCleaningEval(prev => updateCleaningChunkEval(prev, chapterIndex, chunkId, chunk => ({
+      ...chunk,
+      review_status: reviewStatus,
+      reviewed_at: reviewedAt,
+      stale_at: reviewStatus === 'stale' ? reviewedAt : chunk.stale_at,
+      stale_reason: reviewStatus === 'stale' ? 'chapter text changed after cleanup' : chunk.stale_reason,
+    })))
+    markCleaningEvalDirty()
+  }
+
+  const markChapterCleanupStale = (chapterIndex) => {
+    const chapterEval = cleaningEval?.chapters?.find(item => item.chapter_index === chapterIndex)
+    const hasUnresolved = chapterEval?.chunks?.some(chunk => !isCleanupResolved(chunk) && cleanupReviewState(chunk) !== 'stale')
+    if (!hasUnresolved) return
+    const staleAt = new Date().toISOString()
+    setCleaningEval(prev => {
+      if (!prev?.chapters?.length) return prev
+      return {
+        ...prev,
+        chapters: prev.chapters.map(item => {
+          if (item.chapter_index !== chapterIndex) return item
+          return {
+            ...item,
+            stale_after_manual_edit_at: staleAt,
+            chunks: (item.chunks || []).map(chunk => (
+              isCleanupResolved(chunk) || cleanupReviewState(chunk) === 'stale'
+                ? chunk
+                : {
+                    ...chunk,
+                    review_status: 'stale',
+                    stale_at: staleAt,
+                    stale_reason: 'chapter text changed after cleanup',
+                  }
+            )),
+          }
+        }),
+      }
+    })
+    markCleaningEvalDirty()
+  }
+
+  const resetDownstreamReviewCompletion = () => {
+    setReviewFlowCompletedSteps(prev => prev.filter(stepId => !DOWNSTREAM_REVIEW_STEP_IDS.has(stepId)))
+  }
+
+  const cloneForUndo = (value) => value == null ? value : JSON.parse(JSON.stringify(value))
+
+  const rememberChapterUndo = (label) => {
+    setChapterUndo({
+      label,
+      chapters: cloneForUndo(chapters),
+      selectedIdx,
+      cleaningEval: cloneForUndo(cleaningEval),
+      modernizationEval: cloneForUndo(modernizationEval),
+      reviewFlowCompletedSteps: cloneForUndo(reviewFlowCompletedSteps),
+    })
+  }
+
+  const undoChapterAction = () => {
+    if (!chapterUndo) return
+    setChapters(chapterUndo.chapters)
+    setSelectedIdx(Math.min(chapterUndo.selectedIdx, Math.max(0, chapterUndo.chapters.length - 1)))
+    setCleaningEval(chapterUndo.cleaningEval)
+    setModernizationEval(chapterUndo.modernizationEval)
+    setReviewFlowCompletedSteps(chapterUndo.reviewFlowCompletedSteps)
+    setComparison(null)
+    setModernizationComparison(null)
+    setCleaningReport(null)
+    dirtyRef.current = true
+    dirtyVersionRef.current += 1
+    cleaningEvalDirtyRef.current = Boolean(chapterUndo.cleaningEval)
+    modernizationEvalDirtyRef.current = Boolean(chapterUndo.modernizationEval)
+    setSaveStatus('dirty')
+    toast(`Undid ${chapterUndo.label}.`, 'success')
+    setChapterUndo(null)
+  }
+
+  const confirmClearingChapterUndo = () => {
+    if (!chapterUndo) return true
+    const ok = window.confirm(
+      `Editing chapter text or title will clear Undo for ${chapterUndo.label}. Continue editing?`,
+    )
+    if (ok) setChapterUndo(null)
+    return ok
+  }
+
   const updateChapter = (idx, field, value) => {
+    if (!confirmClearingChapterUndo()) return false
     markDirty()
     setChapters(prev => prev.map((ch, i) => i === idx ? { ...ch, [field]: value } : ch))
+    return true
   }
 
   const updateSelectedChapterTitle = (value) => {
@@ -167,7 +290,9 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   }
 
   const updateSelectedChapterText = (value) => {
-    updateChapter(selectedIdx, 'text', value)
+    if (!updateChapter(selectedIdx, 'text', value)) return
+    markChapterCleanupStale(selectedIdx)
+    resetDownstreamReviewCompletion()
   }
 
   const updateMeta = (updates) => {
@@ -181,6 +306,25 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     .map((chapterEval, index) => ({ ...chapterEval, chapter_index: index }))
 
   const reindexChunkIds = (chunks) => (chunks || []).map((chunk, index) => ({ ...chunk, chunk_id: index }))
+  const mergeNotes = (first = [], second = []) => [...(first || []), ...(second || [])]
+  const notesFromText = (notesText, source = 'llm_cleanup_variant') => (notesText || '')
+    .split(/\n\s*\n|(?=^\s*\d{1,3}[).]?\s+)/m)
+    .map(text => text.trim())
+    .filter(Boolean)
+    .map(text => ({ type: 'footnote', text, source }))
+  const splitNotesAtOffset = (notes = [], offset = 0) => {
+    const before = []
+    const after = []
+    for (const note of notes || []) {
+      const noteOffset = Number(note.anchor_offset)
+      if (Number.isFinite(noteOffset) && noteOffset >= offset) {
+        after.push({ ...note, anchor_offset: Math.max(0, noteOffset - offset) })
+      } else {
+        before.push(note)
+      }
+    }
+    return { before, after }
+  }
 
   const mergeChapterEvals = (targetEval, deletedEval, deletedBeforeTarget) => {
     if (!targetEval) return null
@@ -188,9 +332,19 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
 
     const targetChunks = targetEval.chunks || []
     const deletedChunks = deletedEval.chunks || []
+    const staleAt = new Date().toISOString()
     const chunks = reindexChunkIds(deletedBeforeTarget
       ? [...deletedChunks, ...targetChunks]
-      : [...targetChunks, ...deletedChunks])
+      : [...targetChunks, ...deletedChunks]).map(chunk => (
+      isCleanupResolved(chunk)
+        ? chunk
+        : {
+            ...chunk,
+            review_status: 'stale',
+            stale_at: staleAt,
+            stale_reason: 'chapter structure changed after cleanup',
+          }
+    ))
     const fallbackCount = chunks.filter(chunk => chunk.status === 'fallback').length
 
     return {
@@ -202,7 +356,27 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     }
   }
 
-  const syncCleaningEvalAfterDelete = (deletedIndex) => {
+  const syncCleaningEvalAfterChapterDelete = (deletedIndex) => {
+    markDirty()
+    cleaningEvalDirtyRef.current = true
+    modernizationEvalDirtyRef.current = true
+    setCleaningEval(prev => {
+      if (!prev?.chapters?.length) return prev
+      const updatedChapters = prev.chapters.filter(chapterEval => chapterEval.chapter_index !== deletedIndex)
+      return { ...prev, chapters: reindexChapterEvals(updatedChapters) }
+    })
+    setComparison(null)
+    setModernizationComparison(null)
+    setCleaningReport(null)
+
+    setModernizationEval(prev => {
+      if (!prev?.chapters?.length) return prev
+      const updatedChapters = prev.chapters.filter(chapterEval => chapterEval.chapter_index !== deletedIndex)
+      return { ...prev, chapters: reindexChapterEvals(updatedChapters) }
+    })
+  }
+
+  const syncCleaningEvalAfterChapterMerge = (deletedIndex) => {
     markDirty()
     cleaningEvalDirtyRef.current = true
     modernizationEvalDirtyRef.current = true
@@ -307,23 +481,50 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
 
   const deleteChapter = (idx) => {
     if (chapters.length <= 1) { toast('Cannot delete the last chapter.', 'error'); return }
-    
+
+    rememberChapterUndo(`deleting "${chapters[idx]?.title || `Chapter ${idx + 1}`}"`)
+    setChapters(prev => prev.filter((_, i) => i !== idx))
+    syncCleaningEvalAfterChapterDelete(idx)
+    resetDownstreamReviewCompletion()
+    setSelectedIdx(prev => {
+      if (prev < idx) return prev
+      if (prev === idx) return Math.min(idx, chapters.length - 2)
+      return Math.max(0, prev - 1)
+    })
+    toast('Chapter deleted. Use Undo to restore it before making another chapter edit.', 'success')
+  }
+
+  const mergeChapter = (idx) => {
+    if (chapters.length <= 1) { toast('Cannot merge the last chapter.', 'error'); return }
+
+    const targetIndex = idx === 0 ? 1 : idx - 1
+    rememberChapterUndo(`merging "${chapters[idx]?.title || `Chapter ${idx + 1}`}"`)
     setChapters(prev => {
       const updated = [...prev]
       const toDelete = updated[idx]
       
       if (idx === 0) {
         // Merge to the top of next chapter
-        updated[1].text = `${toDelete.text}\n\n${updated[1].text}`.trim()
+        updated[1] = {
+          ...updated[1],
+          text: `${toDelete.text}\n\n${updated[1].text}`.trim(),
+          notes: mergeNotes(toDelete.notes, updated[1].notes),
+        }
       } else {
         // Merge to the bottom of previous chapter
-        updated[idx - 1].text = `${updated[idx - 1].text}\n\n${toDelete.text}`.trim()
+        updated[idx - 1] = {
+          ...updated[idx - 1],
+          text: `${updated[idx - 1].text}\n\n${toDelete.text}`.trim(),
+          notes: mergeNotes(updated[idx - 1].notes, toDelete.notes),
+        }
       }
       
       return updated.filter((_, i) => i !== idx)
     })
-    syncCleaningEvalAfterDelete(idx)
-    setSelectedIdx(i => Math.min(i, chapters.length - 2))
+    syncCleaningEvalAfterChapterMerge(idx)
+    resetDownstreamReviewCompletion()
+    setSelectedIdx(idx === 0 ? 0 : targetIndex)
+    toast('Chapter merged. Use Undo to restore the previous chapter list before making another chapter edit.', 'success')
   }
 
   const moveChapter = (idx, dir) => {
@@ -334,7 +535,9 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
       ;[a[idx], a[next]] = [a[next], a[idx]]
       return a
     })
+    rememberChapterUndo(`moving "${chapters[idx]?.title || `Chapter ${idx + 1}`}"`)
     syncCleaningEvalAfterMove(idx, next)
+    resetDownstreamReviewCompletion()
     setSelectedIdx(next)
   }
 
@@ -346,12 +549,15 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     const before = ch.text.slice(0, pos).trim()
     const after = ch.text.slice(pos).trim()
     if (!after) { toast('No text after cursor to split.', 'error'); return }
+    const splitNotes = splitNotesAtOffset(ch.notes, pos)
     const updated = [...chapters]
-    updated[selectedIdx] = { ...ch, text: before }
-    updated.splice(selectedIdx + 1, 0, { title: `${ch.title} (cont.)`, text: after, audio_path: null })
+    updated[selectedIdx] = { ...ch, text: before, notes: splitNotes.before }
+    updated.splice(selectedIdx + 1, 0, { title: `${ch.title} (cont.)`, text: after, notes: splitNotes.after, audio_path: null })
+    rememberChapterUndo(`splitting "${ch.title || `Chapter ${selectedIdx + 1}`}"`)
     markDirty()
     setChapters(updated)
     syncCleaningEvalAfterSplit(selectedIdx)
+    resetDownstreamReviewCompletion()
     toast('Chapter split at cursor.', 'success')
   }
 
@@ -639,6 +845,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
       if (dirtyRef.current) await handleSave(false)
       const res = await commitModernizationSession(projectId, selectedIdx)
       setModernizationEval(res.evaluation)
+      setChapterUndo(null)
       setChapters(prev => prev.map((chapter, i) => (i === selectedIdx ? res.chapter : chapter)))
       setModernizationComparison(null)
       setShowModernizationCommitPreview(false)
@@ -657,6 +864,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     try {
       const res = await undoLastModernizationCommit(projectId, selectedIdx)
       setModernizationEval(res.evaluation)
+      setChapterUndo(null)
       setChapters(prev => prev.map((chapter, i) => (i === selectedIdx ? res.chapter : chapter)))
       setModernizationComparison(null)
       setShowModernizationCommitPreview(false)
@@ -685,16 +893,21 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     }
   }
 
-  const chunkNeedsReview = (chunk) => (
-    chunk.status === 'fallback' ||
-    chunk.risk_level === 'high' ||
-    chunk.integrity_issues?.length > 0 ||
-    (chunk.metrics?.anchor_required && chunk.metrics.anchor_matches < chunk.metrics.anchor_required)
-  )
+  const chunkNeedsReview = (chunk) => {
+    if (isCleanupResolved(chunk) || cleanupReviewState(chunk) === 'stale') return false
+    return (
+      chunk.status === 'fallback' ||
+      chunk.risk_level === 'high' ||
+      chunk.integrity_issues?.length > 0 ||
+      (chunk.metrics?.anchor_required && chunk.metrics.anchor_matches < chunk.metrics.anchor_required)
+    )
+  }
 
   const chunkMatchesFilter = (chunk) => {
     if (reviewFilter === 'fallbacks') return chunk.status === 'fallback'
     if (reviewFilter === 'warnings') return chunkNeedsReview(chunk)
+    if (reviewFilter === 'stale') return cleanupReviewState(chunk) === 'stale'
+    if (reviewFilter === 'resolved') return isCleanupResolved(chunk)
     if (reviewFilter === 'large_delta') return Math.abs((chunk.metrics?.word_count_ratio ?? 1) - 1) > 0.15
     if (reviewFilter === 'missing_anchors') return (chunk.metrics?.anchor_required ?? 0) > (chunk.metrics?.anchor_matches ?? 0)
     if (reviewFilter === 'variants') return (chunk.variants?.length ?? 0) > 0
@@ -748,7 +961,109 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   }
 
   const riskLabel = (risk) => risk === 'low' ? 'Low risk' : risk === 'high' ? 'Needs review' : 'Review'
-  const statusLabel = (status) => status === 'fallback' ? 'Fallback used' : 'Accepted'
+  const cleanupReviewLabel = (chunk) => {
+    const state = cleanupReviewState(chunk)
+    if (state === 'reviewed') return 'Reviewed'
+    if (state === 'manual_edit') return 'Edited'
+    if (state === 'applied') return 'Applied'
+    if (state === 'stale') return 'Stale'
+    return riskLabel(chunk?.risk_level)
+  }
+  const cleanupStatusLabel = (status) => status === 'fallback' ? 'Fallback text' : 'In chapter'
+  const cleanupCandidateStatusLabel = (status) => status === 'fallback' ? 'Fallback candidate' : 'Retry candidate'
+  const cleanupStatusColor = (status) => status === 'fallback' ? 'var(--warning, #f59e0b)' : 'var(--text-secondary)'
+
+  const normalizeSearchText = (text) => (text || '').replace(/\s+/g, ' ').trim()
+  const collapseTextWithMap = (text) => {
+    const chars = []
+    const indexMap = []
+    let pendingSpace = false
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index]
+      if (/\s/.test(char)) {
+        if (chars.length) pendingSpace = true
+        continue
+      }
+      if (pendingSpace) {
+        chars.push(' ')
+        indexMap.push(index)
+        pendingSpace = false
+      }
+      chars.push(char)
+      indexMap.push(index)
+    }
+    return { text: chars.join(''), indexMap }
+  }
+  const findLooseTextRange = (chapterText, needle) => {
+    const cleanNeedle = normalizeSearchText(needle)
+    if (cleanNeedle.length < 12) return null
+
+    const exactStart = chapterText.indexOf(needle)
+    if (exactStart >= 0) return { start: exactStart, end: exactStart + needle.length }
+
+    const collapsedChapter = collapseTextWithMap(chapterText)
+    const collapsedNeedle = normalizeSearchText(needle)
+    const collapsedStart = collapsedChapter.text.toLowerCase().indexOf(collapsedNeedle.toLowerCase())
+    if (collapsedStart < 0) return null
+
+    const collapsedEnd = collapsedStart + collapsedNeedle.length - 1
+    return {
+      start: collapsedChapter.indexMap[collapsedStart],
+      end: (collapsedChapter.indexMap[collapsedEnd] ?? collapsedChapter.indexMap[collapsedStart]) + 1,
+    }
+  }
+  const findChunkTextRange = (chapterText, chunk) => {
+    const candidates = [chunk.accepted_text, chunk.source_text, chunk.candidate_text]
+      .map(text => (text || '').trim())
+      .filter(Boolean)
+    for (const candidate of candidates) {
+      const probes = [
+        candidate,
+        candidate.slice(0, 800),
+        candidate.slice(0, 400),
+        candidate.slice(0, 220),
+        candidate.slice(Math.max(0, Math.floor(candidate.length / 2) - 160), Math.floor(candidate.length / 2) + 160),
+        candidate.slice(Math.max(0, candidate.length - 260)),
+      ].map(normalizeSearchText).filter(text => text.length >= 12)
+      for (const probe of probes) {
+        const found = findLooseTextRange(chapterText, probe)
+        if (found) return found
+      }
+    }
+    return null
+  }
+  const scrollTextareaToSelection = (textarea, selectionStart) => {
+    const lineHeight = Number.parseFloat(window.getComputedStyle(textarea).lineHeight) || 20
+    const lineNumber = textarea.value.slice(0, selectionStart).split(/\r?\n/).length
+    textarea.scrollTop = Math.max(0, (lineNumber - 4) * lineHeight)
+    textarea.scrollIntoView({ block: 'nearest' })
+  }
+
+  const focusChunkInEditor = (chunk) => {
+    const chapterIndex = chunk.chapter_index ?? selectedIdx
+    const chunkKey = `${chapterIndex}:${chunk.chunk_id}`
+    setFocusedCleanupChunkKey(chunkKey)
+    if (chapterIndex !== selectedIdx) setSelectedIdx(chapterIndex)
+    window.setTimeout(() => {
+      const textarea = textareaRef.current
+      if (!textarea) return
+      textarea.focus()
+      const chapterText = chapters[chapterIndex]?.text || ''
+      const found = findChunkTextRange(chapterText, chunk)
+      if (found) {
+        textarea.setSelectionRange(found.start, found.end)
+        scrollTextareaToSelection(textarea, found.start)
+        return
+      }
+      toast('Could not find that passage in the current chapter text. It may already have been edited.', 'warning')
+    }, 120)
+  }
+
+  const handleMarkCleanupReviewed = (chunk, reviewStatus) => {
+    const chapterIndex = chunk.chapter_index ?? selectedIdx
+    markCleanupChunkReviewState(chapterIndex, chunk.chunk_id, reviewStatus)
+    toast(reviewStatus === 'manual_edit' ? 'Passage marked resolved by edit.' : 'Passage marked reviewed.', 'success')
+  }
 
   const handleBatchRedoVisible = async (chunks) => {
     if (!chunks.length) return
@@ -779,7 +1094,11 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
         comparison.variant.variant_id,
         false,
       )
-      setCleaningEval(applyResult.evaluation)
+      setCleaningEval(updateCleaningChunkEval(applyResult.evaluation, chapterIndex, comparison.chunk.chunk_id, chunk => ({
+        ...chunk,
+        review_status: 'applied',
+        reviewed_at: new Date().toISOString(),
+      })))
       markCleaningEvalDirty()
     } catch (e) {
       toast(e.message, 'error')
@@ -787,18 +1106,22 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     }
     const currentChunkText = applyResult.previous_text || comparison.chunk.accepted_text || comparison.chunk.source_text || ''
     const candidateText = applyResult.replacement_text || comparison.variant.accepted_text || comparison.variant.candidate_text || ''
+    const candidateNotes = notesFromText(comparison.variant.notes_text || comparison.chunk.notes_text || '')
     if (!candidateText.trim()) {
       toast('The selected candidate is empty.', 'error')
       return
     }
+    setChapterUndo(null)
     setChapters(prev => prev.map((chapter, i) => {
       if (i !== chapterIndex) return chapter
       const currentText = chapter.text || ''
+      const notes = candidateNotes.length ? mergeNotes(chapter.notes, candidateNotes) : chapter.notes
       if (currentChunkText && currentText.includes(currentChunkText)) {
-        return { ...chapter, text: currentText.replace(currentChunkText, candidateText) }
+        return { ...chapter, text: currentText.replace(currentChunkText, candidateText), notes }
       }
-      return { ...chapter, text: `${currentText.trim()}\n\n${candidateText}`.trim() }
+      return { ...chapter, text: `${currentText.trim()}\n\n${candidateText}`.trim(), notes }
     }))
+    resetDownstreamReviewCompletion()
     setComparison(null)
     toast('Candidate applied to the chapter editor. Save to keep it.', 'success')
   }
@@ -813,17 +1136,39 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     try {
       let latestEval = cleaningEval
       let updatedChapterText = chapters[chapterIndex]?.text || ''
+      let updatedChapterNotes = chapters[chapterIndex]?.notes || []
+      const appliedItems = []
       for (const item of lowRisk) {
         const res = await applyCleaningVariant(projectId, item.chunk.chapter_index ?? chapterIndex, item.chunk.chunk_id, item.variant.variant_id, false)
         latestEval = res.evaluation
+        appliedItems.push({ chapter_index: item.chunk.chapter_index ?? chapterIndex, chunk_id: item.chunk.chunk_id })
         const previousText = res.previous_text || item.chunk.accepted_text || item.chunk.source_text || ''
         const replacementText = res.replacement_text || item.variant.accepted_text || item.variant.candidate_text || ''
+        const candidateNotes = notesFromText(item.variant.notes_text || item.chunk.notes_text || '')
         if (previousText && updatedChapterText.includes(previousText)) {
           updatedChapterText = updatedChapterText.replace(previousText, replacementText)
         }
+        if (candidateNotes.length) {
+          updatedChapterNotes = mergeNotes(updatedChapterNotes, candidateNotes)
+        }
+      }
+      const reviewedAt = new Date().toISOString()
+      for (const item of appliedItems) {
+        latestEval = updateCleaningChunkEval(latestEval, item.chapter_index, item.chunk_id, chunk => ({
+          ...chunk,
+          review_status: 'applied',
+          reviewed_at: reviewedAt,
+        }))
       }
       setCleaningEval(latestEval)
-      updateChapter(chapterIndex, 'text', updatedChapterText)
+      setChapterUndo(null)
+      markDirty()
+      setChapters(prev => prev.map((chapter, i) => (
+        i === chapterIndex
+          ? { ...chapter, text: updatedChapterText, notes: updatedChapterNotes }
+          : chapter
+      )))
+      resetDownstreamReviewCompletion()
       markCleaningEvalDirty()
       toast(`Applied ${lowRisk.length} low-risk candidate(s). Save to keep them.`, 'success')
     } catch (e) {
@@ -856,8 +1201,11 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     ...chunk,
     chapter_index: selectedEval.chapter_index,
   })).filter(chunkMatchesFilter) ?? []
-  const fallbackVisibleChunks = visibleReviewChunks.filter(chunk => chunk.status === 'fallback')
-  const lowRiskVisibleChunks = visibleReviewChunks.filter(chunk => (chunk.variants || []).some(variant => variant.risk_level === 'low' && !(variant.integrity_issues?.length) && !variant.is_applied))
+  const fallbackVisibleChunks = visibleReviewChunks.filter(chunk => chunk.status === 'fallback' && !isCleanupResolved(chunk))
+  const lowRiskVisibleChunks = visibleReviewChunks.filter(chunk => !isCleanupResolved(chunk) && (chunk.variants || []).some(variant => variant.risk_level === 'low' && !(variant.integrity_issues?.length) && !variant.is_applied))
+  const selectedCleanupNeedsReviewCount = selectedEval?.chunks?.filter(chunkNeedsReview).length ?? 0
+  const selectedCleanupStaleCount = selectedEval?.chunks?.filter(chunk => cleanupReviewState(chunk) === 'stale').length ?? 0
+  const selectedCleanupResolvedCount = selectedEval?.chunks?.filter(isCleanupResolved).length ?? 0
   const visibleModernizationChunks = selectedModernizationEval?.chunks?.map(chunk => ({
     ...chunk,
     chapter_index: selectedModernizationEval.chapter_index,
@@ -892,18 +1240,18 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
   const selectedModernizationCommitPreview = modernizationCommitPreviewText(selectedModernizationEval)
   const modernizationReviewCount = visibleModernizationChunks.filter(chunk => chunk.recommended_action === 'review' || chunk.risk_level === 'high' || chunk.integrity_issues?.length).length
   const reviewSteps = [
-    { id: REVIEW_STEP_IDS.CLEANUP_METADATA, label: 'Cleanup + Metadata', description: 'Review cleanup and book details' },
-    { id: REVIEW_STEP_IDS.CHAPTER_SETUP, label: 'Chapter Setup', description: 'Finalize chapter text and order' },
+    { id: REVIEW_STEP_IDS.CLEANUP_METADATA, label: 'Text, Cleanup + Metadata', description: 'Review cleanup, chapter text, and book details' },
     showModernizationTools ? { id: REVIEW_STEP_IDS.RUN_MODERNIZATION, label: 'Run Modernization', description: 'Generate modernization candidates' } : null,
     showModernizationTools ? { id: REVIEW_STEP_IDS.REVIEW_MODERNIZATION, label: 'Review Modernization', description: 'Select and commit modernization changes' } : null,
     { id: REVIEW_STEP_IDS.FINAL_REVIEW, label: 'Final Review', description: 'Confirm text and metadata before Voice' },
   ].filter(Boolean)
-  const activeReviewStepId = reviewSteps.some(step => step.id === reviewFlowStep) ? reviewFlowStep : reviewSteps[0].id
+  const normalizedReviewFlowStep = reviewFlowStep === REVIEW_STEP_IDS.CHAPTER_SETUP ? REVIEW_STEP_IDS.CLEANUP_METADATA : reviewFlowStep
+  const activeReviewStepId = reviewSteps.some(step => step.id === normalizedReviewFlowStep) ? normalizedReviewFlowStep : reviewSteps[0].id
   const activeReviewStepIndex = Math.max(0, reviewSteps.findIndex(step => step.id === activeReviewStepId))
   const activeReviewStep = reviewSteps[activeReviewStepIndex]
   const completedReviewStepSet = new Set(reviewFlowCompletedSteps)
   const activeReviewStepLocked = completedReviewStepSet.has(activeReviewStepId)
-  const canEditChapters = !activeReviewStepLocked && [REVIEW_STEP_IDS.CHAPTER_SETUP, REVIEW_STEP_IDS.FINAL_REVIEW].includes(activeReviewStepId)
+  const canEditChapters = !activeReviewStepLocked && [REVIEW_STEP_IDS.CLEANUP_METADATA, REVIEW_STEP_IDS.FINAL_REVIEW].includes(activeReviewStepId)
   const persistReviewFlow = async (nextStep, nextCompleted, extra = {}) => {
     setReviewFlowStep(nextStep)
     setReviewFlowCompletedSteps(nextCompleted)
@@ -931,6 +1279,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     })
   }
   const advanceReviewFlow = async () => {
+    setChapterUndo(null)
     if (activeReviewStepId === REVIEW_STEP_IDS.RUN_MODERNIZATION && !hasModernizationEval) {
       toast('Run modernization before continuing to modernization review.', 'warning')
       return
@@ -950,6 +1299,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     await handleNext()
   }
   const unlockReviewStep = async (stepId) => {
+    setChapterUndo(null)
     const step = reviewSteps.find(item => item.id === stepId)
     if (!step || !completedReviewStepSet.has(stepId)) return
     const stepIndex = reviewSteps.findIndex(item => item.id === stepId)
@@ -971,6 +1321,8 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     ['all', 'All'],
     ['fallbacks', 'Fallback used'],
     ['warnings', 'Warnings'],
+    ['stale', 'Stale'],
+    ['resolved', 'Resolved'],
     ['large_delta', 'Text changed'],
     ['missing_anchors', 'Missing anchors'],
     ['variants', 'Candidates'],
@@ -984,6 +1336,12 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     ['fix_missing_paragraphs', 'Fix missing paragraphs'],
   ]
   const riskColor = (risk) => risk === 'low' ? 'var(--success)' : risk === 'high' ? 'var(--danger)' : 'var(--warning, #f59e0b)'
+  const cleanupReviewColor = (chunk) => {
+    const state = cleanupReviewState(chunk)
+    if (state === 'reviewed' || state === 'manual_edit' || state === 'applied') return 'var(--success)'
+    if (state === 'stale') return 'var(--text-muted)'
+    return riskColor(chunk?.risk_level)
+  }
   const reportWarningItems = (cleaningReport?.top_warnings || []).flatMap((warning, warningIndex) => {
     const chapterIndex = warning.chapter_index ?? 0
     const chapterEval = getChapterEval(chapterIndex)
@@ -1232,7 +1590,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
         <textarea
           value={meta.description || ''}
           onChange={e => updateMeta({ description: e.target.value })}
-          disabled={!canEditChapters}
+          disabled={activeReviewStepLocked}
           rows={compact ? 4 : 3}
           placeholder="Short summary used in EPUB metadata"
           style={{ resize: 'vertical' }}
@@ -1255,15 +1613,24 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
       <div className="field">
         <label>Cover Image</label>
         <input type="file" ref={coverRef} style={{ display: 'none' }} accept=".jpg,.jpeg,.png" onChange={handleCoverUpload} />
-        <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
-          <button className="btn btn-ghost btn-sm" disabled={activeReviewStepLocked} onClick={() => coverRef.current.click()}>
-            {meta.cover_image ? 'Change Cover' : '+ Upload Cover'}
-          </button>
+        <div className="cover-control-row">
           {meta.cover_image && (
-            <button className="btn btn-ghost btn-sm" disabled={activeReviewStepLocked} onClick={handleClearCover} style={{ color: 'var(--danger)' }}>
-              Clear Cover
-            </button>
+            <img
+              className="cover-preview"
+              src={coverImageUrl(projectId, meta.cover_image)}
+              alt="Current cover preview"
+            />
           )}
+          <div className="cover-control-actions">
+            <button className="btn btn-ghost btn-sm" disabled={activeReviewStepLocked} onClick={() => coverRef.current.click()}>
+              {meta.cover_image ? 'Change Cover' : '+ Upload Cover'}
+            </button>
+            {meta.cover_image && (
+              <button className="btn btn-ghost btn-sm" disabled={activeReviewStepLocked} onClick={handleClearCover} style={{ color: 'var(--danger)' }}>
+                Clear Cover
+              </button>
+            )}
+          </div>
         </div>
         {meta.cover_image && <div className="text-xs text-success mt-1 truncate">{meta.cover_image}</div>}
       </div>
@@ -1279,8 +1646,11 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
         </div>
         {selectedEval && (
           <div className="flex gap-2" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <span className="badge">{selectedEval.accepted_count ?? 0} accepted</span>
+            <span className="badge">{selectedEval.chunk_count ?? selectedEval.chunks?.length ?? 0} passages</span>
             <span className="badge" style={{ color: selectedEval.fallback_count ? 'var(--warning, #f59e0b)' : 'var(--text-secondary)' }}>{selectedEval.fallback_count ?? 0} fallback</span>
+            {selectedCleanupNeedsReviewCount > 0 && <span className="badge" style={{ color: 'var(--danger)' }}>{selectedCleanupNeedsReviewCount} need review</span>}
+            {selectedCleanupStaleCount > 0 && <span className="badge" style={{ color: 'var(--text-muted)' }}>{selectedCleanupStaleCount} stale</span>}
+            {selectedCleanupResolvedCount > 0 && <span className="badge" style={{ color: 'var(--success)' }}>{selectedCleanupResolvedCount} resolved</span>}
           </div>
         )}
       </div>
@@ -1317,23 +1687,61 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           </div>
           <div style={{ display: 'grid', gap: 10 }}>
             {visibleReviewChunks.map(chunk => (
-              <div key={chunk.chunk_id} className="glass" style={{ padding: 10, borderRadius: 'var(--radius-sm)' }}>
+              <div
+                key={chunk.chunk_id}
+                className="glass"
+                style={{
+                  padding: 10,
+                  borderRadius: 'var(--radius-sm)',
+                  borderColor: focusedCleanupChunkKey === `${chunk.chapter_index}:${chunk.chunk_id}` ? 'var(--accent-primary)' : undefined,
+                }}
+              >
                 <div className="flex justify-between items-start gap-2">
                   <div className="text-sm" style={{ fontWeight: 700 }}>Passage {chunk.chunk_id + 1}</div>
                   <div className="flex gap-1" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    <span className="text-xs" style={{ color: riskColor(chunk.risk_level), fontWeight: 700 }}>{riskLabel(chunk.risk_level)}</span>
-                    <span className="text-xs" style={{ color: chunk.status === 'fallback' ? 'var(--warning, #f59e0b)' : 'var(--success)', fontWeight: 700 }}>{statusLabel(chunk.status)}</span>
+                    <span className="text-xs" style={{ color: cleanupReviewColor(chunk), fontWeight: 700 }}>{cleanupReviewLabel(chunk)}</span>
+                    <span className="text-xs" style={{ color: cleanupStatusColor(chunk.status), fontWeight: 700 }}>{cleanupStatusLabel(chunk.status)}</span>
                   </div>
                 </div>
                 <div className="text-xs text-muted mt-1">
                   Words {chunk.metrics?.source_word_count ?? 0} -&gt; {chunk.metrics?.output_word_count ?? 0} · {formatRatio(chunk.metrics?.word_count_ratio)}
                 </div>
+                {cleanupSnippet(chunk, '', 190) && (
+                  <div className="text-xs mt-1" style={{ color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                    {cleanupSnippet(chunk, '', 190)}
+                  </div>
+                )}
                 {chunk.integrity_issues?.length > 0 && (
                   <div className="text-xs mt-1" style={{ color: 'var(--warning, #f59e0b)', lineHeight: 1.45 }}>
                     {chunk.integrity_issues.map(formatCleaningIssue).join('; ')}
                   </div>
                 )}
+                {cleanupReviewState(chunk) === 'stale' && (
+                  <div className="text-xs mt-1" style={{ color: 'var(--text-muted)', lineHeight: 1.45 }}>
+                    Chapter text changed after this cleanup check. Rerun cleanup for fresh diagnostics, or mark it resolved after review.
+                  </div>
+                )}
                 <div className="flex gap-2 mt-2" style={{ flexWrap: 'wrap' }}>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => focusChunkInEditor(chunk)}
+                  >
+                    Find/Edit
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => handleMarkCleanupReviewed(chunk, 'reviewed')}
+                    disabled={isCleanupResolved(chunk) || activeReviewStepLocked}
+                  >
+                    Mark OK
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => handleMarkCleanupReviewed(chunk, 'manual_edit')}
+                    disabled={cleanupReviewState(chunk) === 'manual_edit' || activeReviewStepLocked}
+                  >
+                    Mark edited
+                  </button>
                   <button
                     className="btn btn-ghost btn-sm"
                     onClick={() => handleRedoChunk(chunk)}
@@ -1361,9 +1769,11 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
     </div>
   )
 
-  const renderChapterEditor = (includeMetadata = false) => (
-    <div style={{ flex: 1, overflow: 'hidden', display: 'grid', gridTemplateColumns: includeMetadata ? 'minmax(0, 1.6fr) minmax(280px, 0.9fr)' : 'minmax(0, 1fr)', gap: includeMetadata ? 12 : 0, padding: includeMetadata ? 12 : 0 }}>
-      <div className="flex flex-col" style={{ minWidth: 0, overflow: 'hidden', border: includeMetadata ? '1px solid var(--glass-border)' : 'none', borderRadius: includeMetadata ? 'var(--radius-sm)' : 0 }}>
+  const renderChapterEditor = (includeMetadata = false, sidePanel = null) => {
+    const hasSidePanel = includeMetadata || sidePanel
+    return (
+    <div style={{ flex: 1, overflow: 'hidden', display: 'grid', gridTemplateColumns: hasSidePanel ? 'minmax(360px, 1.4fr) minmax(320px, 0.9fr)' : 'minmax(0, 1fr)', gap: hasSidePanel ? 12 : 0, padding: hasSidePanel ? 12 : 0 }}>
+      <div className="flex flex-col" style={{ minWidth: 0, overflow: 'hidden', border: hasSidePanel ? '1px solid var(--glass-border)' : 'none', borderRadius: hasSidePanel ? 'var(--radius-sm)' : 0 }}>
         <div className="p-3" style={{ borderBottom: '1px solid var(--glass-border)' }}>
           <input
             type="text"
@@ -1383,14 +1793,15 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           placeholder="Chapter text..."
           style={{
             flex: 1, resize: 'none', border: 'none', borderRadius: 0,
-            background: 'transparent', padding: '16px', minHeight: includeMetadata ? 360 : 'auto',
+            background: 'transparent', padding: '16px', minHeight: hasSidePanel ? 360 : 'auto',
             fontFamily: 'var(--font-mono)', fontSize: 13, lineHeight: 1.7,
           }}
         />
       </div>
-      {includeMetadata && <div style={{ overflow: 'auto', minWidth: 0 }}>{renderMetadataForm(true)}</div>}
+      {hasSidePanel && <div style={{ overflow: 'auto', minWidth: 0 }}>{sidePanel || renderMetadataForm(true)}</div>}
     </div>
-  )
+    )
+  }
 
   return (
     <div className="step-card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -1400,7 +1811,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           <div className="step-title">Review Chapters</div>
           <div className="step-desc">{chapters.length} chapter{chapters.length !== 1 ? 's' : ''} · {activeReviewStep?.description || 'Step through the review flow'}</div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <span className={`save-status save-status-${saveStatus}`}>
             {saving ? 'Saving...' : saveStatus === 'dirty' ? 'Unsaved changes' : saveStatus === 'failed' ? 'Save failed' : 'Saved'}
           </span>
@@ -1412,6 +1823,17 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
           {debugPrompt && (
             <button className="btn btn-ghost btn-sm" onClick={() => setShowPromptModal(true)} title="View prompt sent to LLM">
               🔬 View Prompt
+            </button>
+          )}
+          {chapterUndo && (
+            <button
+              className="btn btn-ghost btn-sm"
+              data-tip-anchor="chapter-undo"
+              disabled={!canEditChapters}
+              onClick={undoChapterAction}
+              title="Restores the chapter list to before the last chapter action. New chapter title or text edits clear this undo point."
+            >
+              Undo {chapterUndo.label}
             </button>
           )}
           <button className="btn btn-ghost btn-sm" data-tip-anchor="split-button" disabled={!canEditChapters} onClick={splitAtCursor} title="Split chapter at cursor position">
@@ -1517,7 +1939,9 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
                 <div className="truncate text-sm flex items-center gap-1" style={{ fontWeight: i === selectedIdx ? 600 : 400 }}>
                   {ch.title || `Chapter ${i + 1}`}
                 </div>
-                <div className="text-xs text-muted">{ch.text?.length ?? 0} chars</div>
+                <div className="text-xs text-muted">
+                  {ch.text?.length ?? 0} chars{ch.notes?.length ? ` · ${ch.notes.length} notes` : ''}
+                </div>
                 {(getChapterEval(i)?.fallback_count ?? 0) > 0 && (
                   <div className="text-xs" style={{ color: 'var(--warning, #f59e0b)', marginTop: 2 }}>
                     {getChapterEval(i).fallback_count} fallback used
@@ -1533,10 +1957,20 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
                   onClick={e => { e.stopPropagation(); moveChapter(i, 1) }}>▼</button>
               </div>
               <button
-                className="btn btn-ghost btn-icon"
-                style={{ padding: '2px 5px', fontSize: 11, color: 'var(--danger)' }}
+               className="btn btn-ghost btn-sm"
+               style={{ padding: '4px 7px', fontSize: 11 }}
                 disabled={!canEditChapters}
-                onClick={e => { e.stopPropagation(); deleteChapter(i) }}
+               title={i === 0 ? 'Merge this chapter into the next chapter' : 'Merge this chapter into the previous chapter'}
+               onClick={e => { e.stopPropagation(); mergeChapter(i) }}
+              >
+               Merge {i === 0 ? '↓' : '↑'}
+              </button>
+              <button
+               className="btn btn-ghost btn-icon"
+               style={{ padding: '2px 5px', fontSize: 11, color: 'var(--danger)' }}
+               disabled={!canEditChapters}
+               title="Delete this chapter without merging its text"
+               onClick={e => { e.stopPropagation(); deleteChapter(i) }}
               >✕</button>
             </div>
           ))}
@@ -1548,12 +1982,12 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
         <div className="flex flex-col" style={{ flex: 1, overflow: 'hidden' }}>
           {ch ? (
             activeReviewStepId === REVIEW_STEP_IDS.CLEANUP_METADATA ? (
-              <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
+              renderChapterEditor(false, (
+                <div style={{ display: 'grid', gap: 12 }}>
                   {renderCleanupReviewPanel()}
                   {renderMetadataForm(true)}
                 </div>
-              </div>
+              ))
             ) : [REVIEW_STEP_IDS.RUN_MODERNIZATION, REVIEW_STEP_IDS.REVIEW_MODERNIZATION].includes(activeReviewStepId) && showModernizationTools ? (
               <div className="flex flex-col" style={{ flex: 1, overflow: 'hidden' }} data-tip-anchor="modernization-review">
                 <div className="p-4" style={{ borderBottom: '1px solid var(--glass-border)', flexShrink: 0 }}>
@@ -1669,7 +2103,7 @@ export default function Step2Editor({ projectId, isActive, onNext, onBack, toast
               <div>
                 <div style={{ fontWeight: 600, fontSize: 15 }}>Compare Cleaning Candidate</div>
                 <div className="text-xs text-muted mt-0.5">
-                  Passage {(comparison.chunk?.chunk_id ?? 0) + 1} · {comparison.variant?.profile} · {statusLabel(comparison.variant?.status)} · {riskLabel(comparison.variant?.risk_level)}
+                  Passage {(comparison.chunk?.chunk_id ?? 0) + 1} · {comparison.variant?.profile} · {cleanupCandidateStatusLabel(comparison.variant?.status)} · {riskLabel(comparison.variant?.risk_level)}
                 </div>
               </div>
               <button className="btn btn-ghost btn-sm" onClick={() => setComparison(null)}>✕</button>

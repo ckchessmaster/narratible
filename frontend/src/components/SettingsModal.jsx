@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { getSettings, saveSettings, getSystemInfo,
-         validateGeminiKey, validateOpenAIKey, validateHuggingFaceToken } from '../api'
+         validateGeminiKey, validateOpenAIKey, validateHuggingFaceToken,
+         getCustomInstructionPrompts } from '../api'
 import Coachmark from './Coachmark'
 import useTips from '../useTips'
 
@@ -56,6 +57,7 @@ const PRESET_FAMILIES = [
 const TABS = [
   ['ai', 'Cloud LLM Keys'],
   ['local', 'Local AI'],
+  ['instructions', 'Custom Instructions'],
   ['integrations', 'Integrations'],
   ['system', 'System'],
 ]
@@ -67,6 +69,9 @@ export default function SettingsModal({ onClose, toast }) {
   const [geminiModels, setGeminiModels] = useState(null)
   const [fetchingGeminiModels, setFetchingGeminiModels] = useState(false)
   const [activeTab, setActiveTab] = useState('ai')
+  const [promptTemplates, setPromptTemplates] = useState(null)
+  const [promptTemplatesLoading, setPromptTemplatesLoading] = useState(true)
+  const [selectedPromptId, setSelectedPromptId] = useState(null)
   // Which accordion sections are open (Set of provider ids)
   const [openSections, setOpenSections] = useState(new Set(['gemini']))
   // Key visibility toggles: { gemini: bool, openai: bool, hf: bool }
@@ -83,13 +88,23 @@ export default function SettingsModal({ onClose, toast }) {
 
   useEffect(() => {
     getSettings().then(cfg => {
-      setCfg(cfg)
+      setCfg({ custom_instructions_enabled: false, custom_prompt_overrides: {}, ...cfg })
       // Open the currently active provider section by default
       if (cfg?.llm_provider) setOpenSections(new Set([cfg.llm_provider]))
     }).catch(e => {
       console.warn('Failed to load settings', e)
     })
     getSystemInfo().then(setSystemInfo).catch(e => console.warn('Failed to load system info', e))
+    getCustomInstructionPrompts()
+      .then(data => {
+        const prompts = data?.prompts ?? []
+        setPromptTemplates(prompts)
+        setSelectedPromptId(prev => prev || prompts[0]?.id || null)
+      })
+      .catch(e => {
+        console.warn('Failed to load custom instruction prompts', e)
+      })
+      .finally(() => setPromptTemplatesLoading(false))
   }, [])
 
   const set = (key, val) => setCfg(c => ({ ...c, [key]: val }))
@@ -257,9 +272,39 @@ export default function SettingsModal({ onClose, toast }) {
     </div>
   )
 
+  const promptOverrides = cfg?.custom_prompt_overrides ?? {}
+  const selectedPrompt = promptTemplates?.find(prompt => prompt.id === selectedPromptId) ?? promptTemplates?.[0] ?? null
+  const selectedPromptText = selectedPrompt
+    ? (promptOverrides[selectedPrompt.id] ?? selectedPrompt.base_prompt)
+    : ''
+
+  const setPromptOverride = (prompt, value) => {
+    setCfg(current => {
+      const nextOverrides = { ...(current?.custom_prompt_overrides ?? {}) }
+      if (value === prompt.base_prompt) {
+        delete nextOverrides[prompt.id]
+      } else {
+        nextOverrides[prompt.id] = value
+      }
+      return { ...current, custom_prompt_overrides: nextOverrides }
+    })
+  }
+
+  const resetPromptOverride = (prompt) => {
+    setCfg(current => {
+      const nextOverrides = { ...(current?.custom_prompt_overrides ?? {}) }
+      delete nextOverrides[prompt.id]
+      return { ...current, custom_prompt_overrides: nextOverrides }
+    })
+  }
+
+  const resetAllPromptOverrides = () => {
+    setCfg(current => ({ ...current, custom_prompt_overrides: {} }))
+  }
+
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal">
+      <div className="modal settings-modal">
         <div className="modal-header">
           <div className="modal-title">⚙ Settings</div>
           <button className="btn btn-ghost btn-icon" onClick={onClose}>✕</button>
@@ -409,6 +454,108 @@ export default function SettingsModal({ onClose, toast }) {
                 </div>
               )
             })()}
+
+            {/* ── Custom Instructions tab ───────────────────────────────────────── */}
+            {activeTab === 'instructions' && (
+              <>
+                <div className="section-title">Custom Instructions</div>
+                <div className="glass p-3 mb-4" data-tip-anchor="settings-custom-instructions" style={{ borderRadius: 'var(--radius-sm)' }}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>Enable custom prompt templates</div>
+                      <div className="text-xs text-muted mt-0.5">
+                        When enabled, narratible sends your edited versions of these prompts to Gemini, OpenAI, or the local LLM.
+                      </div>
+                    </div>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <div className="toggle-switch">
+                        <input
+                          type="checkbox"
+                          checked={cfg.custom_instructions_enabled || false}
+                          onChange={e => set('custom_instructions_enabled', e.target.checked)}
+                        />
+                        <span className="toggle-slider"></span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {promptTemplatesLoading && (
+                  <div className="text-muted text-sm">Loading prompt templates...</div>
+                )}
+
+                {!promptTemplatesLoading && selectedPrompt && (
+                  <div className="prompt-editor-layout" data-tip-anchor="settings-prompt-editor">
+                    <div className="prompt-template-list">
+                      {promptTemplates.map(prompt => {
+                        const selected = prompt.id === selectedPrompt.id
+                        const customized = Object.prototype.hasOwnProperty.call(promptOverrides, prompt.id)
+                        return (
+                          <button
+                            key={prompt.id}
+                            type="button"
+                            className={`prompt-template-button${selected ? ' is-selected' : ''}`}
+                            onClick={() => setSelectedPromptId(prompt.id)}
+                          >
+                            <span>{prompt.label}</span>
+                            {customized && <span className="prompt-customized-badge">Edited</span>}
+                          </button>
+                        )
+                      })}
+                    </div>
+
+                    <div className="prompt-editor-panel">
+                      <div className="flex justify-between items-start gap-3 mb-2">
+                        <div>
+                          <div style={{ fontWeight: 600, fontSize: 14 }}>{selectedPrompt.label}</div>
+                          <div className="text-xs text-muted mt-0.5">{selectedPrompt.description}</div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => resetPromptOverride(selectedPrompt)}
+                          disabled={!Object.prototype.hasOwnProperty.call(promptOverrides, selectedPrompt.id)}
+                        >
+                          Reset
+                        </button>
+                      </div>
+
+                      {selectedPrompt.required_variables.length > 0 && (
+                        <div className="prompt-placeholder-row">
+                          <span className="text-xs text-muted">Keep required placeholders:</span>
+                          {selectedPrompt.required_variables.map(name => (
+                            <code key={name}>{`{{${name}}}`}</code>
+                          ))}
+                        </div>
+                      )}
+
+                      <textarea
+                        className="prompt-template-textarea"
+                        value={selectedPromptText}
+                        onChange={e => setPromptOverride(selectedPrompt, e.target.value)}
+                        spellCheck="false"
+                      />
+                      <div className="text-xs text-muted mt-2">
+                        The editor starts with the base prompt. Save Settings to persist edits; disabling the toggle keeps drafts but sends the built-in prompts.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {!promptTemplatesLoading && promptTemplates?.length > 0 && (
+                  <div className="flex justify-end mt-3">
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={resetAllPromptOverrides}
+                      disabled={Object.keys(promptOverrides).length === 0}
+                    >
+                      Reset all prompts
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
 
             {/* ── Integrations tab ────────────────────────────────────── */}
             {activeTab === 'integrations' && (

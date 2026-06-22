@@ -176,6 +176,29 @@ def test_llm_clean_text_accepts_structured_openai_output_with_source_anchors(mon
     assert llm_clean_text(source, provider="openai") == cleaned.strip()
 
 
+def test_llm_clean_text_keeps_notes_out_of_returned_chapter_text(monkeypatch):
+    source = (
+        "Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu. " * 12
+        + "Omega closes the passage faithfully."
+    )
+    _patch_openai(
+        monkeypatch,
+        CleanedTextResponse(
+            main_text=source,
+            notes_text="1 This note should be stored separately.",
+        ),
+    )
+
+    cleaned_text, evaluation = llm_clean_text(
+        source,
+        provider="openai",
+        return_evaluation=True,
+    )
+
+    assert "This note should be stored separately" not in cleaned_text
+    assert evaluation["chunks"][0]["notes_text"] == "1 This note should be stored separately."
+
+
 def test_gemini_retry_helper_retries_transient_unavailable(monkeypatch):
     attempts = []
     progress_messages = []
