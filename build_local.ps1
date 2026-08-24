@@ -25,8 +25,8 @@ if (-not $SkipFrontend) {
 
 # 2. PyInstaller
 Write-Host "`n[2] Freezing Python backend with PyInstaller..." -ForegroundColor Yellow
-# Ensure pyinstaller is installed in the active environment
-python -m pip install pyinstaller
+# Ensure the locked PyInstaller version is installed in the active environment
+python -m pip install -r backend\requirements-build.txt
 # Chatterbox is part of the frozen app, so fail before a long PyInstaller run
 # when the active build environment is incomplete. Its requirements file is
 # intentionally separate because installing it can replace the selected Torch

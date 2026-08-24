@@ -50,14 +50,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
-          key: pip-base-${{ runner.os }}-${{ hashFiles('backend/requirements.txt') }}
+          key: pip-base-${{ runner.os }}-${{ hashFiles('backend/requirements*.txt', 'backend/constraints.txt') }}
           restore-keys: pip-base-${{ runner.os }}-
 
       - name: Cache pip (GPU ML components)
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
-          key: pip-gpu-${{ runner.os }}-cu128-torch-torchaudio-kokoro-f5tts-chatterbox-0.1.7
+          key: pip-gpu-${{ runner.os }}-cu128-torch2.11-${{ hashFiles('backend/requirements-gpu.txt', 'backend/requirements-chatterbox.txt', 'backend/constraints.txt') }}
           restore-keys: pip-gpu-${{ runner.os }}-cu128-
 
       - name: Cache PyInstaller work directory
@@ -75,23 +75,22 @@ jobs:
 
       - name: Install PyTorch (CUDA build)
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install "pip==26.2.1" "setuptools==70.2.0"
           # Install the CUDA-enabled torch/torchaudio FIRST so it is the build that
           # gets frozen. requirements.txt would otherwise pull the +cpu wheel from
           # PyPI as a transitive dependency, leaving CUDA permanently unavailable.
-          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+          pip install -c backend/constraints.txt "torch==2.11.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu128
 
       - name: Install Python Dependencies
         run: |
           # Base deps. The CUDA torch installed above already satisfies the torch
           # requirement, so these will NOT replace it with a +cpu wheel.
           pip install -r backend/requirements.txt
-          pip install pyinstaller requests psutil uvicorn
+          pip install -r backend/requirements-build.txt
 
       - name: Install GPU ML Components
         run: |
-          # kokoro and f5-tts are not in requirements.txt (commented out there).
-          pip install kokoro f5-tts transformers accelerate bitsandbytes
+          pip install -r backend/requirements-gpu.txt
           # Chatterbox pins an older torch build in its package metadata. Install
           # all of its dependencies first, then restore the CUDA build selected by
           # this release below. Runtime compatibility is checked before freezing.
@@ -99,7 +98,7 @@ jobs:
 
       - name: Restore release PyTorch build
         run: |
-          pip install --upgrade --force-reinstall torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+          pip install --upgrade --force-reinstall -c backend/constraints.txt "torch==2.11.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu128
 
       - name: Verify CUDA-enabled PyTorch
         shell: pwsh

@@ -40,11 +40,17 @@ python run.py                   # starts FastAPI on http://localhost:8000
 > **First time only** — create the venv using the `narratible` conda env (Python 3.12):
 > ```powershell
 > conda run -n narratible python -m venv .venv
+> .venv\Scripts\pip install "pip==26.2.1" "setuptools==70.2.0"
+> .venv\Scripts\pip install -c constraints.txt "torch==2.11.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu128
 > .venv\Scripts\pip install -r requirements.txt
-> .venv\Scripts\pip install kokoro f5-tts
+> .venv\Scripts\pip install -r requirements-gpu.txt
 > .venv\Scripts\pip install -r requirements-chatterbox.txt  # optional
-> .venv\Scripts\pip install torch --force-reinstall --index-url https://download.pytorch.org/whl/cu128
+> .venv\Scripts\pip install --force-reinstall -c constraints.txt "torch==2.11.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu128
 > ```
+
+Python dependencies are locked through `backend/constraints.txt`. Update the
+constraints and the matching requirements files together when intentionally
+upgrading packages.
 
 ### 2. Frontend
 

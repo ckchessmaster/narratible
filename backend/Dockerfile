@@ -22,15 +22,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ln -s /usr/bin/python3.11 /usr/bin/python
 
 # Install PyTorch 2.5.1 for CUDA 12.4
-RUN python -m pip install --no-cache-dir "torch==2.5.1" "torchvision==0.20.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cu124
+COPY constraints.txt .
+RUN python -m pip install --no-cache-dir "pip==26.2.1" && \
+    python -m pip install --no-cache-dir -c constraints.txt "torch==2.5.1" "torchvision==0.20.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cu124
 
 # Core app dependencies
-COPY requirements.txt .
-RUN python -m pip install --upgrade pip && \
-    grep -v '^\s*#' requirements.txt | grep -v '^\s*$' | python -m pip install --no-cache-dir -r /dev/stdin
+COPY requirements.txt requirements-gpu.txt ./
+RUN python -m pip install --no-cache-dir -r requirements.txt
 
 # Kokoro + F5-TTS voice engines (torchcodec removed — not needed for TTS)
-RUN python -m pip install --no-cache-dir kokoro f5-tts git+https://github.com/huggingface/transformers.git && \
+RUN python -m pip install --no-cache-dir -r requirements-gpu.txt && \
     python -m pip uninstall -y torchcodec
 
 COPY . .

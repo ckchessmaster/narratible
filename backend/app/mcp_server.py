@@ -2,7 +2,7 @@ import argparse
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from .projects import get_project, list_projects, load_chapters, PROJECTS_DIR
 from .runtime_state import (
@@ -34,21 +34,14 @@ def _task_payload(get_tasks: TaskProvider | None) -> dict[str, Any]:
 
 def create_mcp_server(
     get_tasks: TaskProvider | None = None,
-    *,
-    host: str = "127.0.0.1",
-    port: int = 8765,
-    streamable_http_path: str = "/mcp",
-) -> FastMCP:
-    mcp = FastMCP(
+) -> MCPServer:
+    mcp = MCPServer(
         "narratible",
+        version="0.1.0",
         instructions=(
             "Tools for inspecting the local narratible app, including live log "
             "watching, project metadata, chapters, and background task status."
         ),
-        host=host,
-        port=port,
-        streamable_http_path=streamable_http_path,
-        stateless_http=True,
     )
 
     @mcp.tool()
@@ -169,8 +162,19 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    mcp = create_mcp_server(host=args.host, port=args.port)
-    mcp.run(args.transport)
+    mcp = create_mcp_server()
+    if args.transport == "stdio":
+        mcp.run("stdio")
+    elif args.transport == "streamable-http":
+        mcp.run(
+            "streamable-http",
+            host=args.host,
+            port=args.port,
+            streamable_http_path="/mcp",
+            stateless_http=True,
+        )
+    else:
+        mcp.run("sse", host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
