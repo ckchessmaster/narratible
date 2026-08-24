@@ -25,8 +25,8 @@ if (-not $SkipFrontend) {
 
 # 2. PyInstaller
 Write-Host "`n[2] Freezing Python backend with PyInstaller..." -ForegroundColor Yellow
-# Ensure pyinstaller is installed in the active environment
-python -m pip install pyinstaller
+# Ensure the locked PyInstaller version is installed in the active environment
+python -m pip install -r backend\requirements-build.txt
 # --workpath keeps the analysis cache between runs so re-builds are faster
 python -m PyInstaller narratible.spec --noconfirm --workpath build\pyinstaller-work --distpath dist
 

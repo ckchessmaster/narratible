@@ -6,6 +6,7 @@ import tempfile
 import uuid
 import time
 import hashlib
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 import psutil
@@ -69,7 +70,26 @@ from .runtime_state import save_task_snapshot
 configure_logging()
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="narratible API", version="0.1.0")
+# ── In-memory task status store ──────────────────────────────────────────────
+# Maps task_id -> {"status": "running"|"waiting_input"|"done"|"error"|"cancelled", "stage": str, "message": str, "progress": 0-100, "is_cancelled": bool, "llm_output": str}
+# "stage" is the coarse phase shown as the primary status line (e.g. "Extracting
+# text", "Cleaning text"); "message" carries the finer detail shown beneath it.
+_tasks: dict[str, dict] = {}
+
+mcp_server = create_mcp_server(lambda: _tasks)
+mcp_app = mcp_server.streamable_http_app(
+    streamable_http_path="/",
+    stateless_http=True,
+)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    async with mcp_server.session_manager.run():
+        yield
+
+
+app = FastAPI(title="narratible API", version="0.1.0", lifespan=lifespan)
 VOICE_SAMPLE_SUFFIXES = {".wav", ".mp3", ".flac"}
 CLOUD_LLM_CONFIG_ERROR = (
     "Cloud LLM cleanup requires a configured Gemini or OpenAI API key. "
@@ -109,13 +129,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ── In-memory task status store ──────────────────────────────────────────────
-# Maps task_id -> {"status": "running"|"waiting_input"|"done"|"error"|"cancelled", "stage": str, "message": str, "progress": 0-100, "is_cancelled": bool, "llm_output": str}
-# "stage" is the coarse phase shown as the primary status line (e.g. "Extracting
-# text", "Cleaning text"); "message" carries the finer detail shown beneath it.
-_tasks: dict[str, dict] = {}
-
 
 def _set_task(task_id: str, status: str, message: str = None, progress: int = None, is_cancelled: bool = False, append_output: str = None, stage: str = None):
     existing = _tasks.get(task_id, {})
@@ -2861,8 +2874,7 @@ async def get_task_status(task_id: str):
 
 # ── MCP Server ────────────────────────────────────────────────────────────────
 
-mcp_server = create_mcp_server(lambda: _tasks, streamable_http_path="/")
-app.mount("/mcp", mcp_server.streamable_http_app())
+app.mount("/mcp", mcp_app)
 
 
 # ── Static Frontend Serving (PyInstaller Packaged) ────────────────────────────
