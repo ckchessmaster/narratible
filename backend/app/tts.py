@@ -113,9 +113,12 @@ def _select_f5_reference_text(
     provided_text: Optional[str],
     transcribed_text: Optional[str],
     duration_seconds: float,
+    reference_was_clipped: bool = False,
 ) -> str:
     provided = _normalize_f5_reference_text(provided_text)
-    if _is_plausible_f5_reference_text(provided, duration_seconds):
+    if not reference_was_clipped and _is_plausible_f5_reference_text(
+        provided, duration_seconds
+    ):
         return provided
 
     transcribed = _normalize_f5_reference_text(transcribed_text)
@@ -128,6 +131,12 @@ def _select_f5_reference_text(
         return transcribed
 
     if provided:
+        if reference_was_clipped:
+            raise ValueError(
+                "F5-TTS clipped the reference audio, but could not transcribe the "
+                "processed clip. Shorten the reference to 6-12 seconds and provide "
+                "its exact transcript."
+            )
         raise ValueError(
             "The F5-TTS reference transcript does not appear to match the usable "
             "reference audio after preprocessing. Use a shorter reference clip or "
@@ -137,6 +146,22 @@ def _select_f5_reference_text(
     raise ValueError(
         "F5-TTS could not transcribe the reference audio. Provide an exact "
         "reference transcript for the first 6-12 seconds of speech."
+    )
+
+
+def _f5_reference_was_clipped(
+    original_duration_seconds: Optional[float],
+    processed_duration_seconds: float,
+    preprocessing_messages: list[str],
+) -> bool:
+    """Detect F5's 12-second reference clipping, including its cache path."""
+    if any("clipping short" in message.casefold() for message in preprocessing_messages):
+        return True
+    if original_duration_seconds is None:
+        return False
+    return (
+        original_duration_seconds > 12.0
+        and processed_duration_seconds + 0.1 < original_duration_seconds
     )
 
 
@@ -440,16 +465,42 @@ async def _synthesize_f5tts(
 
         reference_text_override = _normalize_f5_reference_text(voice_reference_text)
         preprocess_text = reference_text_override or _F5_REFERENCE_PLACEHOLDER_TEXT
+        try:
+            source_info = sf.info(str(voice_sample_path))
+            source_duration_seconds = (
+                source_info.frames / float(source_info.samplerate)
+                if source_info.samplerate
+                else None
+            )
+        except Exception:
+            source_duration_seconds = None
+
+        preprocessing_messages = []
+
+        def _log_preprocessing(message):
+            preprocessing_messages.append(str(message))
+            logger.info(message)
+
         ref_file, _ = preprocess_ref_audio_text(
             str(voice_sample_path),
             preprocess_text,
-            show_info=logger.info,
+            show_info=_log_preprocessing,
         )
 
         audio_arr, orig_sr = sf.read(ref_file, dtype="float32")
         if audio_arr.ndim > 1:
             audio_arr = audio_arr.mean(axis=1)
         reference_duration_seconds = len(audio_arr) / float(orig_sr) if orig_sr else 0.0
+        reference_was_clipped = _f5_reference_was_clipped(
+            source_duration_seconds,
+            reference_duration_seconds,
+            preprocessing_messages,
+        )
+        if reference_was_clipped:
+            logger.info(
+                "F5-TTS clipped the reference audio; transcribing the exact processed "
+                "clip instead of reusing the full source transcript."
+            )
 
         # Resample the full reference clip to 16 kHz for Whisper when the user
         # did not provide a usable transcript. The clip has already gone
@@ -464,9 +515,13 @@ async def _synthesize_f5tts(
             asr_arr = audio_arr[indices]
 
         transcribed_ref_text = ""
-        if reference_text_override and _is_plausible_f5_reference_text(
-            reference_text_override,
-            reference_duration_seconds,
+        if (
+            reference_text_override
+            and not reference_was_clipped
+            and _is_plausible_f5_reference_text(
+                reference_text_override,
+                reference_duration_seconds,
+            )
         ):
             logger.info("Using saved F5-TTS reference transcript.")
         else:
@@ -503,6 +558,7 @@ async def _synthesize_f5tts(
             reference_text_override,
             transcribed_ref_text,
             reference_duration_seconds,
+            reference_was_clipped=reference_was_clipped,
         )
 
         generated = []
