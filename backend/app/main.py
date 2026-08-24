@@ -1920,6 +1920,8 @@ class PreviewRequest(BaseModel):
     voice: str = "en-US-AriaNeural"
     speed: float = 1.0
     temperature: float | None = None
+    exaggeration: float = 0.5
+    cfg_weight: float = 0.3
 
 
 class VoiceLibraryUpdateRequest(BaseModel):
@@ -1967,7 +1969,7 @@ async def tts_preview(project_id: str, req: PreviewRequest):
         voice_reference_text = None
         voice_samples_dir = None
         voice_temperature = req.temperature
-        if req.engine == "f5-tts":
+        if req.engine in {"f5-tts", "chatterbox"}:
             voice_sample_path, voice_samples_dir, voice_reference_text, saved_temperature = _resolve_f5_voice_reference(project_id, req.voice)
             voice_temperature = voice_temperature if voice_temperature is not None else saved_temperature
         await synthesize_speech(
@@ -1977,6 +1979,8 @@ async def tts_preview(project_id: str, req: PreviewRequest):
             voice=req.voice,
             speed=req.speed,
             temperature=voice_temperature if voice_temperature is not None else 0.7,
+            exaggeration=req.exaggeration,
+            cfg_weight=req.cfg_weight,
             voice_sample_path=voice_sample_path,
             voice_reference_text=voice_reference_text,
             voice_samples_dir=voice_samples_dir,
@@ -2263,6 +2267,8 @@ async def synthesize_project_chapter(
     voice: str,
     speed: float,
     read_headings: bool,
+    exaggeration: float = 0.5,
+    cfg_weight: float = 0.3,
     force: bool = False,
     progress_cb=None,
 ) -> dict:
@@ -2273,6 +2279,8 @@ async def synthesize_project_chapter(
         engine=engine,
         voice=voice,
         speed=speed,
+        exaggeration=exaggeration,
+        cfg_weight=cfg_weight,
         read_headings=read_headings,
         enabled_modules=meta.enabled_modules,
     )
@@ -2308,7 +2316,7 @@ async def synthesize_project_chapter(
         voice_reference_text = None
         voice_samples_dir = None
         voice_temperature = None
-        if engine == "f5-tts":
+        if engine in {"f5-tts", "chatterbox"}:
             voice_sample_path, voice_samples_dir, voice_reference_text, voice_temperature = _resolve_f5_voice_reference(project_id, voice)
 
         await synthesize_speech(
@@ -2318,6 +2326,8 @@ async def synthesize_project_chapter(
             voice=voice,
             speed=speed,
             temperature=voice_temperature if voice_temperature is not None else 0.7,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
             voice_sample_path=voice_sample_path,
             voice_reference_text=voice_reference_text,
             voice_samples_dir=voice_samples_dir,
@@ -2427,6 +2437,8 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 voice=voice,
                 speed=speed,
                 read_headings=read_headings,
+                exaggeration=meta.tts_exaggeration,
+                cfg_weight=meta.tts_cfg_weight,
                 force=force,
                 progress_cb=_tts_progress_cb,
             )
@@ -2580,7 +2592,7 @@ async def synthesize_book(
 ):
     try:
         get_project(project_id)
-        if engine == "f5-tts":
+        if engine in {"f5-tts", "chatterbox"}:
             _resolve_f5_voice_reference(project_id, voice)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2606,6 +2618,8 @@ async def _run_chapter_tts(project_id: str, chapter_id: str, task_id: str, force
             voice=meta.tts_voice,
             speed=meta.tts_speed,
             read_headings=meta.tts_read_headings,
+            exaggeration=meta.tts_exaggeration,
+            cfg_weight=meta.tts_cfg_weight,
             force=force,
             progress_cb=_progress_cb,
         )

@@ -86,6 +86,8 @@ def _install_torchaudio_soundfile_shim():
 # Cached pipeline instances — loaded lazily to avoid startup cost
 _kokoro_pipeline = None
 _f5tts_model = None
+_chatterbox_model = None
+_chatterbox_model_device = None
 _whisper_model = None
 _whisper_processor = None
 
@@ -167,7 +169,7 @@ def _f5_reference_was_clipped(
 
 def unload_tts():
     """Explicitly unload TTS models to free up VRAM."""
-    global _kokoro_pipeline, _f5tts_model, _whisper_model, _whisper_processor
+    global _kokoro_pipeline, _f5tts_model, _chatterbox_model, _chatterbox_model_device, _whisper_model, _whisper_processor
     import gc
     freed = False
     if _kokoro_pipeline is not None:
@@ -175,6 +177,10 @@ def unload_tts():
         freed = True
     if _f5tts_model is not None:
         _f5tts_model = None
+        freed = True
+    if _chatterbox_model is not None:
+        _chatterbox_model = None
+        _chatterbox_model_device = None
         freed = True
     if _whisper_model is not None:
         _whisper_model = None
@@ -211,8 +217,8 @@ async def get_available_voices(engine: str = "edge-tts") -> list[dict]:
             {"id": "bf_emma", "name": "Emma (British Female)", "locale": "en-GB"},
             {"id": "bm_george", "name": "George (British Male)", "locale": "en-GB"},
         ]
-    elif engine == "f5-tts":
-        # F5-TTS uses uploaded voice samples as the "voice" — return a sentinel
+    elif engine in {"f5-tts", "chatterbox"}:
+        # Clone engines use uploaded voice samples as the "voice".
         return [
             {"id": "__uploaded__", "name": "Use uploaded voice sample", "locale": "en-US"},
         ]
@@ -227,6 +233,8 @@ async def synthesize_speech(
     voice: str = "en-US-AriaNeural",
     speed: float = 1.0,
     temperature: float = 0.7,
+    exaggeration: float = 0.5,
+    cfg_weight: float = 0.3,
     voice_sample_path: Optional[Path] = None,
     voice_reference_text: Optional[str] = None,
     voice_samples_dir: Optional[Path] = None,
@@ -237,10 +245,11 @@ async def synthesize_speech(
     Synthesize text to speech using the selected engine.
     All ML engines are imported lazily so the app starts without them.
 
-    voice_sample_path: path to a .wav reference file, required for f5-tts.
+    voice_sample_path: path to a reference file, required for clone engines.
     voice_reference_text: transcript matching the F5-TTS reference clip.
-    voice_samples_dir: directory containing multiple voice samples for f5-tts; auto-selects best one.
+    voice_samples_dir: directory containing multiple voice samples for clone engines; auto-selects best one.
     """
+    global _kokoro_pipeline, _f5tts_model, _chatterbox_model
     text = prepare_text_for_tts(text, engine, enabled_modules=enabled_modules)
 
     logger.info(f"Synthesizing with {engine}, voice={voice}, speed={speed}")
@@ -251,7 +260,6 @@ async def synthesize_speech(
         await communicate.save(str(output_path))
 
     elif engine == "kokoro":
-        global _kokoro_pipeline
         try:
             from kokoro import KPipeline
             import soundfile as sf
@@ -276,9 +284,11 @@ async def synthesize_speech(
 
         if _kokoro_pipeline is None:
             # Drop F5-TTS to save VRAM before loading Kokoro
-            global _f5tts_model
             if _f5tts_model is not None:
                 _f5tts_model = None
+                torch.cuda.empty_cache()
+            if _chatterbox_model is not None:
+                _chatterbox_model = None
                 torch.cuda.empty_cache()
 
             from .config import get_device_string
@@ -346,8 +356,190 @@ async def synthesize_speech(
     elif engine == "f5-tts":
         await _synthesize_f5tts(text, output_path, speed, temperature, voice_sample_path, voice_reference_text, voice_samples_dir, progress_cb)
 
+    elif engine == "chatterbox":
+        await _synthesize_chatterbox(
+            text,
+            output_path,
+            speed,
+            temperature,
+            exaggeration,
+            cfg_weight,
+            voice_sample_path,
+            voice_samples_dir,
+            progress_cb,
+        )
+
     else:
         raise NotImplementedError(f"TTS engine '{engine}' is not implemented.")
+
+
+def _select_chatterbox_device(torch_module) -> str:
+    """Choose the configured accelerator, with portable MPS/CPU fallbacks."""
+    from .config import load_config
+
+    selected_gpu = load_config().selected_gpu_index
+    if selected_gpu < 0:
+        return "cpu"
+    if torch_module.cuda.is_available():
+        if selected_gpu >= torch_module.cuda.device_count():
+            raise RuntimeError(
+                f"CUDA device {selected_gpu} was selected, but only "
+                f"{torch_module.cuda.device_count()} CUDA device(s) are available."
+            )
+        return f"cuda:{selected_gpu}"
+    mps = getattr(getattr(torch_module, "backends", None), "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def _trim_chatterbox_edges(audio, sample_rate: int):
+    """Remove generated dead air while retaining a small natural boundary."""
+    import numpy as np
+
+    mono = np.asarray(audio, dtype=np.float32).squeeze()
+    active = np.flatnonzero(np.abs(mono) >= 10 ** (-48 / 20))
+    if not len(active):
+        return mono
+    padding = int(0.06 * sample_rate)
+    start = max(0, int(active[0]) - padding)
+    end = min(len(mono), int(active[-1]) + padding + 1)
+    return mono[start:end]
+
+
+async def _synthesize_chatterbox(
+    text: str,
+    output_path: Path,
+    speed: float = 1.0,
+    temperature: float = 0.7,
+    exaggeration: float = 0.5,
+    cfg_weight: float = 0.3,
+    voice_sample_path: Optional[Path] = None,
+    voice_samples_dir: Optional[Path] = None,
+    progress_cb: Optional[Callable[[str, int], None]] = None,
+):
+    """Clone a voice with Chatterbox using narration-tuned pacing defaults."""
+    global _chatterbox_model, _chatterbox_model_device, _kokoro_pipeline, _f5tts_model
+
+    try:
+        import numpy as np
+        import soundfile as sf
+        import torch
+        from chatterbox.tts import ChatterboxTTS
+    except (ImportError, RuntimeError) as exc:
+        raise ImportError(
+            f"Chatterbox or a dependency failed to load ({exc}). "
+            "Install backend/requirements-chatterbox.txt, then install the "
+            "PyTorch build recommended for your hardware."
+        ) from exc
+
+    if voice_samples_dir and voice_samples_dir.exists() and (
+        voice_sample_path is None or not voice_sample_path.exists()
+    ):
+        candidates = sorted(
+            path
+            for path in voice_samples_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in (".wav", ".mp3", ".flac")
+        )
+        if candidates:
+            voice_sample_path = max(candidates, key=lambda path: path.stat().st_size)
+
+    if voice_sample_path is None or not voice_sample_path.exists():
+        raise ValueError(
+            "Chatterbox requires a voice sample. Create or select a Voice Library voice first."
+        )
+    if not 0.5 <= speed <= 2.0:
+        raise ValueError("Chatterbox speed must be between 0.5 and 2.0.")
+    if not 0.0 <= exaggeration <= 2.0:
+        raise ValueError("Chatterbox exaggeration must be between 0.0 and 2.0.")
+    if not 0.0 <= cfg_weight <= 1.0:
+        raise ValueError("Chatterbox CFG weight must be between 0.0 and 1.0.")
+    if not 0.05 <= temperature <= 2.0:
+        raise ValueError("Chatterbox temperature must be between 0.05 and 2.0.")
+
+    device = _select_chatterbox_device(torch)
+    if _chatterbox_model is not None and _chatterbox_model_device != device:
+        logger.info(
+            "Chatterbox device changed from %s to %s; reloading the model.",
+            _chatterbox_model_device,
+            device,
+        )
+        _chatterbox_model = None
+        _chatterbox_model_device = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    if _chatterbox_model is None:
+        if _kokoro_pipeline is not None:
+            _kokoro_pipeline = None
+        if _f5tts_model is not None:
+            _f5tts_model = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        if progress_cb:
+            progress_cb("Loading Chatterbox model (first run downloads ~3 GB)…", 0)
+        logger.info("Loading Chatterbox on %s", device)
+        _chatterbox_model = ChatterboxTTS.from_pretrained(device=device)
+        _chatterbox_model_device = device
+
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+
+    def _infer():
+        # Resemble recommends cfg_weight=0.3 when the reference speaker is
+        # fast; in testing this retained identity while improving narration
+        # pacing. The neutral exaggeration default avoids over-acting prose.
+        _chatterbox_model.prepare_conditionals(
+            str(voice_sample_path), exaggeration=exaggeration
+        )
+        segments = segment_text_for_tts(text, engine="chatterbox")
+        generated = []
+        for index, segment in enumerate(segments, 1):
+            logger.info(
+                "Chatterbox synthesizing segment %d/%d (%d chars).",
+                index,
+                len(segments),
+                len(segment.text),
+            )
+            waveform = _chatterbox_model.generate(
+                segment.text,
+                exaggeration=exaggeration,
+                cfg_weight=cfg_weight,
+                temperature=temperature,
+            )
+            audio = _trim_chatterbox_edges(
+                waveform.detach().cpu().numpy(), _chatterbox_model.sr
+            )
+            generated.append(audio)
+            if segment.pause_after_ms:
+                generated.append(
+                    np.zeros(
+                        round(_chatterbox_model.sr * segment.pause_after_ms / 1000),
+                        dtype=np.float32,
+                    )
+                )
+            if progress_cb:
+                progress_cb(
+                    f"Chatterbox segment {index}/{len(segments)}",
+                    round(index * 100 / len(segments)),
+                )
+
+        if not generated:
+            raise ValueError("Chatterbox produced no audio output.")
+        combined = np.concatenate(generated).astype(np.float32, copy=False)
+        if abs(speed - 1.0) > 0.001:
+            import librosa
+
+            combined = librosa.effects.time_stretch(combined, rate=float(speed))
+        peak = float(np.max(np.abs(combined)))
+        if peak > 0.98:
+            combined *= 0.98 / peak
+        return combined, _chatterbox_model.sr
+
+    audio, sample_rate = await loop.run_in_executor(None, _infer)
+    sf.write(str(output_path), audio, sample_rate)
+    logger.info("Chatterbox wrote %s", output_path)
 
 
 async def _synthesize_f5tts(
@@ -367,7 +559,7 @@ async def _synthesize_f5tts(
     voice_reference_text: optional transcript matching that reference clip.
     voice_samples_dir: directory containing multiple voice samples; auto-selects best one.
     """
-    global _f5tts_model
+    global _f5tts_model, _chatterbox_model
     try:
         import sys as _sys
         import torch
@@ -423,6 +615,9 @@ async def _synthesize_f5tts(
         global _kokoro_pipeline
         if _kokoro_pipeline is not None:
             _kokoro_pipeline = None
+            torch.cuda.empty_cache()
+        if _chatterbox_model is not None:
+            _chatterbox_model = None
             torch.cuda.empty_cache()
 
         from .config import get_device_string

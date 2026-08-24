@@ -42,6 +42,7 @@ python run.py                   # starts FastAPI on http://localhost:8000
 > conda run -n narratible python -m venv .venv
 > .venv\Scripts\pip install -r requirements.txt
 > .venv\Scripts\pip install kokoro f5-tts
+> .venv\Scripts\pip install -r requirements-chatterbox.txt  # optional
 > .venv\Scripts\pip install torch --force-reinstall --index-url https://download.pytorch.org/whl/cu128
 > ```
 
@@ -110,24 +111,47 @@ The API is also available directly at **http://localhost:8000/docs** (Swagger UI
 | Edge-TTS | Good | Instant | Internet |
 | Kokoro-82M | Great | Fast (GPU) | Local model (auto-downloaded) |
 | F5-TTS Clone | Excellent | Moderate (GPU) | Your `.wav` voice sample |
+| Chatterbox Clone | Excellent | Moderate | Your voice sample; CUDA, MPS, or CPU |
 
 Local engines use narratible's audio-only text preparation layer before
 synthesis. This expands high-confidence speech forms such as scripture ranges
 (`Matthew 10:14-15` -> `Matthew 10, verses 14 through 15`), common
 abbreviations (`etc.` -> `et cetera`), and units (`55 mph` -> `55 miles per
-hour`) while preserving the original chapter text and EPUB output. Kokoro and
-F5-TTS also receive shorter speech segments with explicit pauses between
+hour`) while preserving the original chapter text and EPUB output. Kokoro,
+F5-TTS, and Chatterbox also receive shorter speech segments with explicit pauses between
 sentences and paragraphs to improve long-form pacing.
 
 Edge-TTS may still pronounce unusual domain text more naturally because the
 hosted service has a larger proprietary text-normalization and prosody front
-end. Kokoro has a lighter local pipeline, and F5-TTS prioritizes voice cloning,
-so narratible adds these deterministic speech cues locally.
+end. Kokoro has a lighter local pipeline, while F5-TTS and Chatterbox prioritize
+voice cloning, so narratible adds these deterministic speech cues locally.
 
-### Voice Library with F5-TTS
+### Voice Library with F5-TTS or Chatterbox
 1. Record a clean 10-15 second `.wav` clip of the voice you want to clone.
 2. Open **Voice Library**, create a reusable voice, and test it before saving or using it.
-3. In Step 3, select **Voice Library** as the engine and choose a saved voice.
+3. In Step 3, select **F5-TTS Clone** or **Chatterbox Clone** and choose a saved voice.
+4. Model weights download automatically on first use (~800 MB for F5-TTS or
+   ~3 GB for Chatterbox).
+
+Chatterbox uses narration-tuned defaults (`cfg_weight=0.3`,
+`exaggeration=0.5`), removes generated dead air at segment boundaries, and
+applies the existing speed control with pitch-preserving time stretching. A
+speed around `0.90x` to `0.95x` is a useful starting point for a fast reference
+speaker. Its model (~3 GB) downloads into the standard Hugging Face cache on
+first use.
+
+Chatterbox is optional because its pinned ML dependencies may not match every
+PyTorch installation. Install it separately after the core requirements:
+
+```bash
+python -m pip install -r backend/requirements-chatterbox.txt
+```
+
+Then install the PyTorch build recommended by the
+[official selector](https://pytorch.org/get-started/locally/) for the target
+machine. This is especially important for newer NVIDIA GPU generations.
+Narratible uses the selected CUDA device when available, Apple Metal on a Mac,
+and otherwise CPU. Selecting CPU explicitly in Settings is also respected.
 
 #### Optional AI reference cleanup
 
@@ -158,8 +182,7 @@ The enhancement control supports **Auto**, **CUDA**, **Apple Metal (MPS)**, and
 accelerator is detected but an operation is unsupported, Auto retries on CPU;
 an explicitly selected device reports the error instead. CPU is the most
 portable option. Resemble Enhance is optional: without this environment, all
-existing Voice Library and F5-TTS features continue to work unchanged.
-4. The model weights (~800 MB) download automatically on first use.
+existing Voice Library and cloning features continue to work unchanged.
 
 Saved voices persist in the app data directory (`~/.narratible/voice_library` for local and Docker runs, `%APPDATA%\narratible\voice_library` for packaged Windows builds).
 

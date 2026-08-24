@@ -11,9 +11,11 @@ from app import main  # noqa: E402
 from app import projects  # noqa: E402
 
 
-def _project_with_current_audio(tmp_path, monkeypatch):
+def _project_with_current_audio(tmp_path, monkeypatch, project_updates=None):
     monkeypatch.setattr(projects, "PROJECTS_DIR", tmp_path)
     project = projects.create_project("Book", "Author")
+    if project_updates:
+        project = projects.update_project(project.id, project_updates)
     projects.save_chapters(project.id, [{"title": "Chapter 1", "text": "Original text", "audio_path": None}])
     chapter = projects.load_chapters(project.id)[0]
     rel_audio = f"audio/{chapter['id']}.mp3"
@@ -24,6 +26,8 @@ def _project_with_current_audio(tmp_path, monkeypatch):
         engine=project.tts_engine,
         voice=project.tts_voice,
         speed=project.tts_speed,
+        exaggeration=project.tts_exaggeration,
+        cfg_weight=project.tts_cfg_weight,
         read_headings=project.tts_read_headings,
         enabled_modules=project.enabled_modules,
     )
@@ -62,6 +66,20 @@ def test_tts_settings_change_marks_current_audio_stale(tmp_path, monkeypatch):
     project_id = _project_with_current_audio(tmp_path, monkeypatch)
 
     projects.update_project(project_id, {"tts_voice": "en-US-GuyNeural"})
+
+    updated = projects.load_chapters(project_id)[0]
+    assert updated["tts"]["status"] == "stale"
+    assert updated["tts"]["audio_path"]
+
+
+def test_chatterbox_expression_change_marks_current_audio_stale(tmp_path, monkeypatch):
+    project_id = _project_with_current_audio(
+        tmp_path,
+        monkeypatch,
+        {"tts_engine": "chatterbox", "tts_exaggeration": 0.5},
+    )
+
+    projects.update_project(project_id, {"tts_exaggeration": 0.6})
 
     updated = projects.load_chapters(project_id)[0]
     assert updated["tts"]["status"] == "stale"

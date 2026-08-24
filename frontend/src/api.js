@@ -113,11 +113,11 @@ export const uploadCover = (projectId, file) => {
 
 // TTS
 export const getVoices = (engine = 'edge-tts') => request('GET', `/tts/voices?engine=${engine}`)
-export const ttsPreview = (projectId, text, engine, voice, speed) =>
+export const ttsPreview = (projectId, text, engine, voice, speed, chatterbox = {}) =>
   fetch(`${BASE}/projects/${projectId}/tts/preview`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, engine, voice, speed }),
+    body: JSON.stringify({ text, engine, voice, speed, ...chatterbox }),
   })
 export const ttsDebugText = (projectId, text, engine, voice, speed) =>
   request('POST', `/projects/${projectId}/tts/debug-text`, { text, engine, voice, speed })

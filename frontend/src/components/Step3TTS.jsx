@@ -5,7 +5,8 @@ import { getVoices, ttsPreview,
 const ENGINES = [
   { value: 'edge-tts', label: 'Edge-TTS', desc: 'Free · Microsoft voices · Online', requiresCuda: false },
   { value: 'kokoro',   label: 'Kokoro-82M', desc: 'Local · Fast · GPU accelerated', requiresCuda: true },
-  { value: 'f5-tts',  label: 'Voice Library', desc: 'Reusable cloned voices · GPU', requiresCuda: true },
+  { value: 'f5-tts',  label: 'F5-TTS Clone', desc: 'Reusable cloned voices · GPU', requiresCuda: true },
+  { value: 'chatterbox', label: 'Chatterbox Clone', desc: 'Natural cloning · GPU, MPS, or CPU', requiresCuda: false },
 ]
 
 export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, cudaEnabled = true, onOpenVoiceLibrary, voiceLibraryRevision = 0 }) {
@@ -13,6 +14,8 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
   const [voices, setVoices] = useState([])
   const [voice, setVoice] = useState('en-US-AriaNeural')
   const [speed, setSpeed] = useState(1.0)
+  const [exaggeration, setExaggeration] = useState(0.5)
+  const [cfgWeight, setCfgWeight] = useState(0.3)
   const [readHeadings, setReadHeadings] = useState(true)
   const [previewText, setPreviewText] = useState('Welcome to narratible. This is a preview of the selected voice.')
   const [previewing, setPreviewing] = useState(false)
@@ -22,6 +25,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
   const [loadingVoices, setLoadingVoices] = useState(false)
   const [loadingLibraryVoices, setLoadingLibraryVoices] = useState(false)
   const audioRef = useRef()
+  const isCloneEngine = engine === 'f5-tts' || engine === 'chatterbox'
 
   const refreshLibraryVoices = useCallback(async () => {
     setLoadingLibraryVoices(true)
@@ -37,15 +41,17 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
     }
   }, [toast])
 
-  // Switch away from CUDA engines if CUDA becomes unavailable
+  // Switch away only from engines that cannot use another local device.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (!cudaEnabled) setEngine('edge-tts')
-  }, [cudaEnabled])
+    if (!cudaEnabled && ENGINES.find(item => item.value === engine)?.requiresCuda) {
+      const timer = setTimeout(() => setEngine('edge-tts'), 0)
+      return () => clearTimeout(timer)
+    }
+  }, [cudaEnabled, engine])
 
   // Load voices when engine changes
   useEffect(() => {
-    if (engine === 'f5-tts') {
+    if (isCloneEngine) {
       const timer = setTimeout(refreshLibraryVoices, 0)
       return () => clearTimeout(timer)
     }
@@ -66,16 +72,23 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
   }, [engine])
 
   useEffect(() => {
-    if (!isActive || engine !== 'f5-tts') return
+    if (!isActive || !isCloneEngine) return
     const timer = setTimeout(refreshLibraryVoices, 0)
     return () => clearTimeout(timer)
-  }, [engine, isActive, refreshLibraryVoices, voiceLibraryRevision])
+  }, [engine, isActive, isCloneEngine, refreshLibraryVoices, voiceLibraryRevision])
 
   const handlePreview = async () => {
     if (!previewText.trim()) return
     setPreviewing(true)
     try {
-      const res = await ttsPreview(projectId, previewText, engine, voice, speed)
+      const res = await ttsPreview(
+        projectId,
+        previewText,
+        engine,
+        voice,
+        speed,
+        engine === 'chatterbox' ? { exaggeration, cfg_weight: cfgWeight } : {},
+      )
       if (!res.ok) {
         const text = await res.text();
         try {
@@ -110,12 +123,19 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
   }
 
   const handleNext = async () => {
-    if (engine === 'f5-tts' && !voice) {
+    if (isCloneEngine && !voice) {
       toast('Create or select a library voice first.', 'error')
       return
     }
     try {
-      await updateProject(projectId, { tts_engine: engine, tts_voice: voice, tts_speed: speed, tts_read_headings: readHeadings })
+      await updateProject(projectId, {
+        tts_engine: engine,
+        tts_voice: voice,
+        tts_speed: speed,
+        tts_exaggeration: exaggeration,
+        tts_cfg_weight: cfgWeight,
+        tts_read_headings: readHeadings,
+      })
       onNext()
     } catch (e) {
       toast(e.message, 'error')
@@ -135,10 +155,10 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
   }
 
   useEffect(() => {
-    if (engine !== 'f5-tts' || !selectedLibraryVoice) return
+    if (!isCloneEngine || !selectedLibraryVoice) return
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSpeed(selectedLibraryVoice.speed ?? 1.0)
-  }, [engine, selectedLibraryVoice])
+  }, [engine, isCloneEngine, selectedLibraryVoice])
 
   return (
     <div className="step-card">
@@ -186,7 +206,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
           </div>
 
           {/* Voice selector */}
-          {engine === 'f5-tts' && (
+          {isCloneEngine && (
             <div className="glass p-3 mb-4" style={{ borderRadius: 'var(--radius-sm)' }}>
               <div className="text-sm" style={{ fontWeight: 600 }}>Voice Library mode</div>
               <div className="text-xs text-muted mt-1">
@@ -194,7 +214,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
               </div>
             </div>
           )}
-          {engine !== 'f5-tts' && (
+          {!isCloneEngine && (
             <div className="field">
               <label>Voice {loadingVoices && <span className="text-muted">(loading...)</span>}</label>
               <select value={voice} onChange={e => setVoice(e.target.value)} disabled={loadingVoices}>
@@ -218,6 +238,33 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
               <span className="range-tick range-tick-end">2.0× fast</span>
             </div>
           </div>
+
+          {engine === 'chatterbox' && (
+            <div className="glass p-3 mb-4" style={{ borderRadius: 'var(--radius-sm)' }}>
+              <div className="field">
+                <label>Expression — {exaggeration.toFixed(2)}</label>
+                <input
+                  type="range" min="0.25" max="1.0" step="0.05"
+                  value={exaggeration}
+                  onChange={e => setExaggeration(parseFloat(e.target.value))}
+                />
+                <div className="text-xs text-muted mt-1">
+                  Higher values make the delivery more animated. Start around 0.60 for an expressive narrator.
+                </div>
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>CFG Weight — {cfgWeight.toFixed(2)}</label>
+                <input
+                  type="range" min="0" max="1.0" step="0.05"
+                  value={cfgWeight}
+                  onChange={e => setCfgWeight(parseFloat(e.target.value))}
+                />
+                <div className="text-xs text-muted mt-1">
+                  Lower values allow freer pacing; 0.30 is tuned for fast reference speakers.
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Read chapter headings */}
           <div className="field" data-tip-anchor="read-headings">
@@ -291,7 +338,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
         <div style={{ width: 260, flexShrink: 0 }}>
           <div className="section-title">Voice Library</div>
           <div className="glass p-3 mb-4" style={{ borderRadius: 'var(--radius-sm)' }} data-tip-anchor="voice-library-select">
-            {engine === 'f5-tts' ? (
+            {isCloneEngine ? (
               <>
                 <label>Library voice {loadingLibraryVoices && <span className="text-muted">(loading...)</span>}</label>
                 <select
@@ -325,7 +372,7 @@ export default function Step3TTS({ projectId, isActive, onNext, onBack, toast, c
 
       <div className="step-nav">
         <button className="btn btn-ghost" onClick={onBack}>← Back</button>
-        <button className="btn btn-primary btn-lg" onClick={handleNext} disabled={engine === 'f5-tts' && !voice}>
+        <button className="btn btn-primary btn-lg" onClick={handleNext} disabled={isCloneEngine && !voice}>
           Continue to Export →
         </button>
       </div>

@@ -117,6 +117,17 @@ def test_f5_segments_long_text():
     assert all(len(segment.text) <= 420 for segment in segments)
 
 
+def test_chatterbox_uses_narration_sized_merged_segments():
+    text = "First sentence. " + ("A moderately long sentence follows. " * 20)
+
+    segments = segment_text_for_tts(text, "chatterbox")
+
+    assert len(segments) > 1
+    assert all(len(segment.text) <= 500 for segment in segments)
+    assert all(segment.pause_after_ms == 240 for segment in segments[:-1])
+    assert segments[-1].pause_after_ms == 0
+
+
 def test_f5_merges_short_preview_sentences_into_one_generation():
     text = (
         "The main topic of the doctrinal section of this letter is the free grace of God "
