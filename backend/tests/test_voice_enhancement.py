@@ -70,6 +70,33 @@ def test_enhancement_worker_uses_configured_python_and_parses_device(tmp_path, m
     assert captured["command"][-1] == "16"
 
 
+def test_frozen_enhancement_requires_isolated_python(tmp_path, monkeypatch):
+    monkeypatch.delenv("NARRATIBLE_VOICE_ENHANCER_PYTHON", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    with pytest.raises(VoiceEnhancementUnavailableError, match="separate Python environment"):
+        enhance_reference_audio(tmp_path / "source.wav", tmp_path / "output.wav")
+
+
+def test_frozen_enhancement_uses_bundled_worker_source(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"device": "cpu"}), stderr="")
+
+    bundle_root = tmp_path / "bundle"
+    monkeypatch.setenv("NARRATIBLE_VOICE_ENHANCER_PYTHON", "/opt/enhancer/bin/python")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle_root), raising=False)
+    monkeypatch.setattr("app.voice_enhancement.subprocess.run", fake_run)
+
+    assert enhance_reference_audio(tmp_path / "source.wav", tmp_path / "output.wav") == "cpu"
+    assert captured["command"][1] == str(
+        bundle_root / "optional_runtime" / "voice_enhancement.py"
+    )
+
+
 def test_enhancement_worker_reports_missing_runtime(tmp_path, monkeypatch):
     def fake_run(*args, **kwargs):
         return SimpleNamespace(returncode=2, stdout="", stderr="No module named resemble_enhance\n")

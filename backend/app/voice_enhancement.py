@@ -17,6 +17,28 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+def _enhancement_worker_path() -> Path:
+    """Return a real Python source file that the isolated runtime can execute."""
+    if getattr(sys, "frozen", False):
+        bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        return bundle_root / "optional_runtime" / "voice_enhancement.py"
+    return Path(__file__).resolve()
+
+
+def _enhancement_python() -> str:
+    """Resolve the isolated interpreter without recursing into a frozen app."""
+    configured = os.environ.get("NARRATIBLE_VOICE_ENHANCER_PYTHON", "").strip()
+    if configured:
+        return configured
+    if getattr(sys, "frozen", False):
+        raise VoiceEnhancementUnavailableError(
+            "AI voice enhancement needs its separate Python environment. Set "
+            "NARRATIBLE_VOICE_ENHANCER_PYTHON to that environment's Python "
+            "executable, then restart narratible."
+        )
+    return sys.executable
+
+
 class VoiceEnhancementUnavailableError(RuntimeError):
     """Raised when the optional enhancement runtime is not installed."""
 
@@ -135,13 +157,14 @@ def enhance_reference_audio(
     Resemble Enhance 0.0.1 pins PyTorch 2.1 while narratible's local TTS
     engines may need a newer CUDA build. A subprocess keeps those dependency
     stacks independent. Set ``NARRATIBLE_VOICE_ENHANCER_PYTHON`` to the Python
-    executable in the enhancement virtual environment; the current interpreter
-    is the convenient default for developers who have compatible dependencies.
+    executable in the enhancement virtual environment. Source checkouts may
+    use the current interpreter when compatible; frozen builds require the
+    explicit sidecar interpreter and execute the bundled source worker.
     """
-    enhancer_python = os.environ.get("NARRATIBLE_VOICE_ENHANCER_PYTHON", sys.executable)
+    enhancer_python = _enhancement_python()
     command = [
         enhancer_python,
-        str(Path(__file__).resolve()),
+        str(_enhancement_worker_path()),
         "--source", str(source_path),
         "--output", str(output_path),
         "--device", device,

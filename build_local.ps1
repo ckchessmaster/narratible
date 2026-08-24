@@ -27,6 +27,16 @@ if (-not $SkipFrontend) {
 Write-Host "`n[2] Freezing Python backend with PyInstaller..." -ForegroundColor Yellow
 # Ensure pyinstaller is installed in the active environment
 python -m pip install pyinstaller
+# Chatterbox is part of the frozen app, so fail before a long PyInstaller run
+# when the active build environment is incomplete. Its requirements file is
+# intentionally separate because installing it can replace the selected Torch
+# build; install it first, then reinstall the correct PyTorch build for this PC.
+python -c "from chatterbox.tts import ChatterboxTTS; import torch; print('Chatterbox ready with torch', torch.__version__)"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "`n[ERROR] Chatterbox is missing from the build environment." -ForegroundColor Red
+    Write-Host "Install backend\requirements-chatterbox.txt, then reinstall the PyTorch build appropriate for this machine before rebuilding." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
 # --workpath keeps the analysis cache between runs so re-builds are faster
 python -m PyInstaller narratible.spec --noconfirm --workpath build\pyinstaller-work --distpath dist
 

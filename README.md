@@ -152,6 +152,8 @@ Then install the PyTorch build recommended by the
 machine. This is especially important for newer NVIDIA GPU generations.
 Narratible uses the selected CUDA device when available, Apple Metal on a Mac,
 and otherwise CPU. Selecting CPU explicitly in Settings is also respected.
+The official Windows installer already includes Chatterbox and a compatible
+CUDA-enabled PyTorch build; these manual steps are only for source checkouts.
 
 #### Optional AI reference cleanup
 
@@ -176,6 +178,15 @@ set in the environment that starts narratible. For a recent NVIDIA GPU, install
 the compatible CUDA build of PyTorch in this enhancement environment using the
 [official PyTorch selector](https://pytorch.org/get-started/locally/) after the
 requirements step.
+
+Resemble Enhance stays in this sidecar environment even in the packaged
+Windows app because its pinned PyTorch version conflicts with the newer build
+used by the bundled cloning engines. The installer includes the enhancement
+worker and requirements file under
+`%LOCALAPPDATA%\narratible\_internal\optional_runtime`; point the environment
+variable at the sidecar environment's `python.exe`, never at
+`narratible.exe`. Without that variable, the packaged app reports enhancement
+as unavailable instead of accidentally relaunching itself.
 
 The enhancement control supports **Auto**, **CUDA**, **Apple Metal (MPS)**, and
 **CPU**. Auto tries narratible's selected CUDA device, then MPS, then CPU. If an
