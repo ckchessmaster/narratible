@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import shutil
 import os
@@ -63,6 +64,11 @@ from .voices import (
     list_library_voices,
     set_library_voice_sample,
     update_library_voice,
+)
+from .voice_enhancement import (
+    VoiceEnhancementDeviceError,
+    VoiceEnhancementUnavailableError,
+    enhance_reference_audio,
 )
 from .runtime_state import save_task_snapshot
 
@@ -1935,6 +1941,12 @@ class VoiceLibrarySampleRequest(BaseModel):
     sample_filename: str
 
 
+class VoiceLibraryEnhancementRequest(BaseModel):
+    device: str = "auto"
+    nfe: int = 32
+    activate: bool = True
+
+
 def _resolve_f5_voice_reference(project_id: str, voice: str):
     if voice and voice != "__uploaded__":
         library_voice = get_library_voice(voice)
@@ -2072,6 +2084,42 @@ async def api_set_voice_library_sample(voice_id: str, req: VoiceLibrarySampleReq
         return set_library_voice_sample(voice_id, req.sample_filename)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/voice-library/{voice_id}/samples/enhance")
+async def api_enhance_voice_library_sample(voice_id: str, req: VoiceLibraryEnhancementRequest):
+    """Create an enhanced copy of the active reference and optionally activate it."""
+    temp_dir = Path(tempfile.mkdtemp(prefix="narratible_voice_enhance_"))
+    output_path = temp_dir / "enhanced.wav"
+    try:
+        voice = get_library_voice(voice_id)
+        source_path = get_library_voice_sample_path(voice_id)
+        cfg = load_config()
+        device_used = await asyncio.to_thread(
+            enhance_reference_audio,
+            source_path,
+            output_path,
+            device=req.device,
+            cuda_index=cfg.selected_gpu_index,
+            nfe=req.nfe,
+        )
+        enhanced_name = f"{Path(voice.sample_filename).stem}-enhanced.wav"
+        with open(output_path, "rb") as enhanced_file:
+            updated = add_library_voice_sample(
+                voice_id, enhanced_name, enhanced_file, activate=req.activate
+            )
+        return {"voice": updated, "device": device_used}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except VoiceEnhancementUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except (VoiceEnhancementDeviceError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Voice reference enhancement failed")
+        raise HTTPException(status_code=500, detail=f"Voice enhancement failed: {e}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @app.delete("/api/voice-library/{voice_id}/samples/{sample_filename}")

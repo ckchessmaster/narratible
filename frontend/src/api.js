@@ -149,6 +149,12 @@ export const addLibraryVoiceSample = (id, file, activate = true) => {
 }
 export const setLibraryVoiceSample = (id, sampleFilename) =>
   request('POST', `/voice-library/${encodeURIComponent(id)}/samples/active`, { sample_filename: sampleFilename })
+export const enhanceLibraryVoiceSample = (id, options = {}) =>
+  request('POST', `/voice-library/${encodeURIComponent(id)}/samples/enhance`, {
+    device: options.device ?? 'auto',
+    nfe: options.nfe ?? 32,
+    activate: options.activate ?? true,
+  })
 export const deleteLibraryVoiceSample = (id, sampleFilename) =>
   request('DELETE', `/voice-library/${encodeURIComponent(id)}/samples/${encodeURIComponent(sampleFilename)}`)
 export const testDraftLibraryVoice = ({ text, speed, temperature, file }) => {

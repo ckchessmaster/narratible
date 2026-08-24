@@ -4,6 +4,7 @@ import {
   createLibraryVoice,
   deleteLibraryVoice,
   deleteLibraryVoiceSample,
+  enhanceLibraryVoiceSample,
   listLibraryVoices,
   setLibraryVoiceSample,
   testDraftLibraryVoice,
@@ -42,6 +43,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [sampleBusy, setSampleBusy] = useState('')
+  const [enhancementDevice, setEnhancementDevice] = useState('auto')
   const [testText, setTestText] = useState(DEFAULT_TEST_TEXT)
   const [previewUrl, setPreviewUrl] = useState('')
   const audioRef = useRef(null)
@@ -210,6 +212,26 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
     }
   }
 
+  const handleEnhanceSample = async () => {
+    if (!selectedVoice) return
+    setSampleBusy('enhance')
+    try {
+      const result = await enhanceLibraryVoiceSample(selectedVoice.id, {
+        device: enhancementDevice,
+        nfe: 32,
+        activate: true,
+      })
+      await refresh(result.voice.id)
+      setDraft(draftFromVoice(result.voice))
+      notifyChanged()
+      toast(`Enhanced reference created on ${result.device.toUpperCase()} and set active.`, 'success')
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setSampleBusy('')
+    }
+  }
+
   const handleTest = async () => {
     if (isNew && !draft.file) {
       toast('Add a reference audio file first.', 'error')
@@ -367,6 +389,34 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                     >
                       {sampleBusy === 'upload' ? 'Uploading...' : '+ Add reference audio'}
                     </button>
+                    <div className="glass" style={{ padding: 10, borderRadius: 'var(--radius-sm)' }}>
+                      <div className="text-xs" style={{ fontWeight: 700 }}>Optional AI cleanup</div>
+                      <div className="text-xs text-muted mt-1">
+                        Creates a denoised, bandwidth-restored copy. The original is kept.
+                      </div>
+                      <div className="flex gap-2 mt-2">
+                        <select
+                          aria-label="Voice enhancement device"
+                          value={enhancementDevice}
+                          disabled={Boolean(sampleBusy)}
+                          onChange={event => setEnhancementDevice(event.target.value)}
+                          style={{ flex: 1 }}
+                        >
+                          <option value="auto">Auto device</option>
+                          <option value="cuda">CUDA</option>
+                          <option value="mps">Apple Metal</option>
+                          <option value="cpu">CPU</option>
+                        </select>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-sm"
+                          disabled={Boolean(sampleBusy)}
+                          onClick={handleEnhanceSample}
+                        >
+                          {sampleBusy === 'enhance' ? 'Enhancing...' : 'Enhance active'}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                   <div className="text-xs text-muted mt-1">
                     The active file is used for Voice Library generation. Switch files here when you want to test or use a different reference clip.

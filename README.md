@@ -128,6 +128,37 @@ so narratible adds these deterministic speech cues locally.
 1. Record a clean 10-15 second `.wav` clip of the voice you want to clone.
 2. Open **Voice Library**, create a reusable voice, and test it before saving or using it.
 3. In Step 3, select **Voice Library** as the engine and choose a saved voice.
+
+#### Optional AI reference cleanup
+
+The Voice Library can create a denoised, bandwidth-restored copy of its active
+reference clip with [Resemble Enhance](https://github.com/resemble-ai/resemble-enhance).
+The source recording is always retained so you can compare the two or switch
+back. This does not upload the recording to a service, but the model is
+downloaded on first use and enhancement can take several minutes on CPU.
+
+Resemble Enhance currently pins an older PyTorch release, which may conflict
+with the PyTorch build used by F5-TTS. Install it in its own environment:
+
+```bash
+python3 -m venv .venv-voice-enhance
+.venv-voice-enhance/bin/python -m pip install -r backend/requirements-voice-enhancement.txt
+export NARRATIBLE_VOICE_ENHANCER_PYTHON="$PWD/.venv-voice-enhance/bin/python"
+```
+
+On Windows PowerShell, use `.venv-voice-enhance\Scripts\python.exe` for both
+the install command and `NARRATIBLE_VOICE_ENHANCER_PYTHON`. Keep that variable
+set in the environment that starts narratible. For a recent NVIDIA GPU, install
+the compatible CUDA build of PyTorch in this enhancement environment using the
+[official PyTorch selector](https://pytorch.org/get-started/locally/) after the
+requirements step.
+
+The enhancement control supports **Auto**, **CUDA**, **Apple Metal (MPS)**, and
+**CPU**. Auto tries narratible's selected CUDA device, then MPS, then CPU. If an
+accelerator is detected but an operation is unsupported, Auto retries on CPU;
+an explicitly selected device reports the error instead. CPU is the most
+portable option. Resemble Enhance is optional: without this environment, all
+existing Voice Library and F5-TTS features continue to work unchanged.
 4. The model weights (~800 MB) download automatically on first use.
 
 Saved voices persist in the app data directory (`~/.narratible/voice_library` for local and Docker runs, `%APPDATA%\narratible\voice_library` for packaged Windows builds).
