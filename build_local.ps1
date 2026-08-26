@@ -113,6 +113,7 @@ $fingerprintLines = @(
     "python=3.12",
     "pip=26.2.1",
     "setuptools=70.2.0",
+    "dependency-layout=2",
     "torch=2.11.0+cu128",
     "torchaudio=2.11.0+cu128"
 )
@@ -138,13 +139,14 @@ if ($installedFingerprint -ne $dependencyFingerprint.Trim()) {
     Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "-r", $dependencyFiles[5]) -Description "Installing Qwen3-TTS support"
     Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "--no-deps", "-c", $dependencyFiles[0], "qwen-tts==0.1.1") -Description "Installing Qwen3-TTS"
     Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "--upgrade", "--force-reinstall", "-c", $dependencyFiles[0], "torch==2.11.0", "torchaudio==2.11.0", "--index-url", "https://download.pytorch.org/whl/cu128") -Description "Restoring CUDA-enabled PyTorch"
+    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "--force-reinstall", "--no-deps", "-c", $dependencyFiles[0], "transformers@git+https://github.com/huggingface/transformers.git@a530903e4e61784ca980bdbbca187f2b4db5ed59") -Description "Restoring pinned Transformers"
     $dependenciesInstalled = $true
 } else {
     Write-Host "Build dependencies are current." -ForegroundColor DarkGray
 }
 
 if ($dependenciesInstalled -or $SetupOnly -or $RecreateBuildEnv) {
-    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-c", "from PyInstaller import __version__ as pyinstaller_version; from chatterbox.tts import ChatterboxTTS; from f5_tts.api import F5TTS; from kokoro import KPipeline; from qwen_tts import Qwen3TTSModel; import en_core_web_sm, torch, torchaudio, sys; en_core_web_sm.load(disable=['tok2vec', 'tagger', 'parser', 'attribute_ruler', 'lemmatizer', 'ner']); print('Build environment ready | PyInstaller', pyinstaller_version, '| torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| cuda', torch.version.cuda); sys.exit(0 if torch.version.cuda else 1)") -Description "Validating the build environment"
+    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-c", "from PyInstaller import __version__ as pyinstaller_version; from chatterbox.tts import ChatterboxTTS; from f5_tts.api import F5TTS; from kokoro import KPipeline; from backend.app.tts import _prepare_qwen3_transformers; _prepare_qwen3_transformers(); from qwen_tts import Qwen3TTSModel; import en_core_web_sm, torch, torchaudio, transformers, sys; en_core_web_sm.load(disable=['tok2vec', 'tagger', 'parser', 'attribute_ruler', 'lemmatizer', 'ner']); print('Build environment ready | PyInstaller', pyinstaller_version, '| torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| transformers', transformers.__version__, '| cuda', torch.version.cuda); sys.exit(0 if torch.version.cuda else 1)") -Description "Validating the build environment"
 } else {
     Write-Host "Build environment unchanged; skipping heavyweight dependency import checks." -ForegroundColor DarkGray
 }

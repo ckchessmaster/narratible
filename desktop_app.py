@@ -44,9 +44,10 @@ def _verify_packaged_tts_imports():
     import torch
     import torchaudio
 
-    from backend.app.tts import _prepare_frozen_torch
+    from backend.app.tts import _prepare_frozen_torch, _prepare_qwen3_transformers
 
     _prepare_frozen_torch(torch)
+    _prepare_qwen3_transformers()
     import en_core_web_sm
     from kokoro import KPipeline  # noqa: F401
     from f5_tts.api import F5TTS  # noqa: F401
