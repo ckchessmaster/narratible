@@ -10,9 +10,6 @@ import requests
 import tkinter as tk
 from tkinter import messagebox
 
-# Current App Version
-APP_VERSION = "0.1.0"
-
 # Set python path to backend to avoid structural import issues
 sys.path.insert(0, str(Path(__file__).parent / "backend"))
 
@@ -21,6 +18,7 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()
 
 from backend.app.hf_cache import configure_frozen_huggingface_cache
+from backend.app.version import APP_VERSION
 
 configure_frozen_huggingface_cache()
 

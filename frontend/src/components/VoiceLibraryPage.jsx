@@ -5,6 +5,7 @@ import {
   deleteLibraryVoice,
   deleteLibraryVoiceSample,
   enhanceLibraryVoiceSample,
+  getVoices,
   listLibraryVoices,
   setLibraryVoiceSample,
   testDraftLibraryVoice,
@@ -13,7 +14,19 @@ import {
 } from '../api'
 
 const DEFAULT_TEST_TEXT = 'Welcome to narratible. This is a quick test of the saved library voice.'
-const NEW_DRAFT = { name: '', notes: '', speed: 1.0, temperature: 0.7, file: null }
+const NEW_DRAFT = {
+  name: '', engine: 'edge-tts', engine_configured: true, provider_voice_id: '', notes: '', speed: 1.0,
+  temperature: 0.7, exaggeration: 0.5, cfg_weight: 0.3, file: null,
+}
+
+const ENGINE_LABELS = {
+  'edge-tts': 'Edge-TTS',
+  kokoro: 'Kokoro',
+  'f5-tts': 'F5-TTS',
+  chatterbox: 'Chatterbox',
+}
+
+const isCloneEngine = engine => engine === 'f5-tts' || engine === 'chatterbox'
 
 async function responseError(response) {
   const text = await response.text()
@@ -28,9 +41,14 @@ async function responseError(response) {
 function draftFromVoice(voice) {
   return {
     name: voice?.name || '',
+    engine: voice?.engine || 'f5-tts',
+    engine_configured: voice?.engine_configured ?? false,
+    provider_voice_id: voice?.provider_voice_id || '',
     notes: voice?.notes || '',
     speed: voice?.speed ?? 1.0,
     temperature: voice?.temperature ?? 0.7,
+    exaggeration: voice?.exaggeration ?? 0.5,
+    cfg_weight: voice?.cfg_weight ?? 0.3,
     file: null,
   }
 }
@@ -45,10 +63,9 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
   const [sampleBusy, setSampleBusy] = useState('')
   const [enhancementDevice, setEnhancementDevice] = useState('auto')
   const [testText, setTestText] = useState(DEFAULT_TEST_TEXT)
-  const [testEngine, setTestEngine] = useState('f5-tts')
-  const [testExaggeration, setTestExaggeration] = useState(0.5)
-  const [testCfgWeight, setTestCfgWeight] = useState(0.3)
   const [previewUrl, setPreviewUrl] = useState('')
+  const [providerVoices, setProviderVoices] = useState([])
+  const [loadingProviderVoices, setLoadingProviderVoices] = useState(false)
   const audioRef = useRef(null)
   const formRef = useRef(null)
   const sampleInputRef = useRef(null)
@@ -64,6 +81,34 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
     return [...new Set(filenames)]
   }, [selectedVoice])
   const isNew = !selectedVoice
+  const draftUsesCloneEngine = isCloneEngine(draft.engine)
+
+  useEffect(() => {
+    if (isCloneEngine(draft.engine)) {
+      setTimeout(() => setProviderVoices([]), 0)
+      return
+    }
+    let active = true
+    setTimeout(() => {
+      if (active) setLoadingProviderVoices(true)
+    }, 0)
+    getVoices(draft.engine)
+      .then(result => {
+        if (!active) return
+        const available = result.voices || []
+        setProviderVoices(available)
+        setDraft(current => {
+          if (current.engine !== draft.engine) return current
+          const currentIsAvailable = available.some(item => item.id === current.provider_voice_id)
+          return currentIsAvailable
+            ? current
+            : { ...current, provider_voice_id: available[0]?.id || '' }
+        })
+      })
+      .catch(error => { if (active) toast(error.message, 'error') })
+      .finally(() => { if (active) setLoadingProviderVoices(false) })
+    return () => { active = false }
+  }, [draft.engine, toast])
 
   const refresh = useCallback(async (nextSelectedId) => {
     setLoading(true)
@@ -117,8 +162,12 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
       toast('Name the voice first.', 'error')
       return
     }
-    if (isNew && !draft.file) {
+    if (isNew && draftUsesCloneEngine && !draft.file) {
       toast('Add a reference audio file first.', 'error')
+      return
+    }
+    if (!draftUsesCloneEngine && !draft.provider_voice_id) {
+      toast('Choose a provider voice first.', 'error')
       return
     }
 
@@ -133,9 +182,13 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
       } else {
         const updated = await updateLibraryVoice(selectedVoice.id, {
           name: draft.name,
+          engine: selectedVoice.engine_configured ? undefined : draft.engine,
+          provider_voice_id: selectedVoice.engine_configured ? undefined : draft.provider_voice_id,
           notes: draft.notes,
           speed: draft.speed,
           temperature: draft.temperature,
+          exaggeration: draft.exaggeration,
+          cfg_weight: draft.cfg_weight,
         })
         setDraft(draftFromVoice(updated))
         await refresh(updated.id)
@@ -236,8 +289,12 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
   }
 
   const handleTest = async () => {
-    if (isNew && !draft.file) {
+    if (isNew && draftUsesCloneEngine && !draft.file) {
       toast('Add a reference audio file first.', 'error')
+      return
+    }
+    if (!draftUsesCloneEngine && !draft.provider_voice_id) {
+      toast('Choose a provider voice first.', 'error')
       return
     }
     if (!testText.trim()) {
@@ -247,11 +304,12 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
     setTesting(true)
     try {
       const testOptions = {
-        engine: testEngine,
+        engine: draft.engine,
+        provider_voice_id: draft.provider_voice_id,
         speed: draft.speed,
         temperature: draft.temperature,
-        exaggeration: testExaggeration,
-        cfg_weight: testCfgWeight,
+        exaggeration: draft.exaggeration,
+        cfg_weight: draft.cfg_weight,
       }
       const response = isNew
         ? await testDraftLibraryVoice({ text: testText, file: draft.file, ...testOptions })
@@ -277,7 +335,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
       <div className="step-header">
         <div>
           <div className="step-title">Voice Library</div>
-          <div className="step-desc">Create reusable cloned voices, tune their defaults, then pick them in the TTS step.</div>
+          <div className="step-desc">Save built-in or cloned voices with reusable defaults for your projects.</div>
         </div>
         <button className="btn btn-ghost btn-sm" onClick={onBack}>Back to Wizard</button>
       </div>
@@ -304,8 +362,12 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                   onClick={() => selectVoice(voice)}
                 >
                   <span className="voice-name truncate" title={voice.name}>{voice.name}</span>
-                  <span className="text-xs text-muted truncate" title={voice.sample_filename}>{voice.sample_filename}</span>
-                  <span className="text-xs text-secondary">{(voice.speed ?? 1).toFixed(2)}x speed</span>
+                  <span className="text-xs text-muted truncate" title={voice.sample_filename || voice.provider_voice_id}>
+                    {voice.sample_filename || voice.provider_voice_id}
+                  </span>
+                  <span className="text-xs text-secondary">
+                    {voice.engine_configured ? (ENGINE_LABELS[voice.engine] || voice.engine) : 'Engine confirmation needed'} · {(voice.speed ?? 1).toFixed(2)}x
+                  </span>
                 </button>
               ))}
             </div>
@@ -317,7 +379,9 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
             <div>
               <div className="section-title" style={{ marginBottom: 4 }}>{isNew ? 'New Voice' : 'Edit Voice'}</div>
               <div className="text-xs text-muted">
-                {isNew ? 'Add a reference clip and save it before testing.' : selectedVoice?.sample_filename}
+                {isNew
+                  ? 'Choose an engine and save the voice before using it in a project.'
+                  : selectedVoice?.sample_filename || selectedVoice?.provider_voice_id}
               </div>
             </div>
             {!isNew && (
@@ -328,18 +392,71 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
           <div className="voice-editor-grid">
             <div>
               <div className="field">
-                <label>Name</label>
+                <label htmlFor="library-voice-name">Name</label>
                 <input
+                  id="library-voice-name"
+                  name="library-voice-name"
                   type="text"
                   value={draft.name}
                   onChange={event => updateDraft({ name: event.target.value })}
                   placeholder="Warm narrator"
                 />
               </div>
-              {isNew && (
+              <div className="field">
+                <label>Engine</label>
+                {isNew || !selectedVoice?.engine_configured ? (
+                  <div className="segmented" role="group" aria-label="Voice cloning engine">
+                    {Object.entries(ENGINE_LABELS).map(([value, label]) => (
+                      <button
+                        type="button"
+                        key={value}
+                        className={`segmented-btn${draft.engine === value ? ' is-active' : ''}`}
+                        onClick={() => updateDraft({ engine: value, provider_voice_id: '' })}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="glass p-3 text-sm" style={{ borderRadius: 'var(--radius-sm)' }}>
+                    {ENGINE_LABELS[draft.engine] || draft.engine}
+                  </div>
+                )}
+                <div className="text-xs text-muted mt-1">
+                  {selectedVoice?.engine_configured
+                    ? 'The engine is fixed after this voice is saved.'
+                    : isNew
+                      ? 'This voice will always use the selected engine.'
+                      : 'This older voice needs a one-time engine confirmation.'}
+                </div>
+              </div>
+              {!draftUsesCloneEngine && (
                 <div className="field">
-                  <label>Reference audio</label>
+                  <label htmlFor="library-provider-voice">Provider voice</label>
+                  <select
+                    id="library-provider-voice"
+                    name="library-provider-voice"
+                    value={draft.provider_voice_id}
+                    disabled={loadingProviderVoices || (!isNew && selectedVoice?.engine_configured)}
+                    onChange={event => updateDraft({ provider_voice_id: event.target.value })}
+                  >
+                    {providerVoices.length === 0 ? (
+                      <option value="">{loadingProviderVoices ? 'Loading voices...' : 'No voices available'}</option>
+                    ) : providerVoices.map(item => (
+                      <option key={item.id} value={item.id}>{item.name}</option>
+                    ))}
+                  </select>
+                  <div className="text-xs text-muted mt-1">
+                    Save a built-in voice with your preferred name, speed, and notes.
+                  </div>
+                </div>
+              )}
+              {isNew && draftUsesCloneEngine && (
+                <div className="field">
+                  <label htmlFor="library-voice-reference">Reference audio</label>
                   <input
+                    id="library-voice-reference"
+                    name="library-voice-reference"
                     type="file"
                     accept=".wav,.mp3,.flac"
                     onChange={event => updateDraft({ file: event.target.files?.[0] || null })}
@@ -347,11 +464,13 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                   <div className="text-xs text-muted mt-1">Use a clean single-speaker clip with no music. F5-TTS transcribes the usable reference automatically; Chatterbox conditions directly on the same clip.</div>
                 </div>
               )}
-              {!isNew && (
+              {!isNew && draftUsesCloneEngine && (
                 <div className="field">
                   <label>Reference audio files</label>
                   <input
                     ref={sampleInputRef}
+                    name="library-voice-add-reference"
+                    aria-label="Add reference audio"
                     type="file"
                     accept=".wav,.mp3,.flac"
                     style={{ display: 'none' }}
@@ -434,8 +553,10 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                 </div>
               )}
               <div className="field">
-                <label>Notes</label>
+                <label htmlFor="library-voice-notes">Notes</label>
                 <textarea
+                  id="library-voice-notes"
+                  name="library-voice-notes"
                   rows={5}
                   value={draft.notes}
                   onChange={event => updateDraft({ notes: event.target.value })}
@@ -446,8 +567,10 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
 
             <div>
               <div className="field">
-                <label>Speed - {Number(draft.speed).toFixed(2)}x</label>
+                <label htmlFor="library-voice-speed">Speed - {Number(draft.speed).toFixed(2)}x</label>
                 <input
+                  id="library-voice-speed"
+                  name="library-voice-speed"
                   type="range"
                   min="0.5"
                   max="2.0"
@@ -461,22 +584,49 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                   <span className="range-tick range-tick-end">2.0x</span>
                 </div>
               </div>
-              <div className="field">
-                <label>Temperature - {Number(draft.temperature).toFixed(2)}</label>
-                <input
-                  type="range"
-                  min="0"
-                  max="1.5"
-                  step="0.05"
-                  value={draft.temperature}
-                  onChange={event => updateDraft({ temperature: parseFloat(event.target.value) })}
-                />
-                <div className="range-ticks text-xs text-muted">
-                  <span className="range-tick range-tick-start">steady</span>
-                  <span className="range-tick" style={{ left: '46.667%' }}>balanced</span>
-                  <span className="range-tick range-tick-end">varied</span>
+              {draft.engine === 'f5-tts' ? (
+                <div className="field">
+                  <label htmlFor="library-voice-temperature">Temperature - {Number(draft.temperature).toFixed(2)}</label>
+                  <input
+                    id="library-voice-temperature"
+                    name="library-voice-temperature"
+                    type="range"
+                    min="0"
+                    max="1.5"
+                    step="0.05"
+                    value={draft.temperature}
+                    onChange={event => updateDraft({ temperature: parseFloat(event.target.value) })}
+                  />
+                  <div className="range-ticks text-xs text-muted">
+                    <span className="range-tick range-tick-start">steady</span>
+                    <span className="range-tick" style={{ left: '46.667%' }}>balanced</span>
+                    <span className="range-tick range-tick-end">varied</span>
+                  </div>
                 </div>
-              </div>
+              ) : draft.engine === 'chatterbox' ? (
+                <>
+                  <div className="field">
+                    <label htmlFor="library-voice-expression">Expression - {Number(draft.exaggeration).toFixed(2)}</label>
+                    <input
+                      id="library-voice-expression"
+                      name="library-voice-expression"
+                      type="range" min="0.25" max="1" step="0.05"
+                      value={draft.exaggeration}
+                      onChange={event => updateDraft({ exaggeration: parseFloat(event.target.value) })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor="library-voice-cfg">CFG Weight - {Number(draft.cfg_weight).toFixed(2)}</label>
+                    <input
+                      id="library-voice-cfg"
+                      name="library-voice-cfg"
+                      type="range" min="0" max="1" step="0.05"
+                      value={draft.cfg_weight}
+                      onChange={event => updateDraft({ cfg_weight: parseFloat(event.target.value) })}
+                    />
+                  </div>
+                </>
+              ) : null}
               <button className="btn btn-primary w-full" type="submit" disabled={saving}>
                 {saving ? 'Saving...' : isNew ? '+ Save Voice' : 'Save Voice'}
               </button>
@@ -485,58 +635,24 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
 
           <div className="glass p-4 mt-4" style={{ borderRadius: 'var(--radius-sm)' }} data-tip-anchor="voice-library-test">
             <div className="section-title">Test Voice</div>
-            <div className="segmented mb-3" role="group" aria-label="Voice cloning engine">
-              <button
-                type="button"
-                className={`segmented-btn${testEngine === 'f5-tts' ? ' is-active' : ''}`}
-                onClick={() => setTestEngine('f5-tts')}
-                disabled={testing}
-              >
-                F5-TTS
-              </button>
-              <button
-                type="button"
-                className={`segmented-btn${testEngine === 'chatterbox' ? ' is-active' : ''}`}
-                onClick={() => setTestEngine('chatterbox')}
-                disabled={testing}
-              >
-                Chatterbox
-              </button>
+            <div className="text-xs text-muted mb-3">
+              Testing with {ENGINE_LABELS[draft.engine] || draft.engine} using the defaults above.
             </div>
-            {testEngine === 'chatterbox' && (
-              <div className="voice-editor-grid mb-3">
-                <div className="field" style={{ marginBottom: 0 }}>
-                  <label>Expression - {testExaggeration.toFixed(2)}</label>
-                  <input
-                    type="range"
-                    min="0.25"
-                    max="1.0"
-                    step="0.05"
-                    value={testExaggeration}
-                    onChange={event => setTestExaggeration(parseFloat(event.target.value))}
-                  />
-                </div>
-                <div className="field" style={{ marginBottom: 0 }}>
-                  <label>CFG Weight - {testCfgWeight.toFixed(2)}</label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1.0"
-                    step="0.05"
-                    value={testCfgWeight}
-                    onChange={event => setTestCfgWeight(parseFloat(event.target.value))}
-                  />
-                </div>
-              </div>
-            )}
             <textarea
+              name="library-voice-test-text"
+              aria-label="Voice test text"
               rows={3}
               value={testText}
               onChange={event => setTestText(event.target.value)}
             />
             <div className="flex gap-2 items-center mt-3">
-              <button type="button" className="btn btn-secondary" onClick={handleTest} disabled={testing || (isNew && !draft.file)}>
-                {testing ? 'Testing...' : `Test with ${testEngine === 'chatterbox' ? 'Chatterbox' : 'F5-TTS'}`}
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleTest}
+                disabled={testing || (isNew && draftUsesCloneEngine && !draft.file) || (!draftUsesCloneEngine && !draft.provider_voice_id) || (!isNew && !selectedVoice?.engine_configured)}
+              >
+                {testing ? 'Testing...' : `Test with ${ENGINE_LABELS[draft.engine] || draft.engine}`}
               </button>
               <audio ref={audioRef} style={{ flex: 1 }} controls />
             </div>

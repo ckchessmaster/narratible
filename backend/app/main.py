@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from .config import AppConfig, load_config, save_config, get_device_string
 from .logging_config import configure_logging
 from .mcp_server import create_mcp_server
+from .version import APP_VERSION
 from .projects import (
     PROJECTS_DIR,
     ProjectMetadata,
@@ -95,7 +96,7 @@ async def lifespan(_: FastAPI):
         yield
 
 
-app = FastAPI(title="narratible API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="narratible API", version=APP_VERSION, lifespan=lifespan)
 VOICE_SAMPLE_SUFFIXES = {".wav", ".mp3", ".flac"}
 CLOUD_LLM_CONFIG_ERROR = (
     "Cloud LLM cleanup requires a configured Gemini or OpenAI API key. "
@@ -192,7 +193,7 @@ async def api_cancel_task(project_id: str):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 def _nvidia_smi_gpus() -> list[dict]:
@@ -1939,20 +1940,24 @@ class PreviewRequest(BaseModel):
 
 class VoiceLibraryUpdateRequest(BaseModel):
     name: str | None = None
+    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox"] | None = None
+    provider_voice_id: str | None = None
     reference_text: str | None = None
     notes: str | None = None
     speed: float | None = None
     temperature: float | None = None
+    exaggeration: float | None = None
+    cfg_weight: float | None = None
 
 
 class VoiceLibraryTestRequest(BaseModel):
     text: str
     reference_text: str | None = None
-    engine: Literal["f5-tts", "chatterbox"] = "f5-tts"
+    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox"] | None = None
     speed: float | None = None
     temperature: float | None = None
-    exaggeration: float = 0.5
-    cfg_weight: float = 0.3
+    exaggeration: float | None = None
+    cfg_weight: float | None = None
 
 
 class VoiceLibrarySampleRequest(BaseModel):
@@ -1965,11 +1970,37 @@ class VoiceLibraryEnhancementRequest(BaseModel):
     activate: bool = True
 
 
-def _resolve_f5_voice_reference(project_id: str, voice: str):
+def _resolve_clone_voice_reference(project_id: str, engine: str, voice: str):
     if voice and voice != "__uploaded__":
         library_voice = get_library_voice(voice)
+        if not library_voice.engine_configured:
+            raise ValueError(f"Confirm the engine for library voice '{library_voice.name}' before using it.")
+        if library_voice.engine != engine:
+            raise ValueError(
+                f"Library voice '{library_voice.name}' uses {library_voice.engine}, not {engine}."
+            )
         return get_library_voice_sample_path(voice), None, None, library_voice.temperature
     return None, _voices_dir(project_id), None, None
+
+
+def _resolve_library_voice_selection(project_id: str, engine: str, voice: str):
+    if engine in {"f5-tts", "chatterbox"}:
+        sample_path, samples_dir, reference_text, temperature = _resolve_clone_voice_reference(
+            project_id, engine, voice
+        )
+        return voice, sample_path, samples_dir, reference_text, temperature
+
+    try:
+        library_voice = get_library_voice(voice)
+    except FileNotFoundError:
+        return voice, None, None, None, None
+    if not library_voice.engine_configured:
+        raise ValueError(f"Confirm the engine for library voice '{library_voice.name}' before using it.")
+    if library_voice.engine != engine:
+        raise ValueError(f"Library voice '{library_voice.name}' uses {library_voice.engine}, not {engine}.")
+    if not library_voice.provider_voice_id:
+        raise ValueError(f"Choose a provider voice for library voice '{library_voice.name}'.")
+    return library_voice.provider_voice_id, None, None, None, None
 
 
 @app.post("/api/projects/{project_id}/tts/preview")
@@ -1981,18 +2012,16 @@ async def tts_preview(project_id: str, req: PreviewRequest):
 
     preview_path = _project_path(project_id) / "preview.mp3"
     try:
-        voice_sample_path = None
-        voice_reference_text = None
-        voice_samples_dir = None
         voice_temperature = req.temperature
-        if req.engine in {"f5-tts", "chatterbox"}:
-            voice_sample_path, voice_samples_dir, voice_reference_text, saved_temperature = _resolve_f5_voice_reference(project_id, req.voice)
-            voice_temperature = voice_temperature if voice_temperature is not None else saved_temperature
+        effective_voice, voice_sample_path, voice_samples_dir, voice_reference_text, saved_temperature = _resolve_library_voice_selection(
+            project_id, req.engine, req.voice
+        )
+        voice_temperature = voice_temperature if voice_temperature is not None else saved_temperature
         await synthesize_speech(
             text=req.text[:500],
             output_path=preview_path,
             engine=req.engine,
-            voice=req.voice,
+            voice=effective_voice,
             speed=req.speed,
             temperature=voice_temperature if voice_temperature is not None else 0.7,
             exaggeration=req.exaggeration,
@@ -2005,6 +2034,8 @@ async def tts_preview(project_id: str, req: PreviewRequest):
     except FileNotFoundError as e:
         logger.exception("TTS preview could not load a required file")
         raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("TTS preview failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2053,14 +2084,34 @@ async def api_list_voice_library():
 @app.post("/api/voice-library")
 async def api_create_voice_library_item(
     name: str = Form(...),
+    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox"] = Form(...),
+    provider_voice_id: str = Form(""),
     reference_text: str = Form(""),
     notes: str = Form(""),
     speed: float = Form(1.0),
     temperature: float = Form(0.7),
-    file: UploadFile = File(...),
+    exaggeration: float = Form(0.5),
+    cfg_weight: float = Form(0.3),
+    file: UploadFile | None = File(None),
 ):
     try:
-        voice = create_library_voice(name, reference_text, notes, speed, temperature, file.filename or "reference.wav", file.file)
+        if engine in {"edge-tts", "kokoro"}:
+            available_voices = await get_available_voices(engine)
+            if not any(item.get("id") == provider_voice_id for item in available_voices):
+                raise ValueError(f"The selected {engine} voice is not available.")
+        voice = create_library_voice(
+            name,
+            engine,
+            provider_voice_id,
+            reference_text,
+            notes,
+            speed,
+            temperature,
+            exaggeration,
+            cfg_weight,
+            file.filename if file and file.filename else "",
+            file.file if file else None,
+        )
         return voice
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2157,33 +2208,40 @@ async def api_delete_voice_library_sample(voice_id: str, sample_filename: str):
 async def api_test_voice_library_draft(
     text: str = Form(...),
     reference_text: str = Form(""),
-    engine: Literal["f5-tts", "chatterbox"] = Form("f5-tts"),
+    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox"] = Form("f5-tts"),
+    provider_voice_id: str = Form(""),
     speed: float = Form(1.0),
     temperature: float = Form(0.7),
     exaggeration: float = Form(0.5),
     cfg_weight: float = Form(0.3),
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
 ):
-    suffix = Path(file.filename).suffix.lower() if file.filename else ".wav"
-    if suffix not in VOICE_SAMPLE_SUFFIXES:
+    is_clone_engine = engine in {"f5-tts", "chatterbox"}
+    if is_clone_engine and file is None:
+        raise HTTPException(status_code=400, detail="Reference audio is required for F5-TTS and Chatterbox voices.")
+    if not is_clone_engine and not provider_voice_id:
+        raise HTTPException(status_code=400, detail="Choose a provider voice for Edge-TTS or Kokoro.")
+    suffix = Path(file.filename).suffix.lower() if file and file.filename else ".wav"
+    if is_clone_engine and suffix not in VOICE_SAMPLE_SUFFIXES:
         raise HTTPException(status_code=400, detail="Reference audio must be WAV, MP3, or FLAC.")
 
     temp_dir = Path(tempfile.mkdtemp(prefix="narratible_voice_test_"))
     sample_path = temp_dir / f"reference{suffix}"
     preview_path = temp_dir / "voice-preview.mp3"
     try:
-        with open(sample_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+        if file is not None:
+            with open(sample_path, "wb") as f:
+                shutil.copyfileobj(file.file, f)
         await synthesize_speech(
             text=text[:500],
             output_path=preview_path,
             engine=engine,
-            voice="draft",
+            voice="draft" if is_clone_engine else provider_voice_id,
             speed=speed,
             temperature=temperature,
             exaggeration=exaggeration,
             cfg_weight=cfg_weight,
-            voice_sample_path=sample_path,
+            voice_sample_path=sample_path if is_clone_engine else None,
             voice_reference_text=None,
         )
     except Exception as e:
@@ -2202,21 +2260,28 @@ async def api_test_voice_library_draft(
 async def api_test_voice_library_item(voice_id: str, req: VoiceLibraryTestRequest):
     try:
         voice = get_library_voice(voice_id)
+        if not voice.engine_configured:
+            raise ValueError(f"Confirm the engine for library voice '{voice.name}' before testing it.")
+        if req.engine is not None and req.engine != voice.engine:
+            raise ValueError(f"Library voice '{voice.name}' uses {voice.engine}, not {req.engine}.")
         preview_path = get_library_voice_preview_path(voice_id)
+        is_clone_engine = voice.engine in {"f5-tts", "chatterbox"}
         await synthesize_speech(
             text=req.text[:500],
             output_path=preview_path,
-            engine=req.engine,
-            voice=voice.id,
+            engine=voice.engine,
+            voice=voice.id if is_clone_engine else voice.provider_voice_id,
             speed=req.speed if req.speed is not None else voice.speed,
             temperature=req.temperature if req.temperature is not None else voice.temperature,
-            exaggeration=req.exaggeration,
-            cfg_weight=req.cfg_weight,
-            voice_sample_path=get_library_voice_sample_path(voice_id),
+            exaggeration=req.exaggeration if req.exaggeration is not None else voice.exaggeration,
+            cfg_weight=req.cfg_weight if req.cfg_weight is not None else voice.cfg_weight,
+            voice_sample_path=get_library_voice_sample_path(voice_id) if is_clone_engine else None,
             voice_reference_text=None,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Voice library test failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2336,18 +2401,15 @@ async def synthesize_project_chapter(
     save_chapters(project_id, chapters)
 
     try:
-        voice_sample_path = None
-        voice_reference_text = None
-        voice_samples_dir = None
-        voice_temperature = None
-        if engine in {"f5-tts", "chatterbox"}:
-            voice_sample_path, voice_samples_dir, voice_reference_text, voice_temperature = _resolve_f5_voice_reference(project_id, voice)
+        effective_voice, voice_sample_path, voice_samples_dir, voice_reference_text, voice_temperature = _resolve_library_voice_selection(
+            project_id, engine, voice
+        )
 
         await synthesize_speech(
             text=compose_tts_text(chapter.get("title", f"Chapter {index + 1}"), chapter.get("text", ""), read_headings),
             output_path=temp_path,
             engine=engine,
-            voice=voice,
+            voice=effective_voice,
             speed=speed,
             temperature=voice_temperature if voice_temperature is not None else 0.7,
             exaggeration=exaggeration,
@@ -2616,10 +2678,11 @@ async def synthesize_book(
 ):
     try:
         get_project(project_id)
-        if engine in {"f5-tts", "chatterbox"}:
-            _resolve_f5_voice_reference(project_id, voice)
+        _resolve_library_voice_selection(project_id, engine, voice)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     task_id = f"tts-{project_id}"
     _set_task(task_id, "running", "Queued…", 0, stage="Queued")

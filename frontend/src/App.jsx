@@ -1,10 +1,10 @@
 import { useState, useCallback, useEffect } from 'react'
-import { cancelTask, deleteProject, getSystemInfo, getSettings, listProjects } from './api'
+import { cancelTask, deleteProject, getAppInfo, getSystemInfo, getSettings, listProjects } from './api'
 import './App.css'
 import './index.css'
 import Step1Upload from './components/Step1Upload'
 import Step2Editor from './components/Step2Editor'
-import Step3TTS from './components/Step3TTS'
+import Step3TTS from './components/VoiceCatalogStep'
 import Step4Export from './components/Step4Export'
 import SettingsModal from './components/SettingsModal'
 import VoiceLibraryPage from './components/VoiceLibraryPage'
@@ -37,6 +37,7 @@ export default function App() {
   const [hasCloudKey, setHasCloudKey] = useState(false)
   const [hasModernizationLlm, setHasModernizationLlm] = useState(false)
   const [debugMode, setDebugMode] = useState(false)
+  const [appVersion, setAppVersion] = useState(import.meta.env.VITE_APP_VERSION || 'dev')
   const [projects, setProjects] = useState([])
   const [projectsLoading, setProjectsLoading] = useState(false)
   const [deletingProjectId, setDeletingProjectId] = useState(null)
@@ -62,6 +63,11 @@ export default function App() {
 
   // Fetch on mount
   useEffect(() => { refreshHardwareState() }, [refreshHardwareState])
+  useEffect(() => {
+    getAppInfo()
+      .then(appInfo => setAppVersion(appInfo?.version || import.meta.env.VITE_APP_VERSION || 'dev'))
+      .catch(() => {})
+  }, [])
 
   const refreshProjects = useCallback(() => {
     setProjectsLoading(true)
@@ -147,13 +153,14 @@ export default function App() {
           })}
         </nav>
 
-        <div style={{ display: "flex", gap: "0.5rem" }}>
+        <div className="header-actions">
+          <span className="app-version" title={`narratible ${appVersion}`}>v{appVersion}</span>
           <button
             className={`btn btn-ghost btn-sm${view === 'voice-library' ? ' is-active' : ''}`}
             data-tip-anchor="voice-library-button"
             onClick={() => setView('voice-library')}
           >
-            Voice Library
+            Manage Voices
           </button>
           {(step > 1 || projectId) && (
             <button className="btn btn-ghost btn-sm" onClick={() => { if (projectId) cancelTask(projectId).catch(() => {}); setProjectId(null); setStep(1); setMaxStep(1); setView('wizard') }}>

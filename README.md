@@ -44,7 +44,16 @@ cd ..
 
 The first run downloads the CUDA-enabled PyTorch and local voice dependencies,
 so it can take several minutes and requires substantial disk space. Later runs
-reuse `.venv-build` and only synchronize it when a dependency file changes.
+reuse `.venv-build`, only synchronize it when a dependency file changes, and
+skip the expensive ML import preflight when that environment is unchanged.
+
+Each local build gets an identifier such as
+`0.0.0-dev-a1b2c3d-4e5f6a`, which is displayed in the application header and
+embedded in the installer. To build a specific version instead:
+
+```powershell
+.\build_local.ps1 -Version 1.5.0
+```
 
 The executable and its bundled files are written to
 `dist\narratible\narratible.exe`. Run it from that directory so its bundled
@@ -54,6 +63,13 @@ Use `-SkipFrontend` to reuse an existing `frontend\dist` build:
 
 ```powershell
 .\build_local.ps1 -SkipFrontend
+```
+
+For a faster iterative executable build, the packaged TTS import smoke test can
+also be skipped. Run a verified build before distributing the result:
+
+```powershell
+.\build_local.ps1 -SkipFrontend -SkipPackageVerification
 ```
 
 Prepare or verify the build environment without compiling the application:
@@ -76,8 +92,9 @@ To also create `packaging\Output\narratible_Installer.exe`, install
 .\build_local.ps1 -Full
 ```
 
-The environment validation checks that Chatterbox imports successfully and
-that the PyTorch wheel includes CUDA support before PyInstaller starts.
+The installer always shows the destination-directory page so the install
+location can be changed. Installer compression is tuned for faster local and
+CI builds, with a modest installer-size tradeoff.
 
 ---
 
