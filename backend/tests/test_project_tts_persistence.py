@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import main  # noqa: E402
@@ -164,12 +166,19 @@ def test_library_voice_reference_resolution_ignores_saved_transcript(tmp_path, m
     monkeypatch.setattr(
         main,
         "get_library_voice",
-        lambda voice_id: SimpleNamespace(reference_text="This saved transcript is ignored.", temperature=0.8),
+        lambda voice_id: SimpleNamespace(
+            name="Narrator",
+            engine="f5-tts",
+            engine_configured=True,
+            reference_text="This saved transcript is ignored.",
+            temperature=0.8,
+        ),
     )
     monkeypatch.setattr(main, "get_library_voice_sample_path", lambda voice_id: tmp_path / "reference.wav")
 
-    voice_sample_path, voice_samples_dir, voice_reference_text, temperature = main._resolve_f5_voice_reference(
+    voice_sample_path, voice_samples_dir, voice_reference_text, temperature = main._resolve_clone_voice_reference(
         "project-1",
+        "f5-tts",
         "voice-1",
     )
 
@@ -189,7 +198,17 @@ def test_voice_library_test_ignores_request_reference_text(tmp_path, monkeypatch
     monkeypatch.setattr(
         main,
         "get_library_voice",
-        lambda voice_id: SimpleNamespace(id=voice_id, speed=1.0, temperature=0.7, reference_text="Saved text"),
+        lambda voice_id: SimpleNamespace(
+            id=voice_id,
+            name="Narrator",
+            engine="chatterbox",
+            engine_configured=True,
+            speed=1.0,
+            temperature=0.7,
+            exaggeration=0.5,
+            cfg_weight=0.3,
+            reference_text="Saved text",
+        ),
     )
     monkeypatch.setattr(main, "get_library_voice_preview_path", lambda voice_id: tmp_path / "preview.mp3")
     monkeypatch.setattr(main, "get_library_voice_sample_path", lambda voice_id: tmp_path / "reference.wav")
@@ -212,3 +231,42 @@ def test_voice_library_test_ignores_request_reference_text(tmp_path, monkeypatch
     assert calls[0]["engine"] == "chatterbox"
     assert calls[0]["exaggeration"] == 0.65
     assert calls[0]["cfg_weight"] == 0.25
+
+
+def test_clone_voice_reference_rejects_engine_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "get_library_voice",
+        lambda voice_id: SimpleNamespace(
+            name="Narrator",
+            engine="chatterbox",
+            engine_configured=True,
+            temperature=0.7,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="uses chatterbox, not f5-tts"):
+        main._resolve_clone_voice_reference("project-1", "f5-tts", "voice-1")
+
+
+def test_builtin_library_voice_resolves_provider_voice(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "get_library_voice",
+        lambda voice_id: SimpleNamespace(
+            name="Fast Aria",
+            engine="edge-tts",
+            engine_configured=True,
+            provider_voice_id="en-US-AriaNeural",
+        ),
+    )
+
+    effective_voice, sample_path, samples_dir, reference_text, temperature = main._resolve_library_voice_selection(
+        "project-1", "edge-tts", "library-voice-1"
+    )
+
+    assert effective_voice == "en-US-AriaNeural"
+    assert sample_path is None
+    assert samples_dir is None
+    assert reference_text is None
+    assert temperature is None

@@ -1,0 +1,9 @@
+-c constraints.txt
+
+# Optional Qwen3-TTS voice-cloning runtime support. Install these normally,
+# then install qwen-tts itself with --no-deps so its older Transformers and
+# Accelerate pins do not replace narratible's validated shared ML stack.
+gradio==6.25.0
+onnxruntime==1.29.0
+sox==1.5.0
+einops==0.8.2

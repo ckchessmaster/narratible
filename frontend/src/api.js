@@ -30,6 +30,8 @@ async function request(method, path, body, isFormData = false) {
 }
 
 // API endpoints
+export const getAppInfo = () => request('GET', '/health')
+
 // Settings
 export const getSettings = () => request('GET', '/settings')
 export const saveSettings = (cfg) => request('PUT', '/settings', cfg)
@@ -130,13 +132,18 @@ export const chapterAudioUrl = (projectId, chapterId) =>
 
 // Voice library
 export const listLibraryVoices = () => request('GET', '/voice-library')
-export const createLibraryVoice = ({ name, notes, speed, temperature, file }) => {
+export const createLibraryVoice = ({ name, engine, provider_voice_id, reference_text, notes, speed, temperature, exaggeration, cfg_weight, file }) => {
   const fd = new FormData()
   fd.append('name', name)
+  fd.append('engine', engine)
+  fd.append('provider_voice_id', provider_voice_id || '')
+  fd.append('reference_text', reference_text || '')
   fd.append('notes', notes || '')
   fd.append('speed', speed ?? 1.0)
   fd.append('temperature', temperature ?? 0.7)
-  fd.append('file', file)
+  fd.append('exaggeration', exaggeration ?? 0.5)
+  fd.append('cfg_weight', cfg_weight ?? 0.3)
+  if (file) fd.append('file', file)
   return request('POST', '/voice-library', fd, true)
 }
 export const updateLibraryVoice = (id, updates) => request('PATCH', `/voice-library/${encodeURIComponent(id)}`, updates)
@@ -157,15 +164,17 @@ export const enhanceLibraryVoiceSample = (id, options = {}) =>
   })
 export const deleteLibraryVoiceSample = (id, sampleFilename) =>
   request('DELETE', `/voice-library/${encodeURIComponent(id)}/samples/${encodeURIComponent(sampleFilename)}`)
-export const testDraftLibraryVoice = ({ text, engine, speed, temperature, exaggeration, cfg_weight, file }) => {
+export const testDraftLibraryVoice = ({ text, engine, provider_voice_id, reference_text, speed, temperature, exaggeration, cfg_weight, file }) => {
   const fd = new FormData()
   fd.append('text', text)
   fd.append('engine', engine || 'f5-tts')
+  fd.append('provider_voice_id', provider_voice_id || '')
+  fd.append('reference_text', reference_text || '')
   fd.append('speed', speed ?? 1.0)
   fd.append('temperature', temperature ?? 0.7)
   fd.append('exaggeration', exaggeration ?? 0.5)
   fd.append('cfg_weight', cfg_weight ?? 0.3)
-  fd.append('file', file)
+  if (file) fd.append('file', file)
   return fetch(`${BASE}/voice-library/test-draft`, {
     method: 'POST',
     body: fd,

@@ -1,8 +1,10 @@
 param(
     [switch]$SkipFrontend = $false,
+    [switch]$SkipPackageVerification = $false,
     [switch]$Full = $false,
     [switch]$RecreateBuildEnv = $false,
-    [switch]$SetupOnly = $false
+    [switch]$SetupOnly = $false,
+    [string]$Version = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,6 +12,20 @@ $repoRoot = $PSScriptRoot
 $buildEnv = Join-Path $repoRoot ".venv-build"
 $buildPython = Join-Path $buildEnv "Scripts\python.exe"
 $dependencyStamp = Join-Path $buildEnv ".dependency-fingerprint"
+
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $commit = (& git rev-parse --short=7 HEAD 2>$null)
+    if ([string]::IsNullOrWhiteSpace($commit)) {
+        $commit = "local"
+    }
+    $nonce = [guid]::NewGuid().ToString("N").Substring(0, 6)
+    $Version = "0.0.0-dev-$commit-$nonce"
+}
+if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z.+-]*$') {
+    throw "Version '$Version' contains unsupported characters. Use letters, numbers, dots, plus signs, and hyphens."
+}
+$env:NARRATIBLE_APP_VERSION = $Version
+$env:VITE_APP_VERSION = $Version
 
 function Test-Python312 {
     param(
@@ -70,6 +86,7 @@ if ($SetupOnly) {
     Write-Host " Building narratible (exe only)" -ForegroundColor Cyan
     Write-Host "=====================================" -ForegroundColor Cyan
 }
+Write-Host "Version: $Version" -ForegroundColor DarkGray
 
 # 1. Prepare the isolated Python build environment
 Write-Host "`n[1] Preparing dedicated build environment..." -ForegroundColor Yellow
@@ -89,7 +106,8 @@ $dependencyFiles = @(
     (Join-Path $repoRoot "backend\requirements.txt"),
     (Join-Path $repoRoot "backend\requirements-build.txt"),
     (Join-Path $repoRoot "backend\requirements-gpu.txt"),
-    (Join-Path $repoRoot "backend\requirements-chatterbox.txt")
+    (Join-Path $repoRoot "backend\requirements-chatterbox.txt"),
+    (Join-Path $repoRoot "backend\requirements-qwen3-tts.txt")
 )
 $fingerprintLines = @(
     "python=3.12",
@@ -117,13 +135,19 @@ if ($installedFingerprint -ne $dependencyFingerprint.Trim()) {
     Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "-r", $dependencyFiles[2]) -Description "Installing PyInstaller"
     Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "-r", $dependencyFiles[3]) -Description "Installing local voice engines"
     Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "-r", $dependencyFiles[4]) -Description "Installing Chatterbox"
+    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "-r", $dependencyFiles[5]) -Description "Installing Qwen3-TTS support"
+    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "--no-deps", "-c", $dependencyFiles[0], "qwen-tts==0.1.1") -Description "Installing Qwen3-TTS"
     Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "--upgrade", "--force-reinstall", "-c", $dependencyFiles[0], "torch==2.11.0", "torchaudio==2.11.0", "--index-url", "https://download.pytorch.org/whl/cu128") -Description "Restoring CUDA-enabled PyTorch"
     $dependenciesInstalled = $true
 } else {
     Write-Host "Build dependencies are current." -ForegroundColor DarkGray
 }
 
-Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-c", "from PyInstaller import __version__ as pyinstaller_version; from chatterbox.tts import ChatterboxTTS; from f5_tts.api import F5TTS; from kokoro import KPipeline; import en_core_web_sm, torch, torchaudio, sys; en_core_web_sm.load(disable=['tok2vec', 'tagger', 'parser', 'attribute_ruler', 'lemmatizer', 'ner']); print('Build environment ready | PyInstaller', pyinstaller_version, '| torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| cuda', torch.version.cuda); sys.exit(0 if torch.version.cuda else 1)") -Description "Validating the build environment"
+if ($dependenciesInstalled -or $SetupOnly -or $RecreateBuildEnv) {
+    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-c", "from PyInstaller import __version__ as pyinstaller_version; from chatterbox.tts import ChatterboxTTS; from f5_tts.api import F5TTS; from kokoro import KPipeline; from qwen_tts import Qwen3TTSModel; import en_core_web_sm, torch, torchaudio, sys; en_core_web_sm.load(disable=['tok2vec', 'tagger', 'parser', 'attribute_ruler', 'lemmatizer', 'ner']); print('Build environment ready | PyInstaller', pyinstaller_version, '| torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| cuda', torch.version.cuda); sys.exit(0 if torch.version.cuda else 1)") -Description "Validating the build environment"
+} else {
+    Write-Host "Build environment unchanged; skipping heavyweight dependency import checks." -ForegroundColor DarkGray
+}
 if ($dependenciesInstalled) {
     Set-Content -Path $dependencyStamp -Value $dependencyFingerprint
     $pyinstallerWorkPath = Join-Path $repoRoot "build\pyinstaller-work"
@@ -155,9 +179,15 @@ Write-Host "`n[3] Freezing Python backend with PyInstaller..." -ForegroundColor 
 # --workpath keeps the analysis cache between runs so re-builds are faster
 Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "PyInstaller", "narratible.spec", "--noconfirm", "--workpath", "build\pyinstaller-work", "--distpath", "dist") -Description "Freezing narratible with PyInstaller"
 
-Write-Host "`nVerifying bundled TTS runtimes..." -ForegroundColor Yellow
-$packagedExecutable = Join-Path $repoRoot "dist\narratible\narratible.exe"
-Invoke-NativeCommand -FilePath $packagedExecutable -ArgumentList @("--verify-tts-imports") -Description "Validating packaged TTS imports"
+$packageDirectory = Join-Path $repoRoot "dist\narratible"
+$packagedExecutable = Join-Path $packageDirectory "narratible.exe"
+Set-Content -Path (Join-Path $packageDirectory "app-version.txt") -Value $Version -NoNewline
+if (-not $SkipPackageVerification) {
+    Write-Host "`nVerifying bundled TTS runtimes..." -ForegroundColor Yellow
+    Invoke-NativeCommand -FilePath $packagedExecutable -ArgumentList @("--verify-tts-imports") -Description "Validating packaged TTS imports"
+} else {
+    Write-Host "`nSkipping packaged TTS runtime verification..." -ForegroundColor DarkGray
+}
 
 Write-Host "`nSUCCESS! Executable is at: dist\narratible\narratible.exe" -ForegroundColor Green
 
@@ -170,10 +200,7 @@ Write-Host "`n[4] Compiling Inno Setup installer..." -ForegroundColor Yellow
 $isccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
 if (Test-Path $isccPath) {
-    # Read version from desktop_app.py so local builds match what the workflow does
-    $version = (Select-String -Path desktop_app.py -Pattern 'APP_VERSION = "([^"]+)"').Matches[0].Groups[1].Value
-    if (-not $version) { $version = "0.0.0-dev" }
-    & $isccPath "/DMyAppVersion=$version" "packaging\installer.iss"
+    & $isccPath "/DMyAppVersion=$Version" "packaging\installer.iss"
     if ($LASTEXITCODE -eq 0) {
         Write-Host "`nSUCCESS! Installer is at: packaging\Output\narratible_Installer.exe" -ForegroundColor Green
     } else {

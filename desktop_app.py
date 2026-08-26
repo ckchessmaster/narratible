@@ -10,9 +10,6 @@ import requests
 import tkinter as tk
 from tkinter import messagebox
 
-# Current App Version
-APP_VERSION = "0.1.0"
-
 # Set python path to backend to avoid structural import issues
 sys.path.insert(0, str(Path(__file__).parent / "backend"))
 
@@ -21,6 +18,7 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()
 
 from backend.app.hf_cache import configure_frozen_huggingface_cache
+from backend.app.version import APP_VERSION
 
 configure_frozen_huggingface_cache()
 
@@ -53,6 +51,7 @@ def _verify_packaged_tts_imports():
     from kokoro import KPipeline  # noqa: F401
     from f5_tts.api import F5TTS  # noqa: F401
     from chatterbox.tts import ChatterboxTTS  # noqa: F401
+    from qwen_tts import Qwen3TTSModel  # noqa: F401
     from perth.perth_net import PerthImplicitWatermarker
 
     en_core_web_sm.load(

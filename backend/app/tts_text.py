@@ -14,7 +14,7 @@ import unicodedata
 from .parsing_modules import apply_tts_modules
 
 
-LOCAL_TTS_ENGINES = {"kokoro", "f5-tts", "chatterbox"}
+LOCAL_TTS_ENGINES = {"kokoro", "f5-tts", "chatterbox", "qwen3-tts"}
 
 
 @dataclass(frozen=True)
@@ -133,6 +133,8 @@ def segment_text_for_tts(text: str, engine: str = "edge-tts") -> list[TTSSegment
         max_chars = 420
     elif engine == "chatterbox":
         max_chars = 500
+    elif engine == "qwen3-tts":
+        max_chars = 600
     else:
         max_chars = 900
     sentence_pause_ms = 240 if engine == "chatterbox" else 260
@@ -155,7 +157,7 @@ def segment_text_for_tts(text: str, engine: str = "edge-tts") -> list[TTSSegment
                 pause = sentence_pause_ms
             segments.append(TTSSegment(piece, pause))
 
-    if engine in {"f5-tts", "chatterbox"}:
+    if engine in {"f5-tts", "chatterbox", "qwen3-tts"}:
         return _merge_f5_segments(segments, max_chars)
     return segments
 

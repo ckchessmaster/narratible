@@ -19,7 +19,7 @@ For Windows users who want to run the app natively without Docker or starting se
 3. Run the installer and launch narratible from your Start Menu.
    - A background server will initialize quietly, and your default web browser will open to the app natively.
    - During the installation, FFmpeg is automatically downloaded via Windows Package Manager (`winget`) so that high-quality audio merging is fully enabled without triggering GPL distribution violations in the installer.
-   - The installer bundles all other core dependencies (including the PyTorch CUDA extensions offline) so you can use high-quality local TTS engines like Kokoro and F5-TTS without any extra config.
+   - The installer bundles all other core dependencies (including the PyTorch CUDA extensions offline) so you can use high-quality local TTS engines like Kokoro, F5-TTS, and Chatterbox without extra dependency setup. Qwen3-TTS remains experimental and is disabled in the UI.
 
 *Note: Data and configuration for packaged apps are saved in your user profile at `%APPDATA%\narratible`.*
 
@@ -27,7 +27,7 @@ For Windows users who want to run the app natively without Docker or starting se
 
 Local native builds require Windows, Python 3.12, and Node.js 20. The build
 script creates a dedicated `.venv-build` environment and installs the locked
-backend, GPU voice, Chatterbox, and PyInstaller dependencies automatically.
+backend, GPU voice, Chatterbox, Qwen3-TTS, and PyInstaller dependencies automatically.
 It does not modify or depend on the development environment in `backend\.venv`.
 
 From the repository root:
@@ -44,7 +44,16 @@ cd ..
 
 The first run downloads the CUDA-enabled PyTorch and local voice dependencies,
 so it can take several minutes and requires substantial disk space. Later runs
-reuse `.venv-build` and only synchronize it when a dependency file changes.
+reuse `.venv-build`, only synchronize it when a dependency file changes, and
+skip the expensive ML import preflight when that environment is unchanged.
+
+Each local build gets an identifier such as
+`0.0.0-dev-a1b2c3d-4e5f6a`, which is displayed in the application header and
+embedded in the installer. To build a specific version instead:
+
+```powershell
+.\build_local.ps1 -Version 1.5.0
+```
 
 The executable and its bundled files are written to
 `dist\narratible\narratible.exe`. Run it from that directory so its bundled
@@ -54,6 +63,13 @@ Use `-SkipFrontend` to reuse an existing `frontend\dist` build:
 
 ```powershell
 .\build_local.ps1 -SkipFrontend
+```
+
+For a faster iterative executable build, the packaged TTS import smoke test can
+also be skipped. Run a verified build before distributing the result:
+
+```powershell
+.\build_local.ps1 -SkipFrontend -SkipPackageVerification
 ```
 
 Prepare or verify the build environment without compiling the application:
@@ -76,8 +92,9 @@ To also create `packaging\Output\narratible_Installer.exe`, install
 .\build_local.ps1 -Full
 ```
 
-The environment validation checks that Chatterbox imports successfully and
-that the PyTorch wheel includes CUDA support before PyInstaller starts.
+The installer always shows the destination-directory page so the install
+location can be changed. Installer compression is tuned for faster local and
+CI builds, with a modest installer-size tradeoff.
 
 ---
 
@@ -101,6 +118,8 @@ python run.py                   # starts FastAPI on http://localhost:8000
 > .venv\Scripts\pip install -r requirements.txt
 > .venv\Scripts\pip install -r requirements-gpu.txt
 > .venv\Scripts\pip install -r requirements-chatterbox.txt  # optional
+> .venv\Scripts\pip install -r requirements-qwen3-tts.txt   # optional support packages
+> .venv\Scripts\pip install --no-deps -c constraints.txt "qwen-tts==0.1.1"
 > .venv\Scripts\pip install --force-reinstall -c constraints.txt "torch==2.11.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu128
 > ```
 
@@ -174,26 +193,31 @@ The API is also available directly at **http://localhost:8000/docs** (Swagger UI
 | Kokoro-82M | Great | Fast (GPU) | Local model (auto-downloaded) |
 | F5-TTS Clone | Excellent | Moderate (GPU) | Your `.wav` voice sample |
 | Chatterbox Clone | Excellent | Moderate | Your voice sample; CUDA, MPS, or CPU |
+| Qwen3-TTS Clone | Coming soon | Experimental | Disabled in the UI pending generation stabilization |
 
 Local engines use narratible's audio-only text preparation layer before
 synthesis. This expands high-confidence speech forms such as scripture ranges
 (`Matthew 10:14-15` -> `Matthew 10, verses 14 through 15`), common
 abbreviations (`etc.` -> `et cetera`), and units (`55 mph` -> `55 miles per
 hour`) while preserving the original chapter text and EPUB output. Kokoro,
-F5-TTS, and Chatterbox also receive shorter speech segments with explicit pauses between
+F5-TTS, Chatterbox, and Qwen3-TTS also receive shorter speech segments with explicit pauses between
 sentences and paragraphs to improve long-form pacing.
 
 Edge-TTS may still pronounce unusual domain text more naturally because the
 hosted service has a larger proprietary text-normalization and prosody front
-end. Kokoro has a lighter local pipeline, while F5-TTS and Chatterbox prioritize
+end. Kokoro has a lighter local pipeline, while F5-TTS, Chatterbox, and Qwen3-TTS prioritize
 voice cloning, so narratible adds these deterministic speech cues locally.
 
-### Voice Library with F5-TTS or Chatterbox
+### Voice Library with clone engines
 1. Record a clean 10-15 second `.wav` clip of the voice you want to clone.
 2. Open **Voice Library**, create a reusable voice, and test it before saving or using it.
-3. In Step 3, select **F5-TTS Clone** or **Chatterbox Clone** and choose a saved voice.
+3. Choose F5-TTS or Chatterbox and select the saved voice in Step 3.
 4. Model weights download automatically on first use (~800 MB for F5-TTS or
-   ~3 GB for Chatterbox).
+   ~3 GB for Chatterbox and ~4 GB for Qwen3-TTS 1.7B).
+
+The Qwen3-TTS backend integration is experimental and currently disabled in the
+UI while generation stability is improved. Its optional runtime dependencies
+remain available for development and compatibility work.
 
 Chatterbox uses narration-tuned defaults (`cfg_weight=0.3`,
 `exaggeration=0.5`), removes generated dead air at segment boundaries, and
@@ -216,6 +240,15 @@ Narratible uses the selected CUDA device when available, Apple Metal on a Mac,
 and otherwise CPU. Selecting CPU explicitly in Settings is also respected.
 The official Windows installer already includes Chatterbox and a compatible
 CUDA-enabled PyTorch build; these manual steps are only for source checkouts.
+
+Qwen3-TTS is also installed separately because its package pins older shared ML
+libraries than narratible. Install its support packages first, then install the
+engine without dependencies:
+
+```bash
+python -m pip install -r backend/requirements-qwen3-tts.txt
+python -m pip install --no-deps -c backend/constraints.txt "qwen-tts==0.1.1"
+```
 
 #### Optional AI reference cleanup
 

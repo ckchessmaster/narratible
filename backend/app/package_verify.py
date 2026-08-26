@@ -12,7 +12,7 @@ def verify_packaged_frontend(frontend_dir: Path) -> str:
 
     script_path = frontend_dir / script_match.group(1).lstrip("/")
     script_text = script_path.read_text(encoding="utf-8")
-    required_labels = ("Edge-TTS", "Kokoro-82M", "F5-TTS Clone", "Chatterbox Clone")
+    required_labels = ("Edge-TTS", "Kokoro", "F5-TTS", "Chatterbox", "Qwen3-TTS")
     missing_labels = [label for label in required_labels if label not in script_text]
     if missing_labels:
         raise RuntimeError(

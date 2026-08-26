@@ -116,6 +116,26 @@ export const TIPS = [
 
   // ── Wizard · Step 3 (Voice) ───────────────────────────────────────────
   {
+    id: 'w3-catalog', context: 'wizard', step: 3, anchor: 'voice-catalog', placement: 'bottom',
+    title: 'Choose a narrator',
+    body: 'Recommended built-in voices and your custom voices now live together. Choosing one also chooses its TTS engine.',
+  },
+  {
+    id: 'w3-custom-voices', context: 'wizard', step: 3, anchor: 'custom-voices', placement: 'bottom',
+    title: 'Your saved voices',
+    body: 'Save Edge-TTS, Kokoro, F5-TTS, or Chatterbox voices with reusable defaults. Qwen3-TTS is visible as a coming-soon option.',
+  },
+  {
+    id: 'w3-browse-voices', context: 'wizard', step: 3, anchor: 'browse-voices', placement: 'bottom',
+    title: 'Browse built-in voices',
+    body: 'Open the full Edge-TTS and Kokoro catalog, then filter by engine, name, or locale.',
+  },
+  {
+    id: 'w3-project-settings', context: 'wizard', step: 3, anchor: 'voice-project-settings', placement: 'top',
+    title: 'Tune this project',
+    body: 'These controls apply to this book. Your saved custom voice keeps its own defaults for future selections.',
+  },
+  {
     id: 'w3-engine', context: 'wizard', step: 3, anchor: 'engine-select', placement: 'bottom',
     title: 'Pick an engine',
     body: 'Edge-TTS is free and online. Kokoro and Voice Library generation run locally on a GPU.',
@@ -145,12 +165,12 @@ export const TIPS = [
   {
     id: 'vl-create', context: 'voice-library', anchor: 'voice-library-create', placement: 'right',
     title: 'Create once',
-    body: 'Save one clean reference here, then test it with either F5-TTS or Chatterbox before using it in the wizard.',
+    body: 'Compare online, local, and voice-cloning engines here. Each choice explains its speed, quality, and hardware tradeoffs.',
   },
   {
     id: 'vl-test', context: 'voice-library', anchor: 'voice-library-test', placement: 'left',
-    title: 'Compare clone engines',
-    body: 'Test the same reference with F5-TTS or Chatterbox, then tune the engine-specific controls before selecting it in the TTS step.',
+    title: 'Test voice defaults',
+    body: 'Hear the voice through its associated engine and tune the defaults that future projects receive when selecting it.',
   },
   {
     id: 'vl-list', context: 'voice-library', anchor: 'voice-library-list', placement: 'top',

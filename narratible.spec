@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 # narratible PyInstaller spec — GPU build only.
-# All embedded ML engines (transformers, kokoro, f5-tts, Chatterbox,
+# All embedded ML engines (transformers, kokoro, f5-tts, Chatterbox, Qwen3-TTS,
 # bitsandbytes) are expected
 # to be installed in the build environment. Build will fail if they are absent.
 
@@ -110,6 +110,18 @@ for _dist in [
     except Exception:
         pass
 
+# Qwen3-TTS dynamically loads its model and tokenizer implementation. Model
+# weights remain in the normal Hugging Face cache and download on first use.
+_d, _b, _h = collect_all('qwen_tts')
+datas += _d
+binaries += _b
+hiddenimports += _h
+for _dist in ['qwen-tts', 'onnxruntime', 'sox', 'einops']:
+    try:
+        datas += copy_metadata(_dist)
+    except Exception:
+        pass
+
 # bitsandbytes loads platform-specific shared libraries via ctypes.
 _d, _b, _h = collect_all('bitsandbytes')
 datas += _d
@@ -120,7 +132,7 @@ hiddenimports += _h
 # which requires real .py files on disk — PyInstaller normally discards them.
 # collect_data_files with include_py_files=True copies the source alongside the
 # compiled bytecode in _internal/ so inspect can find them by path.
-for _ts_pkg in ['vocos', 'f5_tts', 'chatterbox']:
+for _ts_pkg in ['vocos', 'f5_tts', 'chatterbox', 'qwen_tts']:
     try:
         datas += collect_data_files(_ts_pkg, include_py_files=True)
     except Exception:
