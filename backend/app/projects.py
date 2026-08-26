@@ -38,6 +38,8 @@ class ProjectMetadata(BaseModel):
     tts_engine: str = "edge-tts"
     tts_voice: str = "en-US-AriaNeural"
     tts_speed: float = 1.0
+    tts_exaggeration: float = 0.5
+    tts_cfg_weight: float = 0.3
     tts_read_headings: bool = True
     enabled_modules: list[str] = Field(default_factory=list)
     chapter_count: int = 0
@@ -97,7 +99,16 @@ def chapter_text_hash(title: str, text: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def tts_settings_hash(*, engine: str, voice: str, speed: float, read_headings: bool, enabled_modules: list[str] | None = None) -> str:
+def tts_settings_hash(
+    *,
+    engine: str,
+    voice: str,
+    speed: float,
+    read_headings: bool,
+    enabled_modules: list[str] | None = None,
+    exaggeration: float = 0.5,
+    cfg_weight: float = 0.3,
+) -> str:
     settings = {
         "engine": engine,
         "voice": voice,
@@ -105,6 +116,9 @@ def tts_settings_hash(*, engine: str, voice: str, speed: float, read_headings: b
         "read_headings": bool(read_headings),
         "enabled_modules": sorted(enabled_modules or []),
     }
+    if engine == "chatterbox":
+        settings["exaggeration"] = round(float(exaggeration), 3)
+        settings["cfg_weight"] = round(float(cfg_weight), 3)
     return hashlib.sha256(json.dumps(settings, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
@@ -151,7 +165,15 @@ def create_project(title: str, author: str = "") -> ProjectMetadata:
 def update_project(project_id: str, updates: dict) -> ProjectMetadata:
     meta = get_project(project_id)
     clean_updates = {key: value for key, value in updates.items() if key not in {"id", "created_at"}}
-    tts_keys = {"tts_engine", "tts_voice", "tts_speed", "tts_read_headings", "enabled_modules"}
+    tts_keys = {
+        "tts_engine",
+        "tts_voice",
+        "tts_speed",
+        "tts_exaggeration",
+        "tts_cfg_weight",
+        "tts_read_headings",
+        "enabled_modules",
+    }
     tts_settings_changed = any(
         key in clean_updates and getattr(meta, key) != clean_updates[key]
         for key in tts_keys
@@ -290,6 +312,8 @@ def mark_tts_stale_for_settings(project_id: str, meta: ProjectMetadata):
         engine=meta.tts_engine,
         voice=meta.tts_voice,
         speed=meta.tts_speed,
+        exaggeration=meta.tts_exaggeration,
+        cfg_weight=meta.tts_cfg_weight,
         read_headings=meta.tts_read_headings,
         enabled_modules=meta.enabled_modules,
     )

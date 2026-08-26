@@ -57,7 +57,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
-          key: pip-gpu-${{ runner.os }}-cu128-torch2.11-${{ hashFiles('backend/requirements-gpu.txt', 'backend/constraints.txt') }}
+          key: pip-gpu-${{ runner.os }}-cu128-torch2.11-${{ hashFiles('backend/requirements-gpu.txt', 'backend/requirements-chatterbox.txt', 'backend/constraints.txt') }}
           restore-keys: pip-gpu-${{ runner.os }}-cu128-
 
       - name: Cache PyInstaller work directory
@@ -91,6 +91,14 @@ jobs:
       - name: Install GPU ML Components
         run: |
           pip install -r backend/requirements-gpu.txt
+          # Chatterbox pins an older torch build in its package metadata. Install
+          # all of its dependencies first, then restore the CUDA build selected by
+          # this release below. Runtime compatibility is checked before freezing.
+          pip install -r backend/requirements-chatterbox.txt
+
+      - name: Restore release PyTorch build
+        run: |
+          pip install --upgrade --force-reinstall -c backend/constraints.txt "torch==2.11.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu128
 
       - name: Verify CUDA-enabled PyTorch
         shell: pwsh
@@ -100,10 +108,19 @@ jobs:
           # what determines whether the shipped app can ever reach a GPU.
           python -c "import torch, torchaudio, sys; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| cuda', torch.version.cuda); sys.exit(0 if torch.version.cuda else 1)"
           if ($LASTEXITCODE -ne 0) { throw 'PyTorch is a CPU-only build (torch.version.cuda is None). Aborting to avoid shipping a non-GPU installer.' }
+          python -c "from chatterbox.tts import ChatterboxTTS; import torch; print('Chatterbox import OK with torch', torch.__version__)"
 
       - name: Compile PyInstaller Standalone App
         run: |
           python -m PyInstaller narratible.spec --noconfirm --workpath build\pyinstaller-work --distpath dist
+
+      - name: Verify packaged TTS imports
+        shell: pwsh
+        run: |
+          & 'dist\narratible\narratible.exe' --verify-tts-imports
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged TTS import verification failed (exit code $LASTEXITCODE)."
+          }
 
       - name: Verify CUDA libraries bundled in dist
         shell: pwsh
@@ -111,6 +128,12 @@ jobs:
           $libDir = 'dist\narratible\_internal\torch\lib'
           if (-not (Test-Path "$libDir\torch_cuda.dll")) {
             throw "torch_cuda.dll not found in $libDir — the frozen build is CPU-only."
+          }
+          if (-not (Test-Path 'dist\narratible\_internal\chatterbox')) {
+            throw 'Chatterbox package not found in frozen distribution.'
+          }
+          if (-not (Test-Path 'dist\narratible\_internal\optional_runtime\voice_enhancement.py')) {
+            throw 'Isolated voice-enhancement worker not found in frozen distribution.'
           }
           Write-Host 'Confirmed torch_cuda.dll present in dist.'
 

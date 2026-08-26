@@ -20,6 +20,63 @@ sys.path.insert(0, str(Path(__file__).parent / "backend"))
 if __name__ == '__main__':
     multiprocessing.freeze_support()
 
+from backend.app.hf_cache import configure_frozen_huggingface_cache
+
+configure_frozen_huggingface_cache()
+
+
+def _verify_packaged_frontend():
+    """Verify the app shell references a bundle with every TTS engine."""
+    if not getattr(sys, "frozen", False):
+        return
+
+    from backend.app.package_verify import verify_packaged_frontend
+
+    frontend_dir = Path(sys._MEIPASS) / "frontend_dist"
+    bundle_name = verify_packaged_frontend(frontend_dir)
+    print("Packaged frontend OK | bundle", bundle_name)
+
+
+def _verify_packaged_tts_imports():
+    """Import every bundled TTS runtime and its packaged support assets."""
+    _verify_packaged_frontend()
+    import numpy
+    import scipy.linalg
+    import scipy.sparse
+    import torch
+    import torchaudio
+
+    from backend.app.tts import _prepare_frozen_torch
+
+    _prepare_frozen_torch(torch)
+    import en_core_web_sm
+    from kokoro import KPipeline  # noqa: F401
+    from f5_tts.api import F5TTS  # noqa: F401
+    from chatterbox.tts import ChatterboxTTS  # noqa: F401
+    from perth.perth_net import PerthImplicitWatermarker
+
+    en_core_web_sm.load(
+        disable=["tok2vec", "tagger", "parser", "attribute_ruler", "lemmatizer", "ner"]
+    )
+    PerthImplicitWatermarker()
+
+    print(
+        "Packaged TTS imports OK | numpy",
+        numpy.__version__,
+        "| torch",
+        torch.__version__,
+        "| torchaudio",
+        torchaudio.__version__,
+        "| cuda",
+        torch.version.cuda,
+    )
+
+
+if __name__ == "__main__" and "--verify-tts-imports" in sys.argv:
+    _verify_packaged_tts_imports()
+    raise SystemExit(0)
+
+
 from backend.app.main import app
 
 def check_for_updates():

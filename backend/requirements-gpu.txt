@@ -2,5 +2,6 @@
 
 # Local voice engines. Transformers is pinned to an immutable Git commit.
 kokoro==0.9.4
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 f5-tts==1.1.22
 transformers @ git+https://github.com/huggingface/transformers.git@a530903e4e61784ca980bdbbca187f2b4db5ed59

@@ -27,12 +27,19 @@ RUN python -m pip install --no-cache-dir "pip==26.2.1" && \
     python -m pip install --no-cache-dir -c constraints.txt "torch==2.5.1" "torchvision==0.20.1" "torchaudio==2.5.1" --index-url https://download.pytorch.org/whl/cu124
 
 # Core app dependencies
-COPY requirements.txt requirements-gpu.txt ./
+COPY requirements.txt requirements-gpu.txt requirements-chatterbox.txt ./
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
-# Kokoro + F5-TTS voice engines (torchcodec removed — not needed for TTS)
+# Local voice engines. Chatterbox may replace PyTorch while resolving its
+# dependencies, so restore the CUDA 12.4 wheels selected for this image.
 RUN python -m pip install --no-cache-dir -r requirements-gpu.txt && \
-    python -m pip uninstall -y torchcodec
+    python -m pip install --no-cache-dir -r requirements-chatterbox.txt && \
+    python -m pip uninstall -y torchcodec && \
+    python -m pip install --no-cache-dir --force-reinstall --no-deps -c constraints.txt \
+        "triton==3.1.0" && \
+    python -m pip install --no-cache-dir --force-reinstall --no-deps -c constraints.txt \
+        "torch==2.5.1" "torchvision==0.20.1" "torchaudio==2.5.1" \
+        --index-url https://download.pytorch.org/whl/cu124
 
 COPY . .
 RUN mkdir -p projects

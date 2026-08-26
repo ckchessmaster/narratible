@@ -1,0 +1,6 @@
+# Optional Chatterbox voice-cloning engine.
+#
+# Chatterbox pins a broadly compatible PyTorch build. After installing this
+# file, install the PyTorch wheel recommended for the machine's CUDA, MPS, or
+# CPU platform: https://pytorch.org/get-started/locally/
+chatterbox-tts==0.1.7

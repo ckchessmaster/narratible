@@ -29,20 +29,3 @@ _imeta.Distribution.from_name = staticmethod(_safe_from_name)
 
 # The module-level alias is a separate name binding; patch it too.
 _imeta.from_name = _safe_from_name
-
-# ---------------------------------------------------------------------------
-# TorchScript source-access fix
-# ---------------------------------------------------------------------------
-# torch.jit.script compiles functions by calling inspect.getsource(), which
-# requires the original .py file on disk. PyInstaller compiles .py -> .pyc and
-# the source paths (co_filename) point to the build-time venv, not _internal/.
-# Replacing torch.jit.script with a no-op identity function here — before any
-# ML package is imported — means @torch.jit.script decorators in vocos, f5_tts,
-# etc. silently leave the functions as plain Python. Inference is unaffected.
-try:
-    import torch as _torch
-    if not getattr(_torch.jit, '_narratible_noop', False):
-        _torch.jit.script = lambda fn, *a, **kw: fn
-        _torch.jit._narratible_noop = True
-except Exception:
-    pass

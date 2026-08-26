@@ -1,0 +1,2 @@
+# Install this in a separate virtual environment; see README.md.
+resemble-enhance==0.0.1

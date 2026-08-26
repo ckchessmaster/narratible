@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import shutil
 import os
@@ -64,6 +65,11 @@ from .voices import (
     list_library_voices,
     set_library_voice_sample,
     update_library_voice,
+)
+from .voice_enhancement import (
+    VoiceEnhancementDeviceError,
+    VoiceEnhancementUnavailableError,
+    enhance_reference_audio,
 )
 from .runtime_state import save_task_snapshot
 
@@ -1927,6 +1933,8 @@ class PreviewRequest(BaseModel):
     voice: str = "en-US-AriaNeural"
     speed: float = 1.0
     temperature: float | None = None
+    exaggeration: float = 0.5
+    cfg_weight: float = 0.3
 
 
 class VoiceLibraryUpdateRequest(BaseModel):
@@ -1940,12 +1948,21 @@ class VoiceLibraryUpdateRequest(BaseModel):
 class VoiceLibraryTestRequest(BaseModel):
     text: str
     reference_text: str | None = None
+    engine: Literal["f5-tts", "chatterbox"] = "f5-tts"
     speed: float | None = None
     temperature: float | None = None
+    exaggeration: float = 0.5
+    cfg_weight: float = 0.3
 
 
 class VoiceLibrarySampleRequest(BaseModel):
     sample_filename: str
+
+
+class VoiceLibraryEnhancementRequest(BaseModel):
+    device: str = "auto"
+    nfe: int = 32
+    activate: bool = True
 
 
 def _resolve_f5_voice_reference(project_id: str, voice: str):
@@ -1968,7 +1985,7 @@ async def tts_preview(project_id: str, req: PreviewRequest):
         voice_reference_text = None
         voice_samples_dir = None
         voice_temperature = req.temperature
-        if req.engine == "f5-tts":
+        if req.engine in {"f5-tts", "chatterbox"}:
             voice_sample_path, voice_samples_dir, voice_reference_text, saved_temperature = _resolve_f5_voice_reference(project_id, req.voice)
             voice_temperature = voice_temperature if voice_temperature is not None else saved_temperature
         await synthesize_speech(
@@ -1978,13 +1995,16 @@ async def tts_preview(project_id: str, req: PreviewRequest):
             voice=req.voice,
             speed=req.speed,
             temperature=voice_temperature if voice_temperature is not None else 0.7,
+            exaggeration=req.exaggeration,
+            cfg_weight=req.cfg_weight,
             voice_sample_path=voice_sample_path,
             voice_reference_text=voice_reference_text,
             voice_samples_dir=voice_samples_dir,
             enabled_modules=meta.enabled_modules,
         )
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        logger.exception("TTS preview could not load a required file")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.exception("TTS preview failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2087,6 +2107,42 @@ async def api_set_voice_library_sample(voice_id: str, req: VoiceLibrarySampleReq
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@app.post("/api/voice-library/{voice_id}/samples/enhance")
+async def api_enhance_voice_library_sample(voice_id: str, req: VoiceLibraryEnhancementRequest):
+    """Create an enhanced copy of the active reference and optionally activate it."""
+    temp_dir = Path(tempfile.mkdtemp(prefix="narratible_voice_enhance_"))
+    output_path = temp_dir / "enhanced.wav"
+    try:
+        voice = get_library_voice(voice_id)
+        source_path = get_library_voice_sample_path(voice_id)
+        cfg = load_config()
+        device_used = await asyncio.to_thread(
+            enhance_reference_audio,
+            source_path,
+            output_path,
+            device=req.device,
+            cuda_index=cfg.selected_gpu_index,
+            nfe=req.nfe,
+        )
+        enhanced_name = f"{Path(voice.sample_filename).stem}-enhanced.wav"
+        with open(output_path, "rb") as enhanced_file:
+            updated = add_library_voice_sample(
+                voice_id, enhanced_name, enhanced_file, activate=req.activate
+            )
+        return {"voice": updated, "device": device_used}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except VoiceEnhancementUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except (VoiceEnhancementDeviceError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Voice reference enhancement failed")
+        raise HTTPException(status_code=500, detail=f"Voice enhancement failed: {e}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 @app.delete("/api/voice-library/{voice_id}/samples/{sample_filename}")
 async def api_delete_voice_library_sample(voice_id: str, sample_filename: str):
     try:
@@ -2101,8 +2157,11 @@ async def api_delete_voice_library_sample(voice_id: str, sample_filename: str):
 async def api_test_voice_library_draft(
     text: str = Form(...),
     reference_text: str = Form(""),
+    engine: Literal["f5-tts", "chatterbox"] = Form("f5-tts"),
     speed: float = Form(1.0),
     temperature: float = Form(0.7),
+    exaggeration: float = Form(0.5),
+    cfg_weight: float = Form(0.3),
     file: UploadFile = File(...),
 ):
     suffix = Path(file.filename).suffix.lower() if file.filename else ".wav"
@@ -2118,10 +2177,12 @@ async def api_test_voice_library_draft(
         await synthesize_speech(
             text=text[:500],
             output_path=preview_path,
-            engine="f5-tts",
+            engine=engine,
             voice="draft",
             speed=speed,
             temperature=temperature,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
             voice_sample_path=sample_path,
             voice_reference_text=None,
         )
@@ -2145,10 +2206,12 @@ async def api_test_voice_library_item(voice_id: str, req: VoiceLibraryTestReques
         await synthesize_speech(
             text=req.text[:500],
             output_path=preview_path,
-            engine="f5-tts",
+            engine=req.engine,
             voice=voice.id,
             speed=req.speed if req.speed is not None else voice.speed,
             temperature=req.temperature if req.temperature is not None else voice.temperature,
+            exaggeration=req.exaggeration,
+            cfg_weight=req.cfg_weight,
             voice_sample_path=get_library_voice_sample_path(voice_id),
             voice_reference_text=None,
         )
@@ -2228,6 +2291,8 @@ async def synthesize_project_chapter(
     voice: str,
     speed: float,
     read_headings: bool,
+    exaggeration: float = 0.5,
+    cfg_weight: float = 0.3,
     force: bool = False,
     progress_cb=None,
 ) -> dict:
@@ -2238,6 +2303,8 @@ async def synthesize_project_chapter(
         engine=engine,
         voice=voice,
         speed=speed,
+        exaggeration=exaggeration,
+        cfg_weight=cfg_weight,
         read_headings=read_headings,
         enabled_modules=meta.enabled_modules,
     )
@@ -2273,7 +2340,7 @@ async def synthesize_project_chapter(
         voice_reference_text = None
         voice_samples_dir = None
         voice_temperature = None
-        if engine == "f5-tts":
+        if engine in {"f5-tts", "chatterbox"}:
             voice_sample_path, voice_samples_dir, voice_reference_text, voice_temperature = _resolve_f5_voice_reference(project_id, voice)
 
         await synthesize_speech(
@@ -2283,6 +2350,8 @@ async def synthesize_project_chapter(
             voice=voice,
             speed=speed,
             temperature=voice_temperature if voice_temperature is not None else 0.7,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
             voice_sample_path=voice_sample_path,
             voice_reference_text=voice_reference_text,
             voice_samples_dir=voice_samples_dir,
@@ -2392,6 +2461,8 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 voice=voice,
                 speed=speed,
                 read_headings=read_headings,
+                exaggeration=meta.tts_exaggeration,
+                cfg_weight=meta.tts_cfg_weight,
                 force=force,
                 progress_cb=_tts_progress_cb,
             )
@@ -2545,7 +2616,7 @@ async def synthesize_book(
 ):
     try:
         get_project(project_id)
-        if engine == "f5-tts":
+        if engine in {"f5-tts", "chatterbox"}:
             _resolve_f5_voice_reference(project_id, voice)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2571,6 +2642,8 @@ async def _run_chapter_tts(project_id: str, chapter_id: str, task_id: str, force
             voice=meta.tts_voice,
             speed=meta.tts_speed,
             read_headings=meta.tts_read_headings,
+            exaggeration=meta.tts_exaggeration,
+            cfg_weight=meta.tts_cfg_weight,
             force=force,
             progress_cb=_progress_cb,
         )
@@ -2891,4 +2964,7 @@ if getattr(sys, "frozen", False):
             local_path = frontend_dist / full_path
             if local_path.is_file() and full_path != "":
                 return FileResponse(local_path)
-            return FileResponse(frontend_dist / "index.html")
+            return FileResponse(
+                frontend_dist / "index.html",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )

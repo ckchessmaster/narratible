@@ -1,12 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 # narratible PyInstaller spec — GPU build only.
-# All ML engines (transformers, kokoro, f5-tts, bitsandbytes) are expected
+# All embedded ML engines (transformers, kokoro, f5-tts, Chatterbox,
+# bitsandbytes) are expected
 # to be installed in the build environment. Build will fail if they are absent.
 
 import importlib.util
 from PyInstaller.utils.hooks import collect_all, collect_data_files, copy_metadata
 
-datas = [('frontend/dist', 'frontend_dist')]
+datas = [
+    ('frontend/dist', 'frontend_dist'),
+    # Resemble Enhance must use an isolated Python/Torch environment. Ship a
+    # real source worker because an external interpreter cannot import modules
+    # from PyInstaller's PYZ archive.
+    ('backend/app/voice_enhancement.py', 'optional_runtime'),
+    ('backend/requirements-voice-enhancement.txt', 'optional_runtime'),
+]
 binaries = []
 hiddenimports = []
 
@@ -20,7 +28,8 @@ hiddenimports += _h
 for _pkg in [
     'transformers', 'torch', 'torchvision', 'torchaudio', 'torchcodec',
     'huggingface_hub', 'tokenizers', 'safetensors', 'accelerate',
-    'sentencepiece', 'protobuf', 'Pillow', 'numpy',
+    'sentencepiece', 'protobuf', 'Pillow', 'numpy', 'requests', 'filelock',
+    'tqdm', 'regex', 'packaging', 'PyYAML',
 ]:
     try:
         datas += copy_metadata(_pkg)
@@ -83,6 +92,24 @@ datas += _d
 binaries += _b
 hiddenimports += _h
 
+# Chatterbox and its tokenizer/perceptual-codec dependencies use dynamic
+# imports and package data. Its model weights remain in the normal Hugging
+# Face cache and are downloaded on first use rather than bundled here.
+for _pkg in ['chatterbox', 's3tokenizer', 'perth']:
+    _d, _b, _h = collect_all(_pkg)
+    datas += _d
+    binaries += _b
+    hiddenimports += _h
+hiddenimports += ['perth']
+for _dist in [
+    'chatterbox-tts', 's3tokenizer', 'resemble-perth', 'conformer',
+    'diffusers', 'librosa', 'pyloudnorm', 'omegaconf',
+]:
+    try:
+        datas += copy_metadata(_dist)
+    except Exception:
+        pass
+
 # bitsandbytes loads platform-specific shared libraries via ctypes.
 _d, _b, _h = collect_all('bitsandbytes')
 datas += _d
@@ -93,7 +120,7 @@ hiddenimports += _h
 # which requires real .py files on disk — PyInstaller normally discards them.
 # collect_data_files with include_py_files=True copies the source alongside the
 # compiled bytecode in _internal/ so inspect can find them by path.
-for _ts_pkg in ['vocos', 'f5_tts']:
+for _ts_pkg in ['vocos', 'f5_tts', 'chatterbox']:
     try:
         datas += collect_data_files(_ts_pkg, include_py_files=True)
     except Exception:

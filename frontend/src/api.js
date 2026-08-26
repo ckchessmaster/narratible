@@ -113,11 +113,11 @@ export const uploadCover = (projectId, file) => {
 
 // TTS
 export const getVoices = (engine = 'edge-tts') => request('GET', `/tts/voices?engine=${engine}`)
-export const ttsPreview = (projectId, text, engine, voice, speed) =>
+export const ttsPreview = (projectId, text, engine, voice, speed, chatterbox = {}) =>
   fetch(`${BASE}/projects/${projectId}/tts/preview`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, engine, voice, speed }),
+    body: JSON.stringify({ text, engine, voice, speed, ...chatterbox }),
   })
 export const ttsDebugText = (projectId, text, engine, voice, speed) =>
   request('POST', `/projects/${projectId}/tts/debug-text`, { text, engine, voice, speed })
@@ -149,13 +149,22 @@ export const addLibraryVoiceSample = (id, file, activate = true) => {
 }
 export const setLibraryVoiceSample = (id, sampleFilename) =>
   request('POST', `/voice-library/${encodeURIComponent(id)}/samples/active`, { sample_filename: sampleFilename })
+export const enhanceLibraryVoiceSample = (id, options = {}) =>
+  request('POST', `/voice-library/${encodeURIComponent(id)}/samples/enhance`, {
+    device: options.device ?? 'auto',
+    nfe: options.nfe ?? 32,
+    activate: options.activate ?? true,
+  })
 export const deleteLibraryVoiceSample = (id, sampleFilename) =>
   request('DELETE', `/voice-library/${encodeURIComponent(id)}/samples/${encodeURIComponent(sampleFilename)}`)
-export const testDraftLibraryVoice = ({ text, speed, temperature, file }) => {
+export const testDraftLibraryVoice = ({ text, engine, speed, temperature, exaggeration, cfg_weight, file }) => {
   const fd = new FormData()
   fd.append('text', text)
+  fd.append('engine', engine || 'f5-tts')
   fd.append('speed', speed ?? 1.0)
   fd.append('temperature', temperature ?? 0.7)
+  fd.append('exaggeration', exaggeration ?? 0.5)
+  fd.append('cfg_weight', cfg_weight ?? 0.3)
   fd.append('file', file)
   return fetch(`${BASE}/voice-library/test-draft`, {
     method: 'POST',
