@@ -18,6 +18,150 @@ def _prepare_frozen_torch(torch_module) -> None:
         torch_module.jit._narratible_noop = True
 
 
+def _prepare_qwen3_transformers() -> None:
+    """Bridge Qwen 0.1.1 config/decorator assumptions to newer Transformers."""
+    import inspect
+    from transformers.utils import generic
+
+    decorator = generic.check_model_inputs
+    if getattr(decorator, "_narratible_compatible", False):
+        return
+    if tuple(inspect.signature(decorator).parameters) != ("func",):
+        return
+
+    def _compatible_check_model_inputs(func=None):
+        return decorator if func is None else decorator(func)
+
+    _compatible_check_model_inputs._narratible_compatible = True
+    generic.check_model_inputs = _compatible_check_model_inputs
+
+
+def _prepare_qwen3_config() -> None:
+    """Preserve Qwen config kwargs and padding aliases under Transformers 5."""
+    from qwen_tts.core.models.configuration_qwen3_tts import (
+        Qwen3TTSTalkerCodePredictorConfig,
+        Qwen3TTSTalkerConfig,
+    )
+
+    legacy_fields_by_class = {
+        Qwen3TTSTalkerConfig: {
+            "head_dim",
+            "pad_token_id",
+            "position_id_per_seconds",
+            "text_vocab_size",
+        },
+        Qwen3TTSTalkerCodePredictorConfig: {"pad_token_id"},
+    }
+    for config_class, preserved_fields in legacy_fields_by_class.items():
+        if getattr(config_class, "_narratible_compatible", False):
+            continue
+
+        original_init = config_class.__init__
+
+        def _compatible_init(
+            self,
+            *args,
+            _original_init=original_init,
+            _preserved_fields=preserved_fields,
+            **kwargs,
+        ):
+            legacy_fields = {
+                name: value for name, value in kwargs.items() if name in _preserved_fields
+            }
+            _original_init(self, *args, **kwargs)
+            for name, value in legacy_fields.items():
+                if not hasattr(self, name):
+                    setattr(self, name, value)
+            if not hasattr(self, "pad_token_id"):
+                self.pad_token_id = getattr(self, "codec_pad_id", None)
+
+        _compatible_init._narratible_compatible = True
+        config_class.__init__ = _compatible_init
+        config_class._narratible_compatible = True
+
+
+def _prepare_qwen3_rope() -> None:
+    """Restore the default RoPE registry entry removed from Transformers 5."""
+    import torch
+    from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+    if "default" in ROPE_INIT_FUNCTIONS:
+        return
+
+    def _default_rope(config, device=None, **_kwargs):
+        head_dim = getattr(config, "head_dim", None) or (
+            config.hidden_size // config.num_attention_heads
+        )
+        partial_rotary_factor = getattr(config, "partial_rotary_factor", 1.0)
+        dimension = int(head_dim * partial_rotary_factor)
+        inverse_frequency = 1.0 / (
+            config.rope_theta
+            ** (
+                torch.arange(0, dimension, 2, dtype=torch.int64)
+                .to(device=device, dtype=torch.float)
+                / dimension
+            )
+        )
+        return inverse_frequency, 1.0
+
+    ROPE_INIT_FUNCTIONS["default"] = _default_rope
+
+
+def _prepare_qwen3_masking() -> None:
+    """Translate Qwen's Transformers 4 masking calls to Transformers 5."""
+    from transformers import masking_utils
+    from qwen_tts.core.models import modeling_qwen3_tts
+    from qwen_tts.core.tokenizer_12hz import modeling_qwen3_tts_tokenizer_v2
+
+    if getattr(masking_utils.create_causal_mask, "_narratible_compatible", False):
+        return
+
+    def _compatible_mask(mask_function):
+        def _wrapper(*args, **kwargs):
+            if "input_embeds" in kwargs and "inputs_embeds" not in kwargs:
+                kwargs["inputs_embeds"] = kwargs.pop("input_embeds")
+            kwargs.pop("cache_position", None)
+            return mask_function(*args, **kwargs)
+
+        _wrapper._narratible_compatible = True
+        return _wrapper
+
+    causal_mask = _compatible_mask(masking_utils.create_causal_mask)
+    sliding_mask = _compatible_mask(masking_utils.create_sliding_window_causal_mask)
+    masking_utils.create_causal_mask = causal_mask
+    masking_utils.create_sliding_window_causal_mask = sliding_mask
+    modeling_qwen3_tts.create_causal_mask = causal_mask
+    modeling_qwen3_tts.create_sliding_window_causal_mask = sliding_mask
+    modeling_qwen3_tts_tokenizer_v2.create_causal_mask = causal_mask
+    modeling_qwen3_tts_tokenizer_v2.create_sliding_window_causal_mask = sliding_mask
+
+
+def _prepare_qwen3_positions() -> None:
+    """Keep cached decode position IDs aligned with Qwen's current input."""
+    from functools import wraps
+    from qwen_tts.core.models.modeling_qwen3_tts import Qwen3TTSTalkerModel
+
+    if getattr(Qwen3TTSTalkerModel.forward, "_narratible_compatible", False):
+        return
+
+    original_forward = Qwen3TTSTalkerModel.forward
+
+    @wraps(original_forward)
+    def _compatible_forward(self, *args, **kwargs):
+        inputs_embeds = kwargs.get("inputs_embeds")
+        position_ids = kwargs.get("position_ids")
+        if (
+            inputs_embeds is not None
+            and position_ids is not None
+            and position_ids.shape[-1] != inputs_embeds.shape[1]
+        ):
+            kwargs["position_ids"] = position_ids[..., -inputs_embeds.shape[1]:]
+        return original_forward(self, *args, **kwargs)
+
+    _compatible_forward._narratible_compatible = True
+    Qwen3TTSTalkerModel.forward = _compatible_forward
+
+
 def compose_tts_text(title: str, body: str, read_headings: bool = True) -> str:
     """Combine a chapter heading with its body text for synthesis.
 
@@ -97,8 +241,12 @@ _kokoro_pipeline = None
 _f5tts_model = None
 _chatterbox_model = None
 _chatterbox_model_device = None
+_qwen3_tts_model = None
+_qwen3_tts_model_device = None
 _whisper_model = None
 _whisper_processor = None
+
+_QWEN3_TTS_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
 _F5_REFERENCE_PLACEHOLDER_TEXT = "This is only used while preparing the reference audio."
 _MIN_F5_REFERENCE_CHARS_PER_SECOND = 2.0
@@ -178,7 +326,7 @@ def _f5_reference_was_clipped(
 
 def unload_tts():
     """Explicitly unload TTS models to free up VRAM."""
-    global _kokoro_pipeline, _f5tts_model, _chatterbox_model, _chatterbox_model_device, _whisper_model, _whisper_processor
+    global _kokoro_pipeline, _f5tts_model, _chatterbox_model, _chatterbox_model_device, _qwen3_tts_model, _qwen3_tts_model_device, _whisper_model, _whisper_processor
     import gc
     freed = False
     if _kokoro_pipeline is not None:
@@ -190,6 +338,10 @@ def unload_tts():
     if _chatterbox_model is not None:
         _chatterbox_model = None
         _chatterbox_model_device = None
+        freed = True
+    if _qwen3_tts_model is not None:
+        _qwen3_tts_model = None
+        _qwen3_tts_model_device = None
         freed = True
     if _whisper_model is not None:
         _whisper_model = None
@@ -226,7 +378,7 @@ async def get_available_voices(engine: str = "edge-tts") -> list[dict]:
             {"id": "bf_emma", "name": "Emma (British Female)", "locale": "en-GB"},
             {"id": "bm_george", "name": "George (British Male)", "locale": "en-GB"},
         ]
-    elif engine in {"f5-tts", "chatterbox"}:
+    elif engine in {"f5-tts", "chatterbox", "qwen3-tts"}:
         # Clone engines use uploaded voice samples as the "voice".
         return [
             {"id": "__uploaded__", "name": "Use uploaded voice sample", "locale": "en-US"},
@@ -258,7 +410,7 @@ async def synthesize_speech(
     voice_reference_text: transcript matching the F5-TTS reference clip.
     voice_samples_dir: directory containing multiple voice samples for clone engines; auto-selects best one.
     """
-    global _kokoro_pipeline, _f5tts_model, _chatterbox_model
+    global _kokoro_pipeline, _f5tts_model, _chatterbox_model, _qwen3_tts_model
     text = prepare_text_for_tts(text, engine, enabled_modules=enabled_modules)
 
     logger.info(f"Synthesizing with {engine}, voice={voice}, speed={speed}")
@@ -299,6 +451,9 @@ async def synthesize_speech(
                 torch.cuda.empty_cache()
             if _chatterbox_model is not None:
                 _chatterbox_model = None
+                torch.cuda.empty_cache()
+            if _qwen3_tts_model is not None:
+                _qwen3_tts_model = None
                 torch.cuda.empty_cache()
 
             from .config import get_device_string
@@ -379,8 +534,171 @@ async def synthesize_speech(
             progress_cb,
         )
 
+    elif engine == "qwen3-tts":
+        await _synthesize_qwen3_tts(
+            text,
+            output_path,
+            speed,
+            temperature,
+            voice_sample_path,
+            voice_reference_text,
+            voice_samples_dir,
+            progress_cb,
+        )
+
     else:
         raise NotImplementedError(f"TTS engine '{engine}' is not implemented.")
+
+
+async def _synthesize_qwen3_tts(
+    text: str,
+    output_path: Path,
+    speed: float = 1.0,
+    temperature: float = 0.7,
+    voice_sample_path: Optional[Path] = None,
+    voice_reference_text: Optional[str] = None,
+    voice_samples_dir: Optional[Path] = None,
+    progress_cb: Optional[Callable[[str, int], None]] = None,
+):
+    """Clone a reference voice with the Qwen3-TTS Base model."""
+    global _qwen3_tts_model, _qwen3_tts_model_device, _kokoro_pipeline, _f5tts_model, _chatterbox_model, _chatterbox_model_device
+
+    try:
+        import numpy as np
+        import soundfile as sf
+        import torch
+        _prepare_frozen_torch(torch)
+        _prepare_qwen3_transformers()
+        from qwen_tts import Qwen3TTSModel
+        _prepare_qwen3_config()
+        _prepare_qwen3_rope()
+        _prepare_qwen3_masking()
+        _prepare_qwen3_positions()
+    except (ImportError, RuntimeError) as exc:
+        raise ImportError(
+            f"Qwen3-TTS or a dependency failed to load ({exc}). "
+            "Install backend/requirements-qwen3-tts.txt, then install the "
+            "PyTorch build recommended for your hardware."
+        ) from exc
+
+    if voice_samples_dir and voice_samples_dir.exists() and (
+        voice_sample_path is None or not voice_sample_path.exists()
+    ):
+        candidates = sorted(
+            path
+            for path in voice_samples_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in (".wav", ".mp3", ".flac")
+        )
+        if candidates:
+            voice_sample_path = max(candidates, key=lambda path: path.stat().st_size)
+
+    if voice_sample_path is None or not voice_sample_path.exists():
+        raise ValueError(
+            "Qwen3-TTS requires a voice sample. Create or select a Voice Library voice first."
+        )
+    if not 0.5 <= speed <= 2.0:
+        raise ValueError("Qwen3-TTS speed must be between 0.5 and 2.0.")
+    if not 0.0 <= temperature <= 1.5:
+        raise ValueError("Qwen3-TTS temperature must be between 0.0 and 1.5.")
+
+    device = _select_chatterbox_device(torch)
+    if _qwen3_tts_model is not None and _qwen3_tts_model_device != device:
+        logger.info(
+            "Qwen3-TTS device changed from %s to %s; reloading the model.",
+            _qwen3_tts_model_device,
+            device,
+        )
+        _qwen3_tts_model = None
+        _qwen3_tts_model_device = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    if _qwen3_tts_model is None:
+        _kokoro_pipeline = None
+        _f5tts_model = None
+        _chatterbox_model = None
+        _chatterbox_model_device = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        if progress_cb:
+            progress_cb("Loading Qwen3-TTS model (first run downloads ~4 GB)...", 0)
+        supports_bfloat16 = getattr(torch.cuda, "is_bf16_supported", lambda: False)
+        if device.startswith("cuda"):
+            dtype = torch.bfloat16 if supports_bfloat16() else torch.float16
+        else:
+            dtype = torch.float32
+        logger.info("Loading Qwen3-TTS model %s on %s", _QWEN3_TTS_MODEL_ID, device)
+        _qwen3_tts_model = Qwen3TTSModel.from_pretrained(
+            _QWEN3_TTS_MODEL_ID,
+            device_map=device,
+            dtype=dtype,
+        )
+        _qwen3_tts_model_device = device
+
+    import asyncio
+
+    loop = asyncio.get_event_loop()
+
+    def _infer():
+        reference_text = re.sub(r"\s+", " ", voice_reference_text or "").strip()
+        prompt = _qwen3_tts_model.create_voice_clone_prompt(
+            ref_audio=str(voice_sample_path),
+            ref_text=reference_text or None,
+            x_vector_only_mode=not bool(reference_text),
+        )
+        segments = segment_text_for_tts(text, engine="qwen3-tts")
+        generated = []
+        sample_rate = None
+        for index, segment in enumerate(segments, 1):
+            logger.info(
+                "Qwen3-TTS synthesizing segment %d/%d (%d chars).",
+                index,
+                len(segments),
+                len(segment.text),
+            )
+            generation_options = {}
+            if temperature > 0:
+                generation_options["temperature"] = temperature
+            waveforms, segment_sample_rate = _qwen3_tts_model.generate_voice_clone(
+                text=segment.text,
+                language="Auto",
+                voice_clone_prompt=prompt,
+                **generation_options,
+            )
+            if not waveforms:
+                continue
+            waveform = np.asarray(waveforms[0], dtype=np.float32).squeeze()
+            generated.append(waveform)
+            sample_rate = int(segment_sample_rate)
+            if segment.pause_after_ms:
+                generated.append(
+                    np.zeros(
+                        round(sample_rate * segment.pause_after_ms / 1000),
+                        dtype=np.float32,
+                    )
+                )
+            if progress_cb:
+                progress_cb(
+                    f"Qwen3-TTS segment {index}/{len(segments)}",
+                    round(index * 100 / len(segments)),
+                )
+
+        if not generated or sample_rate is None:
+            raise ValueError("Qwen3-TTS produced no audio output.")
+        combined = np.concatenate(generated).astype(np.float32, copy=False)
+        if abs(speed - 1.0) > 0.001:
+            import librosa
+
+            combined = librosa.effects.time_stretch(combined, rate=float(speed))
+        peak = float(np.max(np.abs(combined)))
+        if peak > 0.98:
+            combined *= 0.98 / peak
+        return combined, sample_rate
+
+    audio, sample_rate = await loop.run_in_executor(None, _infer)
+    sf.write(str(output_path), audio, sample_rate)
+    logger.info("Qwen3-TTS wrote %s", output_path)
 
 
 def _select_chatterbox_device(torch_module) -> str:
@@ -429,7 +747,7 @@ async def _synthesize_chatterbox(
     progress_cb: Optional[Callable[[str, int], None]] = None,
 ):
     """Clone a voice with Chatterbox using narration-tuned pacing defaults."""
-    global _chatterbox_model, _chatterbox_model_device, _kokoro_pipeline, _f5tts_model
+    global _chatterbox_model, _chatterbox_model_device, _kokoro_pipeline, _f5tts_model, _qwen3_tts_model, _qwen3_tts_model_device
 
     try:
         import numpy as np
@@ -484,6 +802,9 @@ async def _synthesize_chatterbox(
             _kokoro_pipeline = None
         if _f5tts_model is not None:
             _f5tts_model = None
+        if _qwen3_tts_model is not None:
+            _qwen3_tts_model = None
+            _qwen3_tts_model_device = None
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -570,7 +891,7 @@ async def _synthesize_f5tts(
     voice_reference_text: optional transcript matching that reference clip.
     voice_samples_dir: directory containing multiple voice samples; auto-selects best one.
     """
-    global _f5tts_model, _chatterbox_model
+    global _f5tts_model, _chatterbox_model, _qwen3_tts_model, _qwen3_tts_model_device
     try:
         import torch
         import soundfile as sf
@@ -623,6 +944,10 @@ async def _synthesize_f5tts(
             torch.cuda.empty_cache()
         if _chatterbox_model is not None:
             _chatterbox_model = None
+            torch.cuda.empty_cache()
+        if _qwen3_tts_model is not None:
+            _qwen3_tts_model = None
+            _qwen3_tts_model_device = None
             torch.cuda.empty_cache()
 
         from .config import get_device_string

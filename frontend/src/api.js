@@ -132,11 +132,12 @@ export const chapterAudioUrl = (projectId, chapterId) =>
 
 // Voice library
 export const listLibraryVoices = () => request('GET', '/voice-library')
-export const createLibraryVoice = ({ name, engine, provider_voice_id, notes, speed, temperature, exaggeration, cfg_weight, file }) => {
+export const createLibraryVoice = ({ name, engine, provider_voice_id, reference_text, notes, speed, temperature, exaggeration, cfg_weight, file }) => {
   const fd = new FormData()
   fd.append('name', name)
   fd.append('engine', engine)
   fd.append('provider_voice_id', provider_voice_id || '')
+  fd.append('reference_text', reference_text || '')
   fd.append('notes', notes || '')
   fd.append('speed', speed ?? 1.0)
   fd.append('temperature', temperature ?? 0.7)
@@ -163,11 +164,12 @@ export const enhanceLibraryVoiceSample = (id, options = {}) =>
   })
 export const deleteLibraryVoiceSample = (id, sampleFilename) =>
   request('DELETE', `/voice-library/${encodeURIComponent(id)}/samples/${encodeURIComponent(sampleFilename)}`)
-export const testDraftLibraryVoice = ({ text, engine, provider_voice_id, speed, temperature, exaggeration, cfg_weight, file }) => {
+export const testDraftLibraryVoice = ({ text, engine, provider_voice_id, reference_text, speed, temperature, exaggeration, cfg_weight, file }) => {
   const fd = new FormData()
   fd.append('text', text)
   fd.append('engine', engine || 'f5-tts')
   fd.append('provider_voice_id', provider_voice_id || '')
+  fd.append('reference_text', reference_text || '')
   fd.append('speed', speed ?? 1.0)
   fd.append('temperature', temperature ?? 0.7)
   fd.append('exaggeration', exaggeration ?? 0.5)

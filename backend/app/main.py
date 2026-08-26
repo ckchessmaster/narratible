@@ -1940,7 +1940,7 @@ class PreviewRequest(BaseModel):
 
 class VoiceLibraryUpdateRequest(BaseModel):
     name: str | None = None
-    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox"] | None = None
+    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox", "qwen3-tts"] | None = None
     provider_voice_id: str | None = None
     reference_text: str | None = None
     notes: str | None = None
@@ -1953,7 +1953,7 @@ class VoiceLibraryUpdateRequest(BaseModel):
 class VoiceLibraryTestRequest(BaseModel):
     text: str
     reference_text: str | None = None
-    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox"] | None = None
+    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox", "qwen3-tts"] | None = None
     speed: float | None = None
     temperature: float | None = None
     exaggeration: float | None = None
@@ -1979,12 +1979,17 @@ def _resolve_clone_voice_reference(project_id: str, engine: str, voice: str):
             raise ValueError(
                 f"Library voice '{library_voice.name}' uses {library_voice.engine}, not {engine}."
             )
-        return get_library_voice_sample_path(voice), None, None, library_voice.temperature
+        return (
+            get_library_voice_sample_path(voice),
+            None,
+            (library_voice.reference_text or None) if engine == "qwen3-tts" else None,
+            library_voice.temperature,
+        )
     return None, _voices_dir(project_id), None, None
 
 
 def _resolve_library_voice_selection(project_id: str, engine: str, voice: str):
-    if engine in {"f5-tts", "chatterbox"}:
+    if engine in {"f5-tts", "chatterbox", "qwen3-tts"}:
         sample_path, samples_dir, reference_text, temperature = _resolve_clone_voice_reference(
             project_id, engine, voice
         )
@@ -2084,7 +2089,7 @@ async def api_list_voice_library():
 @app.post("/api/voice-library")
 async def api_create_voice_library_item(
     name: str = Form(...),
-    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox"] = Form(...),
+    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox", "qwen3-tts"] = Form(...),
     provider_voice_id: str = Form(""),
     reference_text: str = Form(""),
     notes: str = Form(""),
@@ -2208,7 +2213,7 @@ async def api_delete_voice_library_sample(voice_id: str, sample_filename: str):
 async def api_test_voice_library_draft(
     text: str = Form(...),
     reference_text: str = Form(""),
-    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox"] = Form("f5-tts"),
+    engine: Literal["edge-tts", "kokoro", "f5-tts", "chatterbox", "qwen3-tts"] = Form("f5-tts"),
     provider_voice_id: str = Form(""),
     speed: float = Form(1.0),
     temperature: float = Form(0.7),
@@ -2216,9 +2221,9 @@ async def api_test_voice_library_draft(
     cfg_weight: float = Form(0.3),
     file: UploadFile | None = File(None),
 ):
-    is_clone_engine = engine in {"f5-tts", "chatterbox"}
+    is_clone_engine = engine in {"f5-tts", "chatterbox", "qwen3-tts"}
     if is_clone_engine and file is None:
-        raise HTTPException(status_code=400, detail="Reference audio is required for F5-TTS and Chatterbox voices.")
+        raise HTTPException(status_code=400, detail="Reference audio is required for clone voices.")
     if not is_clone_engine and not provider_voice_id:
         raise HTTPException(status_code=400, detail="Choose a provider voice for Edge-TTS or Kokoro.")
     suffix = Path(file.filename).suffix.lower() if file and file.filename else ".wav"
@@ -2242,7 +2247,7 @@ async def api_test_voice_library_draft(
             exaggeration=exaggeration,
             cfg_weight=cfg_weight,
             voice_sample_path=sample_path if is_clone_engine else None,
-            voice_reference_text=None,
+            voice_reference_text=(reference_text or None) if engine == "qwen3-tts" else None,
         )
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2265,7 +2270,7 @@ async def api_test_voice_library_item(voice_id: str, req: VoiceLibraryTestReques
         if req.engine is not None and req.engine != voice.engine:
             raise ValueError(f"Library voice '{voice.name}' uses {voice.engine}, not {req.engine}.")
         preview_path = get_library_voice_preview_path(voice_id)
-        is_clone_engine = voice.engine in {"f5-tts", "chatterbox"}
+        is_clone_engine = voice.engine in {"f5-tts", "chatterbox", "qwen3-tts"}
         await synthesize_speech(
             text=req.text[:500],
             output_path=preview_path,
@@ -2276,7 +2281,7 @@ async def api_test_voice_library_item(voice_id: str, req: VoiceLibraryTestReques
             exaggeration=req.exaggeration if req.exaggeration is not None else voice.exaggeration,
             cfg_weight=req.cfg_weight if req.cfg_weight is not None else voice.cfg_weight,
             voice_sample_path=get_library_voice_sample_path(voice_id) if is_clone_engine else None,
-            voice_reference_text=None,
+            voice_reference_text=(req.reference_text or voice.reference_text or None) if voice.engine == "qwen3-tts" else None,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

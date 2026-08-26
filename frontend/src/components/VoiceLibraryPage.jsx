@@ -15,18 +15,37 @@ import {
 
 const DEFAULT_TEST_TEXT = 'Welcome to narratible. This is a quick test of the saved library voice.'
 const NEW_DRAFT = {
-  name: '', engine: 'edge-tts', engine_configured: true, provider_voice_id: '', notes: '', speed: 1.0,
+  name: '', engine: 'edge-tts', engine_configured: true, provider_voice_id: '', reference_text: '', notes: '', speed: 1.0,
   temperature: 0.7, exaggeration: 0.5, cfg_weight: 0.3, file: null,
 }
 
-const ENGINE_LABELS = {
-  'edge-tts': 'Edge-TTS',
-  kokoro: 'Kokoro',
-  'f5-tts': 'F5-TTS',
-  chatterbox: 'Chatterbox',
-}
+const ENGINE_OPTIONS = [
+  {
+    value: 'edge-tts', label: 'Edge-TTS', detail: 'Online only',
+    description: 'Fast, reliable cloud voices with a broad catalog. Requires an internet connection.',
+  },
+  {
+    value: 'kokoro', label: 'Kokoro', detail: 'Local · Fast',
+    description: 'Quick local generation with low model overhead. Good quality, but less natural and expressive than Chatterbox.',
+  },
+  {
+    value: 'f5-tts', label: 'F5-TTS', detail: 'Local · Voice clone',
+    description: 'Strong voice similarity from a clean reference clip. Slower than Kokoro and requires a CUDA GPU.',
+  },
+  {
+    value: 'chatterbox', label: 'Chatterbox', detail: 'Local · High quality',
+    description: 'Expressive, natural voice cloning with the best narration quality. Generation is slower and uses more resources.',
+  },
+  {
+    value: 'qwen3-tts', label: 'Qwen3-TTS', detail: 'Coming soon', disabled: true,
+    description: 'Advanced local voice cloning. Temporarily unavailable while generation stability is improved.',
+  },
+]
 
-const isCloneEngine = engine => engine === 'f5-tts' || engine === 'chatterbox'
+const ENGINE_LABELS = Object.fromEntries(ENGINE_OPTIONS.map(option => [option.value, option.label]))
+const isEngineDisabled = engine => ENGINE_OPTIONS.some(option => option.value === engine && option.disabled)
+
+const isCloneEngine = engine => engine === 'f5-tts' || engine === 'chatterbox' || engine === 'qwen3-tts'
 
 async function responseError(response) {
   const text = await response.text()
@@ -44,6 +63,7 @@ function draftFromVoice(voice) {
     engine: voice?.engine || 'f5-tts',
     engine_configured: voice?.engine_configured ?? false,
     provider_voice_id: voice?.provider_voice_id || '',
+    reference_text: voice?.reference_text || '',
     notes: voice?.notes || '',
     speed: voice?.speed ?? 1.0,
     temperature: voice?.temperature ?? 0.7,
@@ -158,6 +178,10 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
 
   const handleSave = async (event) => {
     event.preventDefault()
+    if (isEngineDisabled(draft.engine)) {
+      toast(`${ENGINE_LABELS[draft.engine]} is coming soon and cannot be saved yet.`, 'error')
+      return
+    }
     if (!draft.name.trim()) {
       toast('Name the voice first.', 'error')
       return
@@ -184,6 +208,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
           name: draft.name,
           engine: selectedVoice.engine_configured ? undefined : draft.engine,
           provider_voice_id: selectedVoice.engine_configured ? undefined : draft.provider_voice_id,
+          reference_text: draft.reference_text,
           notes: draft.notes,
           speed: draft.speed,
           temperature: draft.temperature,
@@ -289,6 +314,10 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
   }
 
   const handleTest = async () => {
+    if (isEngineDisabled(draft.engine)) {
+      toast(`${ENGINE_LABELS[draft.engine]} is coming soon and cannot be tested yet.`, 'error')
+      return
+    }
     if (isNew && draftUsesCloneEngine && !draft.file) {
       toast('Add a reference audio file first.', 'error')
       return
@@ -306,6 +335,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
       const testOptions = {
         engine: draft.engine,
         provider_voice_id: draft.provider_voice_id,
+        reference_text: draft.reference_text,
         speed: draft.speed,
         temperature: draft.temperature,
         exaggeration: draft.exaggeration,
@@ -366,7 +396,9 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                     {voice.sample_filename || voice.provider_voice_id}
                   </span>
                   <span className="text-xs text-secondary">
-                    {voice.engine_configured ? (ENGINE_LABELS[voice.engine] || voice.engine) : 'Engine confirmation needed'} · {(voice.speed ?? 1).toFixed(2)}x
+                    {voice.engine_configured
+                      ? `${ENGINE_LABELS[voice.engine] || voice.engine}${isEngineDisabled(voice.engine) ? ' (Coming soon)' : ''}`
+                      : 'Engine confirmation needed'} · {(voice.speed ?? 1).toFixed(2)}x
                   </span>
                 </button>
               ))}
@@ -405,21 +437,36 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
               <div className="field">
                 <label>Engine</label>
                 {isNew || !selectedVoice?.engine_configured ? (
-                  <div className="segmented" role="group" aria-label="Voice cloning engine">
-                    {Object.entries(ENGINE_LABELS).map(([value, label]) => (
+                  <div className="voice-engine-options" role="radiogroup" aria-label="Voice engine" data-tip-anchor="engine-select">
+                    {ENGINE_OPTIONS.map(option => (
                       <button
                         type="button"
-                        key={value}
-                        className={`segmented-btn${draft.engine === value ? ' is-active' : ''}`}
-                        onClick={() => updateDraft({ engine: value, provider_voice_id: '' })}
+                        role="radio"
+                        key={option.value}
+                        className={`voice-engine-option${draft.engine === option.value ? ' is-active' : ''}`}
+                        aria-checked={draft.engine === option.value}
+                        disabled={option.disabled}
+                        onClick={() => updateDraft({ engine: option.value, provider_voice_id: '' })}
                       >
-                        {label}
+                        <span className="voice-engine-option-heading">
+                          <span>{option.label}</span>
+                          <span className={`voice-engine-option-detail${option.disabled ? ' is-coming-soon' : ''}`}>
+                            {option.detail}
+                          </span>
+                        </span>
+                        <span className="voice-engine-option-description">{option.description}</span>
                       </button>
                     ))}
                   </div>
                 ) : (
-                  <div className="glass p-3 text-sm" style={{ borderRadius: 'var(--radius-sm)' }}>
-                    {ENGINE_LABELS[draft.engine] || draft.engine}
+                  <div className="glass p-3" style={{ borderRadius: 'var(--radius-sm)' }}>
+                    <div className="flex justify-between items-center gap-2 text-sm" style={{ fontWeight: 700 }}>
+                      <span>{ENGINE_LABELS[draft.engine] || draft.engine}</span>
+                      {isEngineDisabled(draft.engine) && <span className="voice-engine-option-detail is-coming-soon">Coming soon</span>}
+                    </div>
+                    <div className="text-xs text-muted mt-1">
+                      {ENGINE_OPTIONS.find(option => option.value === draft.engine)?.description}
+                    </div>
                   </div>
                 )}
                 <div className="text-xs text-muted mt-1">
@@ -461,7 +508,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                     accept=".wav,.mp3,.flac"
                     onChange={event => updateDraft({ file: event.target.files?.[0] || null })}
                   />
-                  <div className="text-xs text-muted mt-1">Use a clean single-speaker clip with no music. F5-TTS transcribes the usable reference automatically; Chatterbox conditions directly on the same clip.</div>
+                  <div className="text-xs text-muted mt-1">Use a clean single-speaker clip with no music. Qwen3-TTS can clone from a short sample; an exact transcript improves similarity.</div>
                 </div>
               )}
               {!isNew && draftUsesCloneEngine && (
@@ -584,7 +631,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                   <span className="range-tick range-tick-end">2.0x</span>
                 </div>
               </div>
-              {draft.engine === 'f5-tts' ? (
+              {draft.engine === 'f5-tts' || draft.engine === 'qwen3-tts' ? (
                 <div className="field">
                   <label htmlFor="library-voice-temperature">Temperature - {Number(draft.temperature).toFixed(2)}</label>
                   <input
@@ -627,7 +674,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                   </div>
                 </>
               ) : null}
-              <button className="btn btn-primary w-full" type="submit" disabled={saving}>
+              <button className="btn btn-primary w-full" type="submit" disabled={saving || isEngineDisabled(draft.engine)}>
                 {saving ? 'Saving...' : isNew ? '+ Save Voice' : 'Save Voice'}
               </button>
             </div>
@@ -650,7 +697,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                 type="button"
                 className="btn btn-secondary"
                 onClick={handleTest}
-                disabled={testing || (isNew && draftUsesCloneEngine && !draft.file) || (!draftUsesCloneEngine && !draft.provider_voice_id) || (!isNew && !selectedVoice?.engine_configured)}
+                disabled={testing || isEngineDisabled(draft.engine) || (isNew && draftUsesCloneEngine && !draft.file) || (!draftUsesCloneEngine && !draft.provider_voice_id) || (!isNew && !selectedVoice?.engine_configured)}
               >
                 {testing ? 'Testing...' : `Test with ${ENGINE_LABELS[draft.engine] || draft.engine}`}
               </button>

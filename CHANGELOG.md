@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.7.0 - 2026-08-26
+
+### Features
+- Redesigned the Voice Library and Step 3 around a unified voice catalog with recommended voices, saved custom voices, built-in voice browsing, engine filtering, search, previews, and per-project narration controls.
+- Added reusable Voice Library entries for Edge-TTS and Kokoro voices alongside cloned voices, with persisted engine ownership, provider voice, speed, temperature, expression, CFG weight, notes, and reference transcript settings.
+- Expanded multi-sample reference management across cloned engines with a redesigned workflow for uploading, activating, and removing WAV, MP3, or FLAC samples while retaining the original files.
+- Added Chatterbox voice cloning with narration-tuned expression and CFG controls, explicit long-form pauses, silence trimming, pitch-preserving speed adjustment, and CUDA, Apple Metal, or CPU device support.
+- Added optional AI reference-audio cleanup through Resemble Enhance, producing a denoised and bandwidth-restored copy while preserving the source recording. This feature uses a separately installed optional runtime.
+- Added an experimental Qwen3-TTS 1.7B backend and packaged runtime integration. The engine is visible as **Coming soon** but disabled in the UI pending generation stabilization.
+- Added descriptive engine choices explaining online/local operation, relative speed and quality, voice-cloning behavior, and hardware requirements.
+
+### Improvements
+- Added one-time engine confirmation for legacy cloned voices and prevented a saved voice from silently switching engines after creation.
+- Improved project voice selection so choosing a saved voice also restores its engine-specific defaults and unavailable engines are clearly disabled.
+- Expanded local TTS text segmentation and pacing for F5-TTS and Chatterbox, with engine-aware pauses suited to long-form narration.
+- Improved model lifecycle management so switching local TTS engines releases cached models and GPU memory before loading another engine.
+- Centralized application version loading from `VERSION`, build-time environment values, or packaged `app-version.txt`, and propagated the same version to the frontend and installer.
+- Added locked dependency constraints and separate optional requirement sets for GPU engines, Chatterbox, Qwen3-TTS, voice enhancement, and packaged builds.
+
+### Packaging
+- Added a dedicated, dependency-fingerprinted `.venv-build` workflow for reproducible Windows builds without modifying the development virtual environment.
+- Expanded Docker, CI, PyInstaller, and installer support for Chatterbox, Qwen3-TTS, and the isolated voice-enhancement worker, including packaged frontend and TTS import verification.
+- Added CUDA build verification to prevent shipping a CPU-only PyTorch runtime and improved restoration of the selected PyTorch build after optional packages are installed.
+- Improved packaged Hugging Face cache handling on Windows by materializing model-cache links where native loaders cannot follow symlinks reliably.
+- Hardened installer upgrades by stopping a running app, removing stale bundled runtime files, and installing FFmpeg through `winget` instead of bundling GPL binaries.
+
+### Bugfixes
+- Fixed F5-TTS failures caused by reference transcripts that did not match the usable audio after preprocessing or 12-second clipping; narratible now validates transcript plausibility and prefers transcription of the processed clip when needed.
+- Fixed clone-engine mismatches so a saved voice cannot be synthesized through a different engine than the one it was created with.
+- Fixed packaged optional voice runtimes failing because of missing dynamic imports, package metadata, model source files, or incompatible shared PyTorch dependencies.
+- Fixed stale packaged frontend bundles going unnoticed by verifying that every expected TTS engine label is present before startup.
+- Fixed Qwen3-TTS compatibility failures with the current Transformers runtime during configuration, model loading, masking, and cached decoding; the engine remains disabled in the UI while output stability is evaluated.
+
 ## v1.6.0 - 2026-06-19
 
 ### Features

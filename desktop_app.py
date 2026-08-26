@@ -51,6 +51,7 @@ def _verify_packaged_tts_imports():
     from kokoro import KPipeline  # noqa: F401
     from f5_tts.api import F5TTS  # noqa: F401
     from chatterbox.tts import ChatterboxTTS  # noqa: F401
+    from qwen_tts import Qwen3TTSModel  # noqa: F401
     from perth.perth_net import PerthImplicitWatermarker
 
     en_core_web_sm.load(

@@ -11,9 +11,13 @@ from pydantic import BaseModel, Field
 
 
 VOICE_AUDIO_SUFFIXES = {".wav", ".mp3", ".flac"}
-VOICE_CLONE_ENGINES = {"f5-tts", "chatterbox"}
+VOICE_CLONE_ENGINES = {"f5-tts", "chatterbox", "qwen3-tts"}
 VOICE_BUILTIN_ENGINES = {"edge-tts", "kokoro"}
 VOICE_ENGINES = VOICE_CLONE_ENGINES | VOICE_BUILTIN_ENGINES
+
+
+def _engine_error() -> str:
+    return "Voice engine must be Edge-TTS, Kokoro, F5-TTS, Chatterbox, or Qwen3-TTS."
 
 def _app_data_dir() -> Path:
     configured = os.environ.get("NARRATIBLE_DATA_DIR")
@@ -161,7 +165,7 @@ def create_library_voice(
     if not clean_name:
         raise ValueError("Voice name is required.")
     if engine not in VOICE_ENGINES:
-        raise ValueError("Voice engine must be Edge-TTS, Kokoro, F5-TTS, or Chatterbox.")
+        raise ValueError(_engine_error())
 
     clean_provider_voice_id = (provider_voice_id or "").strip()
     sample_filename = ""
@@ -170,7 +174,7 @@ def create_library_voice(
             raise ValueError("Choose a provider voice for Edge-TTS or Kokoro.")
     else:
         if fileobj is None:
-            raise ValueError("Reference audio is required for F5-TTS and Chatterbox voices.")
+            raise ValueError("Reference audio is required for clone voices.")
         sample_filename = _safe_filename(filename, "reference.wav")
         if Path(sample_filename).suffix.lower() not in VOICE_AUDIO_SUFFIXES:
             raise ValueError("Reference audio must be WAV, MP3, or FLAC.")
@@ -214,7 +218,7 @@ def update_library_voice(voice_id: str, updates: dict) -> LibraryVoice:
         normalized.pop("engine_configured", None)
         if "engine" in normalized:
             if normalized["engine"] not in VOICE_ENGINES:
-                raise ValueError("Voice engine must be Edge-TTS, Kokoro, F5-TTS, or Chatterbox.")
+                raise ValueError(_engine_error())
             if voice.engine_configured and normalized["engine"] != voice.engine:
                 raise ValueError("A saved voice's engine cannot be changed. Create a new voice instead.")
             provider_voice_id = (normalized.get("provider_voice_id") or voice.provider_voice_id).strip()
@@ -256,7 +260,7 @@ def add_library_voice_sample(voice_id: str, filename: str, fileobj: BinaryIO, ac
         if voice.id != voice_id:
             continue
         if voice.engine not in VOICE_CLONE_ENGINES:
-            raise ValueError("Reference audio is only used by F5-TTS and Chatterbox voices.")
+            raise ValueError("Reference audio is only used by clone voices.")
 
         voice_dir = _voice_dir(voice.id)
         voice_dir.mkdir(parents=True, exist_ok=True)

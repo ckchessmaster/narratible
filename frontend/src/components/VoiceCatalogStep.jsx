@@ -20,28 +20,33 @@ const ENGINE_LABELS = {
   kokoro: 'Kokoro',
   'f5-tts': 'F5-TTS',
   chatterbox: 'Chatterbox',
+  'qwen3-tts': 'Qwen3-TTS',
 }
 
 const engineNeedsCuda = engine => engine === 'kokoro' || engine === 'f5-tts'
+const engineComingSoon = engine => engine === 'qwen3-tts'
 const voiceKey = item => `${item.engine}:${item.id}`
 const normalizeBuiltIn = (item, engine) => ({ ...item, engine, kind: 'built-in', engine_configured: true })
 const normalizeCustom = item => ({ ...item, kind: 'custom', locale: 'Custom voice' })
 
 function VoiceCard({ item, selected, disabled, onSelect }) {
   const engineLabel = ENGINE_LABELS[item.engine] || item.engine
+  const disabledReason = engineComingSoon(item.engine)
+    ? `${engineLabel} is coming soon.`
+    : `${engineLabel} is unavailable on the selected hardware.`
   return (
     <button
       type="button"
       className={`voice-catalog-card glass glass-hover${selected ? ' is-selected' : ''}`}
       disabled={disabled}
       onClick={() => onSelect(item)}
-      title={disabled ? `${engineLabel} is unavailable on the selected hardware.` : item.name}
+      title={disabled ? disabledReason : item.name}
     >
       <span className="voice-catalog-card-main">
         <span className="voice-catalog-name">{item.name}</span>
         <span className="text-xs text-muted">{item.locale || 'Voice'}</span>
       </span>
-      <span className="voice-engine-badge">{engineLabel}</span>
+      <span className="voice-engine-badge">{engineComingSoon(item.engine) ? `${engineLabel} · Soon` : engineLabel}</span>
     </button>
   )
 }
@@ -142,7 +147,7 @@ export default function VoiceCatalogStep({
   const builtInVoices = useMemo(() => [...edgeVoices, ...kokoroVoices], [edgeVoices, kokoroVoices])
   const allVoices = useMemo(() => [...builtInVoices, ...libraryVoices], [builtInVoices, libraryVoices])
   const selectedVoice = allVoices.find(item => item.engine === engine && item.id === voice) || null
-  const selectedUnavailable = selectedVoice && engineNeedsCuda(selectedVoice.engine) && !cudaEnabled
+  const selectedUnavailable = selectedVoice && (engineComingSoon(selectedVoice.engine) || (engineNeedsCuda(selectedVoice.engine) && !cudaEnabled))
   const recommended = RECOMMENDED_VOICES
     .map(recommendation => builtInVoices.find(item => item.engine === recommendation.engine && item.id === recommendation.id))
     .filter(Boolean)
@@ -157,6 +162,10 @@ export default function VoiceCatalogStep({
     if (!item.engine_configured) {
       toast('Confirm this voice\'s engine in Manage Voices before selecting it.', 'error')
       onOpenVoiceLibrary()
+      return
+    }
+    if (engineComingSoon(item.engine)) {
+      toast(`${ENGINE_LABELS[item.engine]} is coming soon.`, 'error')
       return
     }
     if (engineNeedsCuda(item.engine) && !cudaEnabled) return
@@ -280,7 +289,7 @@ export default function VoiceCatalogStep({
                     key={voiceKey(item)}
                     item={{ ...item, name: item.engine_configured ? item.name : `${item.name} (confirm engine)` }}
                     selected={item.engine === engine && item.id === voice}
-                    disabled={item.engine_configured && engineNeedsCuda(item.engine) && !cudaEnabled}
+                    disabled={item.engine_configured && (engineComingSoon(item.engine) || (engineNeedsCuda(item.engine) && !cudaEnabled))}
                     onSelect={selectCatalogVoice}
                   />
                 ))}

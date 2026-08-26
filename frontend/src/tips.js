@@ -123,7 +123,7 @@ export const TIPS = [
   {
     id: 'w3-custom-voices', context: 'wizard', step: 3, anchor: 'custom-voices', placement: 'bottom',
     title: 'Your saved voices',
-    body: 'Save Edge-TTS, Kokoro, F5-TTS, or Chatterbox voices with reusable names and defaults, then select them here.',
+    body: 'Save Edge-TTS, Kokoro, F5-TTS, or Chatterbox voices with reusable defaults. Qwen3-TTS is visible as a coming-soon option.',
   },
   {
     id: 'w3-browse-voices', context: 'wizard', step: 3, anchor: 'browse-voices', placement: 'bottom',
@@ -165,7 +165,7 @@ export const TIPS = [
   {
     id: 'vl-create', context: 'voice-library', anchor: 'voice-library-create', placement: 'right',
     title: 'Create once',
-    body: 'Save a built-in Edge-TTS or Kokoro voice, or create a clone with F5-TTS or Chatterbox.',
+    body: 'Compare online, local, and voice-cloning engines here. Each choice explains its speed, quality, and hardware tradeoffs.',
   },
   {
     id: 'vl-test', context: 'voice-library', anchor: 'voice-library-test', placement: 'left',
