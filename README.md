@@ -23,6 +23,62 @@ For Windows users who want to run the app natively without Docker or starting se
 
 *Note: Data and configuration for packaged apps are saved in your user profile at `%APPDATA%\narratible`.*
 
+### Build the Windows executable locally
+
+Local native builds require Windows, Python 3.12, and Node.js 20. The build
+script creates a dedicated `.venv-build` environment and installs the locked
+backend, GPU voice, Chatterbox, and PyInstaller dependencies automatically.
+It does not modify or depend on the development environment in `backend\.venv`.
+
+From the repository root:
+
+```powershell
+# Prepare frontend dependencies once.
+cd frontend
+npm install
+cd ..
+
+# Create/update .venv-build, then build the frontend and executable.
+.\build_local.ps1
+```
+
+The first run downloads the CUDA-enabled PyTorch and local voice dependencies,
+so it can take several minutes and requires substantial disk space. Later runs
+reuse `.venv-build` and only synchronize it when a dependency file changes.
+
+The executable and its bundled files are written to
+`dist\narratible\narratible.exe`. Run it from that directory so its bundled
+runtime files remain available.
+
+Use `-SkipFrontend` to reuse an existing `frontend\dist` build:
+
+```powershell
+.\build_local.ps1 -SkipFrontend
+```
+
+Prepare or verify the build environment without compiling the application:
+
+```powershell
+.\build_local.ps1 -SetupOnly
+```
+
+If the environment becomes damaged or package installation was interrupted,
+recreate it before building:
+
+```powershell
+.\build_local.ps1 -RecreateBuildEnv
+```
+
+To also create `packaging\Output\narratible_Installer.exe`, install
+[Inno Setup 6](https://jrsoftware.org/isdl.php) at its default location and run:
+
+```powershell
+.\build_local.ps1 -Full
+```
+
+The environment validation checks that Chatterbox imports successfully and
+that the PyTorch wheel includes CUDA support before PyInstaller starts.
+
 ---
 
 ## Quick Start (Local Dev)

@@ -157,11 +157,14 @@ export const enhanceLibraryVoiceSample = (id, options = {}) =>
   })
 export const deleteLibraryVoiceSample = (id, sampleFilename) =>
   request('DELETE', `/voice-library/${encodeURIComponent(id)}/samples/${encodeURIComponent(sampleFilename)}`)
-export const testDraftLibraryVoice = ({ text, speed, temperature, file }) => {
+export const testDraftLibraryVoice = ({ text, engine, speed, temperature, exaggeration, cfg_weight, file }) => {
   const fd = new FormData()
   fd.append('text', text)
+  fd.append('engine', engine || 'f5-tts')
   fd.append('speed', speed ?? 1.0)
   fd.append('temperature', temperature ?? 0.7)
+  fd.append('exaggeration', exaggeration ?? 0.5)
+  fd.append('cfg_weight', cfg_weight ?? 0.3)
   fd.append('file', file)
   return fetch(`${BASE}/voice-library/test-draft`, {
     method: 'POST',

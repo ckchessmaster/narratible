@@ -28,7 +28,8 @@ hiddenimports += _h
 for _pkg in [
     'transformers', 'torch', 'torchvision', 'torchaudio', 'torchcodec',
     'huggingface_hub', 'tokenizers', 'safetensors', 'accelerate',
-    'sentencepiece', 'protobuf', 'Pillow', 'numpy',
+    'sentencepiece', 'protobuf', 'Pillow', 'numpy', 'requests', 'filelock',
+    'tqdm', 'regex', 'packaging', 'PyYAML',
 ]:
     try:
         datas += copy_metadata(_pkg)
@@ -94,7 +95,7 @@ hiddenimports += _h
 # Chatterbox and its tokenizer/perceptual-codec dependencies use dynamic
 # imports and package data. Its model weights remain in the normal Hugging
 # Face cache and are downloaded on first use rather than bundled here.
-for _pkg in ['chatterbox', 's3tokenizer']:
+for _pkg in ['chatterbox', 's3tokenizer', 'perth']:
     _d, _b, _h = collect_all(_pkg)
     datas += _d
     binaries += _b

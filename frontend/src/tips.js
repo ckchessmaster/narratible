@@ -145,12 +145,12 @@ export const TIPS = [
   {
     id: 'vl-create', context: 'voice-library', anchor: 'voice-library-create', placement: 'right',
     title: 'Create once',
-    body: 'Save clean reference audio here and narratible will transcribe the usable F5 reference clip automatically.',
+    body: 'Save one clean reference here, then test it with either F5-TTS or Chatterbox before using it in the wizard.',
   },
   {
     id: 'vl-test', context: 'voice-library', anchor: 'voice-library-test', placement: 'left',
-    title: 'Test in isolation',
-    body: 'Use short sample text to tune and compare voices before selecting one in the TTS step.',
+    title: 'Compare clone engines',
+    body: 'Test the same reference with F5-TTS or Chatterbox, then tune the engine-specific controls before selecting it in the TTS step.',
   },
   {
     id: 'vl-list', context: 'voice-library', anchor: 'voice-library-list', placement: 'top',

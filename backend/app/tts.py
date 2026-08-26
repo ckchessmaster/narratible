@@ -9,6 +9,15 @@ from .tts_text import prepare_text_for_tts, segment_text_for_tts
 logger = logging.getLogger(__name__)
 
 
+def _prepare_frozen_torch(torch_module) -> None:
+    """Disable source-based TorchScript compilation in the frozen app."""
+    if getattr(sys, "frozen", False) and not getattr(
+        torch_module.jit, "_narratible_noop", False
+    ):
+        torch_module.jit.script = lambda fn, *args, **kwargs: fn
+        torch_module.jit._narratible_noop = True
+
+
 def compose_tts_text(title: str, body: str, read_headings: bool = True) -> str:
     """Combine a chapter heading with its body text for synthesis.
 
@@ -261,10 +270,11 @@ async def synthesize_speech(
 
     elif engine == "kokoro":
         try:
-            from kokoro import KPipeline
             import soundfile as sf
             import numpy as np
             import torch
+            _prepare_frozen_torch(torch)
+            from kokoro import KPipeline
         except ImportError as e:
             import sys
             if getattr(sys, 'frozen', False):
@@ -425,6 +435,7 @@ async def _synthesize_chatterbox(
         import numpy as np
         import soundfile as sf
         import torch
+        _prepare_frozen_torch(torch)
         from chatterbox.tts import ChatterboxTTS
     except (ImportError, RuntimeError) as exc:
         raise ImportError(
@@ -561,16 +572,10 @@ async def _synthesize_f5tts(
     """
     global _f5tts_model, _chatterbox_model
     try:
-        import sys as _sys
         import torch
         import soundfile as sf
         import numpy as np
-        # torch.jit.script no-op is now applied in the runtime hook before
-        # any ML library loads. The guard here is a belt-and-suspenders
-        # fallback for non-frozen (dev) runs where the hook doesn't execute.
-        if getattr(_sys, 'frozen', False) and not getattr(torch.jit, '_narratible_noop', False):
-            torch.jit.script = lambda fn, *a, **k: fn
-            torch.jit._narratible_noop = True
+        _prepare_frozen_torch(torch)
         # F5-TTS calls torchaudio.load internally, which dispatches to
         # torchcodec on torchaudio >= 2.9.  torchcodec needs FFmpeg DLLs that
         # the frozen build lacks, so route torchaudio I/O through soundfile

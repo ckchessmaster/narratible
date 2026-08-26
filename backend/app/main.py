@@ -1948,8 +1948,11 @@ class VoiceLibraryUpdateRequest(BaseModel):
 class VoiceLibraryTestRequest(BaseModel):
     text: str
     reference_text: str | None = None
+    engine: Literal["f5-tts", "chatterbox"] = "f5-tts"
     speed: float | None = None
     temperature: float | None = None
+    exaggeration: float = 0.5
+    cfg_weight: float = 0.3
 
 
 class VoiceLibrarySampleRequest(BaseModel):
@@ -2000,7 +2003,8 @@ async def tts_preview(project_id: str, req: PreviewRequest):
             enabled_modules=meta.enabled_modules,
         )
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        logger.exception("TTS preview could not load a required file")
+        raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.exception("TTS preview failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2153,8 +2157,11 @@ async def api_delete_voice_library_sample(voice_id: str, sample_filename: str):
 async def api_test_voice_library_draft(
     text: str = Form(...),
     reference_text: str = Form(""),
+    engine: Literal["f5-tts", "chatterbox"] = Form("f5-tts"),
     speed: float = Form(1.0),
     temperature: float = Form(0.7),
+    exaggeration: float = Form(0.5),
+    cfg_weight: float = Form(0.3),
     file: UploadFile = File(...),
 ):
     suffix = Path(file.filename).suffix.lower() if file.filename else ".wav"
@@ -2170,10 +2177,12 @@ async def api_test_voice_library_draft(
         await synthesize_speech(
             text=text[:500],
             output_path=preview_path,
-            engine="f5-tts",
+            engine=engine,
             voice="draft",
             speed=speed,
             temperature=temperature,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
             voice_sample_path=sample_path,
             voice_reference_text=None,
         )
@@ -2197,10 +2206,12 @@ async def api_test_voice_library_item(voice_id: str, req: VoiceLibraryTestReques
         await synthesize_speech(
             text=req.text[:500],
             output_path=preview_path,
-            engine="f5-tts",
+            engine=req.engine,
             voice=voice.id,
             speed=req.speed if req.speed is not None else voice.speed,
             temperature=req.temperature if req.temperature is not None else voice.temperature,
+            exaggeration=req.exaggeration,
+            cfg_weight=req.cfg_weight,
             voice_sample_path=get_library_voice_sample_path(voice_id),
             voice_reference_text=None,
         )
@@ -2953,4 +2964,7 @@ if getattr(sys, "frozen", False):
             local_path = frontend_dist / full_path
             if local_path.is_file() and full_path != "":
                 return FileResponse(local_path)
-            return FileResponse(frontend_dist / "index.html")
+            return FileResponse(
+                frontend_dist / "index.html",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )

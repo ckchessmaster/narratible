@@ -198,8 +198,17 @@ def test_voice_library_test_ignores_request_reference_text(tmp_path, monkeypatch
     asyncio.run(
         main.api_test_voice_library_item(
             "voice-1",
-            main.VoiceLibraryTestRequest(text="Test generation text.", reference_text="Request text"),
+            main.VoiceLibraryTestRequest(
+                text="Test generation text.",
+                reference_text="Request text",
+                engine="chatterbox",
+                exaggeration=0.65,
+                cfg_weight=0.25,
+            ),
         )
     )
 
     assert calls[0]["voice_reference_text"] is None
+    assert calls[0]["engine"] == "chatterbox"
+    assert calls[0]["exaggeration"] == 0.65
+    assert calls[0]["cfg_weight"] == 0.25

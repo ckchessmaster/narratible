@@ -45,6 +45,9 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
   const [sampleBusy, setSampleBusy] = useState('')
   const [enhancementDevice, setEnhancementDevice] = useState('auto')
   const [testText, setTestText] = useState(DEFAULT_TEST_TEXT)
+  const [testEngine, setTestEngine] = useState('f5-tts')
+  const [testExaggeration, setTestExaggeration] = useState(0.5)
+  const [testCfgWeight, setTestCfgWeight] = useState(0.3)
   const [previewUrl, setPreviewUrl] = useState('')
   const audioRef = useRef(null)
   const formRef = useRef(null)
@@ -243,9 +246,16 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
     }
     setTesting(true)
     try {
+      const testOptions = {
+        engine: testEngine,
+        speed: draft.speed,
+        temperature: draft.temperature,
+        exaggeration: testExaggeration,
+        cfg_weight: testCfgWeight,
+      }
       const response = isNew
-        ? await testDraftLibraryVoice({ text: testText, speed: draft.speed, temperature: draft.temperature, file: draft.file })
-        : await testLibraryVoice(selectedVoice.id, testText, { speed: draft.speed, temperature: draft.temperature })
+        ? await testDraftLibraryVoice({ text: testText, file: draft.file, ...testOptions })
+        : await testLibraryVoice(selectedVoice.id, testText, testOptions)
       if (!response.ok) throw await responseError(response)
       const blob = await response.blob()
       if (previewUrl) URL.revokeObjectURL(previewUrl)
@@ -334,7 +344,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                     accept=".wav,.mp3,.flac"
                     onChange={event => updateDraft({ file: event.target.files?.[0] || null })}
                   />
-                  <div className="text-xs text-muted mt-1">Use a clean single-speaker clip with no music. narratible will transcribe the usable F5 reference clip automatically.</div>
+                  <div className="text-xs text-muted mt-1">Use a clean single-speaker clip with no music. F5-TTS transcribes the usable reference automatically; Chatterbox conditions directly on the same clip.</div>
                 </div>
               )}
               {!isNew && (
@@ -475,6 +485,50 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
 
           <div className="glass p-4 mt-4" style={{ borderRadius: 'var(--radius-sm)' }} data-tip-anchor="voice-library-test">
             <div className="section-title">Test Voice</div>
+            <div className="segmented mb-3" role="group" aria-label="Voice cloning engine">
+              <button
+                type="button"
+                className={`segmented-btn${testEngine === 'f5-tts' ? ' is-active' : ''}`}
+                onClick={() => setTestEngine('f5-tts')}
+                disabled={testing}
+              >
+                F5-TTS
+              </button>
+              <button
+                type="button"
+                className={`segmented-btn${testEngine === 'chatterbox' ? ' is-active' : ''}`}
+                onClick={() => setTestEngine('chatterbox')}
+                disabled={testing}
+              >
+                Chatterbox
+              </button>
+            </div>
+            {testEngine === 'chatterbox' && (
+              <div className="voice-editor-grid mb-3">
+                <div className="field" style={{ marginBottom: 0 }}>
+                  <label>Expression - {testExaggeration.toFixed(2)}</label>
+                  <input
+                    type="range"
+                    min="0.25"
+                    max="1.0"
+                    step="0.05"
+                    value={testExaggeration}
+                    onChange={event => setTestExaggeration(parseFloat(event.target.value))}
+                  />
+                </div>
+                <div className="field" style={{ marginBottom: 0 }}>
+                  <label>CFG Weight - {testCfgWeight.toFixed(2)}</label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1.0"
+                    step="0.05"
+                    value={testCfgWeight}
+                    onChange={event => setTestCfgWeight(parseFloat(event.target.value))}
+                  />
+                </div>
+              </div>
+            )}
             <textarea
               rows={3}
               value={testText}
@@ -482,7 +536,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
             />
             <div className="flex gap-2 items-center mt-3">
               <button type="button" className="btn btn-secondary" onClick={handleTest} disabled={testing || (isNew && !draft.file)}>
-                {testing ? 'Testing...' : isNew ? 'Test Draft' : 'Test Voice'}
+                {testing ? 'Testing...' : `Test with ${testEngine === 'chatterbox' ? 'Chatterbox' : 'F5-TTS'}`}
               </button>
               <audio ref={audioRef} style={{ flex: 1 }} controls />
             </div>
