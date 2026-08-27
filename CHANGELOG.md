@@ -2,16 +2,6 @@
 
 ## Unreleased
 
-### Features
-- Added a Windows system tray menu for reopening narratible, viewing logs, opening the log folder, and quitting the hidden desktop process gracefully.
-- Added a desktop-only Diagnostics view with live filtered logs, pause and refresh controls, copy and download actions, and an explicit Quit command.
-
-### Improvements
-- Closing the browser tab now leaves narratible available from the system tray while preserving FastAPI and local-AI worker cleanup on explicit shutdown.
-
-### Bugfixes
-- Fixed the tray Quit confirmation buttons becoming unresponsive by moving the native dialog and shutdown work outside pystray's Windows message callback.
-
 ## v1.7.1 - 2026-08-27
 
 ### Packaging
@@ -23,6 +13,11 @@
 - Added **Settings > Local AI** engine status and management for installing, verifying, repairing, and removing managed profiles.
 - Added a persistent Kokoro sidecar worker so isolated dependencies do not require reloading the model for every chapter.
 - Added isolated CUDA 12.8 profiles and persistent workers for F5-TTS and Chatterbox; Qwen3-TTS is now labeled Coming Soon instead of appearing as a broken setup.
+- Added a Windows system tray menu for reopening narratible, viewing logs, opening the log folder, and quitting the hidden desktop process gracefully.
+- Added a desktop-only Diagnostics view with live filtered logs, pause and refresh controls, copy and download actions, and an explicit Quit command.
+
+### Improvements
+- Closing the browser tab now leaves narratible available from the system tray while preserving FastAPI and local-AI worker cleanup on explicit shutdown.
 
 ### Safety
 - Explicitly disallowed CPU PyTorch fallback and bound Kokoro installation to a hashed Windows/Python 3.12 CUDA 12.8 lockfile.
@@ -34,6 +29,7 @@
 - Added SoundFile and its native dependencies to the isolated Kokoro lock, and marked environments from older locks for update before synthesis.
 - Replaced the packaged Tk update prompt with the native Windows dialog and migrated to the current `pymupdf` import, removing Tcl version and `fitz` deprecation errors at startup.
 - Integrated CUDA/Kokoro setup progress into the installer and switched the packaged app to the Windows GUI subsystem so runtime maintenance no longer opens a command window.
+- Fixed the tray Quit confirmation buttons becoming unresponsive by moving the native dialog and shutdown work outside pystray's Windows message callback.
 
 ## v1.7.0 - 2026-08-26
 
