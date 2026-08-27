@@ -7,10 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version string to embed (e.g. 1.2.0). Defaults to the tag name on tag pushes.'
-        required: false
+        description: 'Release version to publish (e.g. 1.7.0 or v1.7.0).'
+        required: true
         type: string
-        default: '0.0.0-dev'
+      publish_release:
+        description: 'Publish the installer as a GitHub Release after building.'
+        required: true
+        type: boolean
+        default: false
 
 jobs:
   build-windows:
@@ -35,13 +39,21 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Set Version
+        id: release_version
         shell: pwsh
         run: |
-          if ($env:GITHUB_REF -match 'refs/tags/v(.+)') {
-            $version = $matches[1]
+          if ($env:GITHUB_REF -match 'refs/tags/(v.+)') {
+            $releaseTag = $matches[1]
           } else {
-            $version = '${{ inputs.version }}'
+            $requestedVersion = '${{ inputs.version }}'.Trim()
+            $releaseTag = 'v' + ($requestedVersion -replace '^v', '')
           }
+          $version = $releaseTag -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
+            throw "Invalid release version '$releaseTag'. Expected a semantic version such as v1.7.0."
+          }
+          echo "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+          echo "RELEASE_TAG=$releaseTag" >> $env:GITHUB_ENV
           echo "APP_VERSION=$version" >> $env:GITHUB_ENV
           echo "NARRATIBLE_APP_VERSION=$version" >> $env:GITHUB_ENV
           echo "VITE_APP_VERSION=$version" >> $env:GITHUB_ENV
@@ -164,10 +176,10 @@ jobs:
           if-no-files-found: error
 
       - name: Build Release Notes from CHANGELOG
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_release
         shell: pwsh
         run: |
-          $tag = $env:GITHUB_REF_NAME
+          $tag = $env:RELEASE_TAG
           $changelogPath = 'CHANGELOG.md'
 
           if (-not (Test-Path $changelogPath)) {
@@ -189,8 +201,10 @@ jobs:
           Set-Content -Path release-notes.md -Value $notes
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name != 'workflow_dispatch' || inputs.publish_release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release_version.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
           files: packaging/Output/narratible_Installer.exe
           body_path: release-notes.md
