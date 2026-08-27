@@ -225,6 +225,7 @@ Unidecode==1.4.0
 uritemplate==4.2.0
 urllib3==2.7.0
 uvicorn==0.52.4
+uv==0.12.6
 vocos==0.1.0
 wandb==0.28.2
 wasabi==1.1.3

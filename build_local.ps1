@@ -104,18 +104,13 @@ if (-not (Test-Python312 -FilePath $buildPython)) {
 $dependencyFiles = @(
     (Join-Path $repoRoot "backend\constraints.txt"),
     (Join-Path $repoRoot "backend\requirements.txt"),
-    (Join-Path $repoRoot "backend\requirements-build.txt"),
-    (Join-Path $repoRoot "backend\requirements-gpu.txt"),
-    (Join-Path $repoRoot "backend\requirements-chatterbox.txt"),
-    (Join-Path $repoRoot "backend\requirements-qwen3-tts.txt")
+    (Join-Path $repoRoot "backend\requirements-build.txt")
 )
 $fingerprintLines = @(
     "python=3.12",
     "pip=26.2.1",
     "setuptools=70.2.0",
-    "dependency-layout=3",
-    "torch=2.11.0+cu128",
-    "torchaudio=2.11.0+cu128"
+    "dependency-layout=4-slim-runtime"
 )
 foreach ($dependencyFile in $dependencyFiles) {
     $fingerprintLines += "$(Split-Path $dependencyFile -Leaf)=$((Get-FileHash $dependencyFile -Algorithm SHA256).Hash)"
@@ -131,22 +126,15 @@ $dependenciesInstalled = $false
 if ($installedFingerprint -ne $dependencyFingerprint.Trim()) {
     Write-Host "Installing locked build dependencies (first setup can take several minutes)..." -ForegroundColor Yellow
     Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "pip==26.2.1", "setuptools==70.2.0") -Description "Installing build tooling"
-    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "-c", $dependencyFiles[0], "torch==2.11.0", "torchaudio==2.11.0", "--index-url", "https://download.pytorch.org/whl/cu128") -Description "Installing CUDA-enabled PyTorch"
     Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "-r", $dependencyFiles[1]) -Description "Installing backend dependencies"
     Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "-r", $dependencyFiles[2]) -Description "Installing PyInstaller"
-    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "-r", $dependencyFiles[3]) -Description "Installing local voice engines"
-    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "-r", $dependencyFiles[4]) -Description "Installing Chatterbox"
-    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "-r", $dependencyFiles[5]) -Description "Installing Qwen3-TTS support"
-    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "--no-deps", "-c", $dependencyFiles[0], "qwen-tts==0.1.1") -Description "Installing Qwen3-TTS"
-    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "--upgrade", "--force-reinstall", "-c", $dependencyFiles[0], "torch==2.11.0", "torchaudio==2.11.0", "--index-url", "https://download.pytorch.org/whl/cu128") -Description "Restoring CUDA-enabled PyTorch"
-    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "pip", "install", "--upgrade", "--force-reinstall", "-c", $dependencyFiles[0], "transformers@git+https://github.com/huggingface/transformers.git@a530903e4e61784ca980bdbbca187f2b4db5ed59") -Description "Restoring pinned Transformers stack"
     $dependenciesInstalled = $true
 } else {
     Write-Host "Build dependencies are current." -ForegroundColor DarkGray
 }
 
 if ($dependenciesInstalled -or $SetupOnly -or $RecreateBuildEnv) {
-    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-c", "from PyInstaller import __version__ as pyinstaller_version; from chatterbox.tts import ChatterboxTTS; from f5_tts.api import F5TTS; from kokoro import KPipeline; from backend.app.tts import _prepare_qwen3_transformers; _prepare_qwen3_transformers(); from qwen_tts import Qwen3TTSModel; import en_core_web_sm, tokenizers, torch, torchaudio, transformers, sys; en_core_web_sm.load(disable=['tok2vec', 'tagger', 'parser', 'attribute_ruler', 'lemmatizer', 'ner']); print('Build environment ready | PyInstaller', pyinstaller_version, '| torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| transformers', transformers.__version__, '| tokenizers', tokenizers.__version__, '| cuda', torch.version.cuda); sys.exit(0 if torch.version.cuda else 1)") -Description "Validating the build environment"
+    Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-c", "from PyInstaller import __version__ as pyinstaller_version; from backend.app.runtime_engines import load_runtime_catalog; import edge_tts, numpy; catalog=load_runtime_catalog(); print('Slim build environment ready | PyInstaller', pyinstaller_version, '| edge-tts', edge_tts.__version__, '| profiles', len(catalog['profiles']))") -Description "Validating the slim build environment"
 } else {
     Write-Host "Build environment unchanged; skipping heavyweight dependency import checks." -ForegroundColor DarkGray
 }
@@ -158,6 +146,9 @@ if ($dependenciesInstalled) {
         Remove-Item -Recurse -Force $pyinstallerWorkPath
     }
 }
+
+Write-Host "Preparing private Python and uv runtime tools..." -ForegroundColor DarkGray
+& (Join-Path $repoRoot "packaging\prepare_runtime_tools.ps1") -PythonExe $buildPython -OutputDir (Join-Path $repoRoot "build\runtime-tools")
 if ($SetupOnly) {
     Write-Host "`nSUCCESS! Dedicated build environment is ready at: .venv-build" -ForegroundColor Green
     exit 0
@@ -185,10 +176,24 @@ $packageDirectory = Join-Path $repoRoot "dist\narratible"
 $packagedExecutable = Join-Path $packageDirectory "narratible.exe"
 Set-Content -Path (Join-Path $packageDirectory "app-version.txt") -Value $Version -NoNewline
 if (-not $SkipPackageVerification) {
-    Write-Host "`nVerifying bundled TTS runtimes..." -ForegroundColor Yellow
-    Invoke-NativeCommand -FilePath $packagedExecutable -ArgumentList @("--verify-tts-imports") -Description "Validating packaged TTS imports"
+    Write-Host "`nVerifying slim packaged runtime..." -ForegroundColor Yellow
+    Invoke-NativeCommand -FilePath $packagedExecutable -ArgumentList @("--verify-tts-imports") -Description "Validating slim packaged imports"
+    $forbiddenPackages = @("torch", "torchaudio", "transformers", "kokoro", "f5_tts", "chatterbox", "qwen_tts", "bitsandbytes")
+    foreach ($packageName in $forbiddenPackages) {
+        if (Test-Path (Join-Path $packageDirectory "_internal\$packageName")) {
+            throw "Slim package unexpectedly contains $packageName."
+        }
+    }
+    if (Get-ChildItem $packageDirectory -Recurse -Filter "torch_cuda.dll" -ErrorAction SilentlyContinue) {
+        throw "Slim package unexpectedly contains torch_cuda.dll."
+    }
+    foreach ($tclName in @("_tcl_data", "_tk_data", "tkinter")) {
+        if (Test-Path (Join-Path $packageDirectory "_internal\$tclName")) {
+            throw "Slim package unexpectedly contains $tclName."
+        }
+    }
 } else {
-    Write-Host "`nSkipping packaged TTS runtime verification..." -ForegroundColor DarkGray
+    Write-Host "`nSkipping slim packaged runtime verification..." -ForegroundColor DarkGray
 }
 
 Write-Host "`nSUCCESS! Executable is at: dist\narratible\narratible.exe" -ForegroundColor Green
@@ -204,6 +209,13 @@ $isccPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 if (Test-Path $isccPath) {
     & $isccPath "/DMyAppVersion=$Version" "packaging\installer.iss"
     if ($LASTEXITCODE -eq 0) {
+        $installerPath = Join-Path $repoRoot "packaging\Output\narratible_Installer.exe"
+        $installerSize = (Get-Item $installerPath).Length
+        $maxReleaseSize = 1800MB
+        Write-Host ("Installer size: {0:N1} MB" -f ($installerSize / 1MB)) -ForegroundColor DarkGray
+        if ($installerSize -gt $maxReleaseSize) {
+            throw "Installer exceeds the 1.8 GiB release safety limit."
+        }
         Write-Host "`nSUCCESS! Installer is at: packaging\Output\narratible_Installer.exe" -ForegroundColor Green
     } else {
         Write-Host "`n[ERROR] Inno Setup compilation failed (exit code $LASTEXITCODE)." -ForegroundColor Red

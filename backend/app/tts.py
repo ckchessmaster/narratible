@@ -356,6 +356,11 @@ def unload_tts():
             pass
         gc.collect()
         logger.info("Unloaded TTS models to free VRAM.")
+    try:
+        from .runtime_workers import shutdown_runtime_workers
+        shutdown_runtime_workers()
+    except Exception:
+        logger.exception("Failed to stop managed TTS workers cleanly.")
 
 
 async def get_available_voices(engine: str = "edge-tts") -> list[dict]:
@@ -421,6 +426,25 @@ async def synthesize_speech(
         await communicate.save(str(output_path))
 
     elif engine == "kokoro":
+        from .runtime_engines import installed_profile_state
+        if installed_profile_state("kokoro") is not None:
+            from .config import get_device_string
+            from .runtime_workers import synthesize_kokoro
+
+            segments = [
+                {"text": segment.text, "pause_after_ms": segment.pause_after_ms}
+                for segment in segment_text_for_tts(text, engine="kokoro")
+            ]
+            await synthesize_kokoro(
+                text=text,
+                output_path=output_path,
+                voice=voice,
+                speed=speed,
+                device=get_device_string(),
+                segments=segments,
+                progress_cb=progress_cb,
+            )
+            return
         try:
             import soundfile as sf
             import numpy as np
@@ -519,9 +543,49 @@ async def synthesize_speech(
         sf.write(str(output_path), final_audio, 24000)
 
     elif engine == "f5-tts":
+        from .runtime_engines import installed_profile_state
+        if installed_profile_state("f5-tts") is not None:
+            from .config import get_device_string
+            from .runtime_workers import synthesize_clone_engine
+
+            if voice_sample_path is None or not voice_sample_path.exists():
+                raise ValueError("F5-TTS requires a voice sample. Create or select a Voice Library voice first.")
+            await synthesize_clone_engine(
+                "f5-tts",
+                output_path=output_path,
+                reference_path=voice_sample_path,
+                reference_text=voice_reference_text,
+                speed=speed,
+                temperature=temperature,
+                device=get_device_string(),
+                segments=[{"text": item.text, "pause_after_ms": item.pause_after_ms} for item in segment_text_for_tts(text, engine="f5-tts")],
+                progress_cb=progress_cb,
+            )
+            return
         await _synthesize_f5tts(text, output_path, speed, temperature, voice_sample_path, voice_reference_text, voice_samples_dir, progress_cb)
 
     elif engine == "chatterbox":
+        from .runtime_engines import installed_profile_state
+        if installed_profile_state("chatterbox") is not None:
+            from .config import get_device_string
+            from .runtime_workers import synthesize_clone_engine
+
+            if voice_sample_path is None or not voice_sample_path.exists():
+                raise ValueError("Chatterbox requires a voice sample. Create or select a Voice Library voice first.")
+            await synthesize_clone_engine(
+                "chatterbox",
+                output_path=output_path,
+                reference_path=voice_sample_path,
+                reference_text=None,
+                speed=speed,
+                temperature=temperature,
+                device=get_device_string(),
+                segments=[{"text": item.text, "pause_after_ms": item.pause_after_ms} for item in segment_text_for_tts(text, engine="chatterbox")],
+                exaggeration=exaggeration,
+                cfg_weight=cfg_weight,
+                progress_cb=progress_cb,
+            )
+            return
         await _synthesize_chatterbox(
             text,
             output_path,

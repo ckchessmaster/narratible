@@ -34,7 +34,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -65,19 +65,12 @@ jobs:
           key: pip-base-${{ runner.os }}-${{ hashFiles('backend/requirements*.txt', 'backend/constraints.txt') }}
           restore-keys: pip-base-${{ runner.os }}-
 
-      - name: Cache pip (GPU ML components)
-        uses: actions/cache@v4
-        with:
-          path: ~\AppData\Local\pip\Cache
-          key: pip-gpu-${{ runner.os }}-cu128-torch2.11-${{ hashFiles('backend/requirements-gpu.txt', 'backend/requirements-chatterbox.txt', 'backend/requirements-qwen3-tts.txt', 'backend/constraints.txt') }}
-          restore-keys: pip-gpu-${{ runner.os }}-cu128-
-
       - name: Cache PyInstaller work directory
         uses: actions/cache@v4
         with:
           path: build
-          key: pyinstaller-cu128-${{ runner.os }}-${{ hashFiles('narratible.spec', 'desktop_app.py', 'backend/**/*.py') }}
-          restore-keys: pyinstaller-cu128-${{ runner.os }}-
+          key: pyinstaller-slim-runtime-${{ runner.os }}-${{ hashFiles('narratible.spec', 'desktop_app.py', 'backend/**/*.py', 'backend/runtime_profiles/**', 'packaging/prepare_runtime_tools.ps1') }}
+          restore-keys: pyinstaller-slim-runtime-${{ runner.os }}-
 
       - name: Build Frontend
         run: |
@@ -85,48 +78,24 @@ jobs:
           npm ci
           npm run build
 
-      - name: Install PyTorch (CUDA build)
-        run: |
-          python -m pip install "pip==26.2.1" "setuptools==70.2.0"
-          # Install the CUDA-enabled torch/torchaudio FIRST so it is the build that
-          # gets frozen. requirements.txt would otherwise pull the +cpu wheel from
-          # PyPI as a transitive dependency, leaving CUDA permanently unavailable.
-          pip install -c backend/constraints.txt "torch==2.11.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu128
-
       - name: Install Python Dependencies
         run: |
-          # Base deps. The CUDA torch installed above already satisfies the torch
-          # requirement, so these will NOT replace it with a +cpu wheel.
+          python -m pip install "pip==26.2.1" "setuptools==70.2.0"
           pip install -r backend/requirements.txt
           pip install -r backend/requirements-build.txt
 
-      - name: Install GPU ML Components
-        run: |
-          pip install -r backend/requirements-gpu.txt
-          # Chatterbox pins an older torch build in its package metadata. Install
-          # all of its dependencies first, then restore the CUDA build selected by
-          # this release below. Runtime compatibility is checked before freezing.
-          pip install -r backend/requirements-chatterbox.txt
-          pip install -r backend/requirements-qwen3-tts.txt
-          pip install --no-deps -c backend/constraints.txt "qwen-tts==0.1.1"
-
-      - name: Restore release ML builds
-        run: |
-          pip install --upgrade --force-reinstall -c backend/constraints.txt "torch==2.11.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu128
-          # Chatterbox replaces Transformers and its coupled dependencies with
-          # older releases. Restore the complete constrained Transformers stack.
-          pip install --upgrade --force-reinstall -c backend/constraints.txt "transformers @ git+https://github.com/huggingface/transformers.git@a530903e4e61784ca980bdbbca187f2b4db5ed59"
-
-      - name: Verify CUDA-enabled PyTorch
+      - name: Prepare private runtime tools
         shell: pwsh
         run: |
-          # The runner has no GPU, so torch.cuda.is_available() is always False here.
-          # Instead assert this is a CUDA *build* (torch.version.cuda is set), which is
-          # what determines whether the shipped app can ever reach a GPU.
-          python -c "import torch, torchaudio, sys; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| cuda', torch.version.cuda); sys.exit(0 if torch.version.cuda else 1)"
-          if ($LASTEXITCODE -ne 0) { throw 'PyTorch is a CPU-only build (torch.version.cuda is None). Aborting to avoid shipping a non-GPU installer.' }
-          python -c "from chatterbox.tts import ChatterboxTTS; import tokenizers, torch, transformers; print('Chatterbox import OK with torch', torch.__version__, '| transformers', transformers.__version__, '| tokenizers', tokenizers.__version__)"
-          python -c "from backend.app.tts import _prepare_qwen3_transformers; _prepare_qwen3_transformers(); from qwen_tts import Qwen3TTSModel; import torch, transformers; print('Qwen3-TTS import OK with torch', torch.__version__, '| transformers', transformers.__version__)"
+          pwsh -File packaging\prepare_runtime_tools.ps1 -PythonExe python -OutputDir build\runtime-tools
+
+      - name: Verify slim build inputs
+        shell: pwsh
+        run: |
+          python -c "from backend.app.runtime_engines import load_runtime_catalog; import edge_tts; catalog=load_runtime_catalog(); print('Slim base ready | edge-tts', edge_tts.__version__, '| managed profiles', len(catalog['profiles']))"
+          $privatePython = Join-Path 'build\runtime-tools' (Get-Content 'build\runtime-tools\python-path.txt' -Raw)
+          & $privatePython -c "import platform; print('Private Python', platform.python_version())"
+          & 'build\runtime-tools\uv.exe' --version
 
       - name: Compile PyInstaller Standalone App
         shell: pwsh
@@ -137,36 +106,58 @@ jobs:
           }
           Set-Content -Path 'dist\narratible\app-version.txt' -Value $env:APP_VERSION -NoNewline
 
-      - name: Verify packaged TTS imports
+      - name: Verify slim packaged runtime
         shell: pwsh
         run: |
           & 'dist\narratible\narratible.exe' --verify-tts-imports
           if ($LASTEXITCODE -ne 0) {
-            throw "Packaged TTS import verification failed (exit code $LASTEXITCODE)."
+            throw "Slim packaged runtime verification failed (exit code $LASTEXITCODE)."
           }
 
-      - name: Verify CUDA libraries bundled in dist
+      - name: Verify local AI is external to dist
         shell: pwsh
         run: |
-          $libDir = 'dist\narratible\_internal\torch\lib'
-          if (-not (Test-Path "$libDir\torch_cuda.dll")) {
-            throw "torch_cuda.dll not found in $libDir — the frozen build is CPU-only."
+          $internalDir = 'dist\narratible\_internal'
+          $forbiddenPackages = @('torch', 'torchaudio', 'transformers', 'kokoro', 'f5_tts', 'chatterbox', 'qwen_tts', 'bitsandbytes')
+          foreach ($packageName in $forbiddenPackages) {
+            if (Test-Path "$internalDir\$packageName") {
+              throw "Slim package unexpectedly contains $packageName."
+            }
           }
-          if (-not (Test-Path 'dist\narratible\_internal\chatterbox')) {
-            throw 'Chatterbox package not found in frozen distribution.'
+          if (Get-ChildItem 'dist\narratible' -Recurse -Filter 'torch_cuda.dll' -ErrorAction SilentlyContinue) {
+            throw 'Slim package unexpectedly contains torch_cuda.dll.'
           }
-          if (-not (Test-Path 'dist\narratible\_internal\qwen_tts')) {
-            throw 'Qwen3-TTS package not found in frozen distribution.'
+          foreach ($tclName in @('_tcl_data', '_tk_data', 'tkinter')) {
+            if (Test-Path "$internalDir\$tclName") {
+              throw "Slim package unexpectedly contains $tclName."
+            }
+          }
+          if (-not (Test-Path "$internalDir\runtime-tools\uv.exe")) {
+            throw 'Managed runtime uv.exe is missing from the frozen distribution.'
+          }
+          if (-not (Test-Path "$internalDir\runtime-tools\python-path.txt")) {
+            throw 'Managed runtime Python marker is missing from the frozen distribution.'
           }
           if (-not (Test-Path 'dist\narratible\_internal\optional_runtime\voice_enhancement.py')) {
             throw 'Isolated voice-enhancement worker not found in frozen distribution.'
           }
-          Write-Host 'Confirmed torch_cuda.dll present in dist.'
+          Write-Host 'Confirmed local AI packages are external to the slim base app.'
 
       - name: Compile Inno Setup Installer
         shell: pwsh
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$env:APP_VERSION" packaging\installer.iss
+
+      - name: Verify installer release size
+        shell: pwsh
+        run: |
+          $installer = Get-Item 'packaging\Output\narratible_Installer.exe'
+          $distBytes = (Get-ChildItem 'dist\narratible' -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          Write-Host ("Unpacked app: {0:N1} MB" -f ($distBytes / 1MB))
+          Write-Host ("Installer: {0:N1} MB" -f ($installer.Length / 1MB))
+          if ($installer.Length -gt 1800MB) {
+            throw 'Installer exceeds the 1.8 GiB release safety limit.'
+          }
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -202,9 +193,15 @@ jobs:
 
       - name: Create GitHub Release
         if: github.event_name != 'workflow_dispatch' || inputs.publish_release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release_version.outputs.release_tag }}
-          target_commitish: ${{ github.sha }}
-          files: packaging/Output/narratible_Installer.exe
-          body_path: release-notes.md
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.release_version.outputs.release_tag }}'
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit $tag --repo $env:GITHUB_REPOSITORY --notes-file release-notes.md
+          } else {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --target '${{ github.sha }}' --title $tag --notes-file release-notes.md
+          }
+          gh release upload $tag packaging\Output\narratible_Installer.exe --repo $env:GITHUB_REPOSITORY --clobber

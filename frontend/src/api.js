@@ -36,6 +36,12 @@ export const getAppInfo = () => request('GET', '/health')
 export const getSettings = () => request('GET', '/settings')
 export const saveSettings = (cfg) => request('PUT', '/settings', cfg)
 export const getSystemInfo = () => request('GET', '/system/info')
+export const getRuntimeEngines = () => request('GET', '/runtime/engines')
+export const getRuntimePreflight = () => request('GET', '/runtime/preflight')
+export const installRuntimeEngine = profile => request('POST', `/runtime/engines/${encodeURIComponent(profile)}/install`)
+export const repairRuntimeEngine = profile => request('POST', `/runtime/engines/${encodeURIComponent(profile)}/repair`)
+export const verifyRuntimeEngine = profile => request('POST', `/runtime/engines/${encodeURIComponent(profile)}/verify`)
+export const removeRuntimeEngine = profile => request('DELETE', `/runtime/engines/${encodeURIComponent(profile)}`)
 
 // Key validation
 export const validateGeminiKey = (api_key) => request('POST', '/validate/gemini-key', { api_key })

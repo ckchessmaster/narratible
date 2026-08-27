@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import { cancelTask, deleteProject, getAppInfo, getSystemInfo, getSettings, listProjects } from './api'
+import { cancelTask, deleteProject, getAppInfo, getRuntimeEngines, getRuntimePreflight, getSystemInfo, getSettings, listProjects } from './api'
 import './App.css'
 import './index.css'
 import Step1Upload from './components/Step1Upload'
@@ -34,6 +34,7 @@ export default function App() {
   const [voiceLibraryRevision, setVoiceLibraryRevision] = useState(0)
   const [toasts, setToasts] = useState([])
   const [cudaEnabled, setCudaEnabled] = useState(true)
+  const [runtimeProfiles, setRuntimeProfiles] = useState({})
   const [hasCloudKey, setHasCloudKey] = useState(false)
   const [hasModernizationLlm, setHasModernizationLlm] = useState(false)
   const [debugMode, setDebugMode] = useState(false)
@@ -48,13 +49,16 @@ export default function App() {
   const activeTips = view === 'voice-library' ? voiceLibraryTips : wizardTips
 
   const refreshHardwareState = useCallback(() => {
-    Promise.all([getSystemInfo(), getSettings()]).then(([info, cfg]) => {
+    Promise.all([getSystemInfo(), getSettings(), getRuntimeEngines(), getRuntimePreflight()]).then(([info, cfg, runtime, preflight]) => {
       const gpus = info?.gpus ?? []
       const selectedIdx = cfg?.selected_gpu_index ?? 0
       const selectedGpu = gpus.find(g => g.index === selectedIdx) ?? gpus[0]
       const cloudConfigured = !!(cfg?.gemini_api_key || cfg?.openai_api_key)
-      const localConfigured = cfg?.llm_provider === 'local' && !!cfg?.embedded_llm_model && !!selectedGpu?.cuda
-      setCudaEnabled(selectedGpu?.cuda ?? true)
+      const profiles = Object.fromEntries((runtime?.profiles ?? []).map(profile => [profile.id, profile]))
+      const hardwareReady = preflight?.supported ?? selectedGpu?.cuda ?? false
+      const localConfigured = cfg?.llm_provider === 'local' && !!cfg?.embedded_llm_model && profiles['embedded-llm']?.status === 'verified'
+      setCudaEnabled(hardwareReady)
+      setRuntimeProfiles(profiles)
       setHasCloudKey(cloudConfigured)
       setHasModernizationLlm(cloudConfigured || localConfigured)
       setDebugMode(!!(cfg?.debug_mode))
@@ -180,6 +184,7 @@ export default function App() {
             onBack={() => setView('wizard')}
             toast={toast}
             onChanged={() => setVoiceLibraryRevision(value => value + 1)}
+            runtimeProfiles={runtimeProfiles}
           />
         ) : (
           <>
@@ -274,6 +279,7 @@ export default function App() {
                 onBack={back}
                 toast={toast}
                 cudaEnabled={cudaEnabled}
+                runtimeProfiles={runtimeProfiles}
                 onOpenVoiceLibrary={() => setView('voice-library')}
                 voiceLibraryRevision={voiceLibraryRevision}
               />

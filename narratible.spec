@@ -1,14 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
-# narratible PyInstaller spec — GPU build only.
-# All embedded ML engines (transformers, kokoro, f5-tts, Chatterbox, Qwen3-TTS,
-# bitsandbytes) are expected
-# to be installed in the build environment. Build will fail if they are absent.
-
-import importlib.util
-from PyInstaller.utils.hooks import collect_all, collect_data_files, copy_metadata
+# narratible PyInstaller spec - slim base application.
+# CUDA PyTorch, local TTS engines, and the embedded LLM are installed into
+# managed sidecar runtimes and must not be frozen into this distribution.
 
 datas = [
     ('frontend/dist', 'frontend_dist'),
+    ('backend/runtime_profiles', 'runtime_profiles'),
+    ('backend/app/runtime_worker_scripts', 'runtime_workers'),
+    ('build/runtime-tools', 'runtime-tools'),
     # Resemble Enhance must use an isolated Python/Torch environment. Ship a
     # real source worker because an external interpreter cannot import modules
     # from PyInstaller's PYZ archive.
@@ -17,126 +16,6 @@ datas = [
 ]
 binaries = []
 hiddenimports = []
-
-# transformers lazy-loads many submodules dynamically; collect_all bundles them.
-# copy_metadata ensures importlib.metadata lookups inside the frozen app succeed
-# instead of raising StopIteration (fixed by rthook_metadata_fix.py at runtime).
-_d, _b, _h = collect_all('transformers')
-datas += _d
-binaries += _b
-hiddenimports += _h
-for _pkg in [
-    'transformers', 'torch', 'torchvision', 'torchaudio', 'torchcodec',
-    'huggingface_hub', 'tokenizers', 'safetensors', 'accelerate',
-    'sentencepiece', 'protobuf', 'Pillow', 'numpy', 'requests', 'filelock',
-    'tqdm', 'regex', 'packaging', 'PyYAML',
-]:
-    try:
-        datas += copy_metadata(_pkg)
-    except Exception:
-        pass
-
-# Kokoro dynamically discovers its voice data and model helpers at runtime.
-_d, _b, _h = collect_all('kokoro')
-datas += _d
-binaries += _b
-hiddenimports += _h
-
-# language_tags is a transitive Kokoro dependency that ships JSON data files.
-# collect_all('kokoro') does not recursively collect dependency data, so we
-# must add it explicitly — otherwise _internal/language_tags/data/json/ is missing.
-_d, _b, _h = collect_all('language_tags')
-datas += _d
-binaries += _b
-hiddenimports += _h
-
-# espeakng_loader ships the espeak-ng-data directory used by Kokoro's phonemizer.
-_d, _b, _h = collect_all('espeakng_loader')
-datas += _d
-binaries += _b
-hiddenimports += _h
-
-# misaki ships pronunciation dictionary JSON/text files (us_gold, gb_gold, etc.)
-_d, _b, _h = collect_all('misaki')
-datas += _d
-binaries += _b
-hiddenimports += _h
-
-# spaCy is used by misaki's G2P for tokenisation/POS tagging.
-# en_core_web_sm is the spaCy model misaki loads; collect its data files and
-# metadata so spacy.util.is_package('en_core_web_sm') returns True in the
-# frozen app and the model loads without triggering a network download.
-_d, _b, _h = collect_all('spacy')
-datas += _d
-binaries += _b
-hiddenimports += _h
-
-_d, _b, _h = collect_all('en_core_web_sm')
-datas += _d
-binaries += _b
-hiddenimports += _h
-try:
-    datas += copy_metadata('en_core_web_sm')
-except Exception:
-    pass
-
-# phonemizer ships festival/segments data files used for text-to-phoneme conversion.
-_d, _b, _h = collect_all('phonemizer')
-datas += _d
-binaries += _b
-hiddenimports += _h
-
-# F5-TTS uses dynamic imports internally.
-_d, _b, _h = collect_all('f5_tts')
-datas += _d
-binaries += _b
-hiddenimports += _h
-
-# Chatterbox and its tokenizer/perceptual-codec dependencies use dynamic
-# imports and package data. Its model weights remain in the normal Hugging
-# Face cache and are downloaded on first use rather than bundled here.
-for _pkg in ['chatterbox', 's3tokenizer', 'perth']:
-    _d, _b, _h = collect_all(_pkg)
-    datas += _d
-    binaries += _b
-    hiddenimports += _h
-hiddenimports += ['perth']
-for _dist in [
-    'chatterbox-tts', 's3tokenizer', 'resemble-perth', 'conformer',
-    'diffusers', 'librosa', 'pyloudnorm', 'omegaconf',
-]:
-    try:
-        datas += copy_metadata(_dist)
-    except Exception:
-        pass
-
-# Qwen3-TTS dynamically loads its model and tokenizer implementation. Model
-# weights remain in the normal Hugging Face cache and download on first use.
-_d, _b, _h = collect_all('qwen_tts')
-datas += _d
-binaries += _b
-hiddenimports += _h
-for _dist in ['qwen-tts', 'onnxruntime', 'sox', 'einops']:
-    try:
-        datas += copy_metadata(_dist)
-    except Exception:
-        pass
-
-# bitsandbytes loads platform-specific shared libraries via ctypes.
-_d, _b, _h = collect_all('bitsandbytes')
-datas += _d
-binaries += _b
-hiddenimports += _h
-
-# TorchScript (torch.jit.script) calls inspect.getsource() at model-load time,
-# which requires real .py files on disk — PyInstaller normally discards them.
-# collect_data_files with include_py_files=True copies the source alongside the
-# compiled bytecode in _internal/ so inspect can find them by path.
-for _ts_pkg in ['vocos', 'f5_tts', 'chatterbox', 'qwen_tts']:
-    try:
-        datas += collect_data_files(_ts_pkg, include_py_files=True)
-    except Exception:
-        pass
 
 a = Analysis(
     ['desktop_app.py'],
@@ -147,7 +26,13 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['packaging/rthook_metadata_fix.py'],
-    excludes=[],
+    excludes=[
+        'accelerate', 'bitsandbytes', 'chatterbox', 'en_core_web_sm',
+        'f5_tts', 'kokoro', 'librosa', 'misaki', 'onnxruntime', 'perth',
+        'phonemizer', 'qwen_tts', 's3tokenizer', 'spacy', 'torch',
+        'torchaudio', 'torchcodec', 'torchvision', 'transformers', 'vocos',
+        'tkinter', '_tkinter',
+    ],
     noarchive=False,
     optimize=0,
 )
@@ -163,7 +48,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

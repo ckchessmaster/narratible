@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "worker_protocol_version": 1,
+  "python_version": "3.12",
+  "pytorch": {
+    "version": "2.11.0",
+    "torchaudio_version": "2.11.0",
+    "backend": "cu128",
+    "index_url": "https://download.pytorch.org/whl/cu128",
+    "allow_cpu_fallback": false
+  },
+  "profiles": [
+    {
+      "id": "kokoro",
+      "label": "Kokoro",
+      "kind": "tts",
+      "version": "0.9.4",
+      "verify_module": "kokoro",
+      "default_install": true,
+      "requires_cuda": true,
+      "project_file": "kokoro/pyproject.toml",
+      "lock_file": "kokoro/uv.lock",
+      "lock_sha256": "77d48fe56c8b11db0c6375fe89cc3ec5c0a4631fefda6a1a8a176fa1bb9c8726",
+      "model_download": "installer",
+      "estimated_download_mb": 3100,
+      "estimated_disk_mb": 6200
+    },
+    {
+      "id": "f5-tts",
+      "label": "F5-TTS",
+      "kind": "tts",
+      "version": "1.1.22",
+      "verify_module": "f5_tts",
+      "default_install": false,
+      "requires_cuda": true,
+      "project_file": "f5-tts/pyproject.toml",
+      "lock_file": "f5-tts/uv.lock",
+      "lock_sha256": "a6ffc83ca4634ae70b37e09a04a7b3a803831fcb05b36c1fe460fdf30e2d0854",
+      "model_download": "install",
+      "estimated_download_mb": 3300,
+      "estimated_disk_mb": 6800
+    },
+    {
+      "id": "chatterbox",
+      "label": "Chatterbox",
+      "kind": "tts",
+      "version": "0.1.7",
+      "verify_module": "chatterbox",
+      "default_install": false,
+      "requires_cuda": true,
+      "project_file": "chatterbox/pyproject.toml",
+      "lock_file": "chatterbox/uv.lock",
+      "lock_sha256": "65109bcc9488ddf6f9a50f08eac6b691698b41483b27e24f080d9e577f82d42c",
+      "model_download": "install",
+      "estimated_download_mb": 3500,
+      "estimated_disk_mb": 7600
+    },
+    {
+      "id": "qwen3-tts",
+      "label": "Qwen3-TTS",
+      "kind": "tts",
+      "availability": "coming_soon",
+      "default_install": false,
+      "requires_cuda": true,
+      "model_download": "install",
+      "estimated_download_mb": 6800,
+      "estimated_disk_mb": 12500
+    },
+    {
+      "id": "embedded-llm",
+      "label": "Embedded LLM",
+      "kind": "llm",
+      "availability": "planned",
+      "default_install": false,
+      "requires_cuda": true,
+      "model_download": "on_demand",
+      "estimated_download_mb": 3100,
+      "estimated_disk_mb": 6200
+    }
+  ]
+}

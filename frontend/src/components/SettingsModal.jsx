@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { getSettings, saveSettings, getSystemInfo,
          validateGeminiKey, validateOpenAIKey, validateHuggingFaceToken } from '../api'
 import Coachmark from './Coachmark'
+import LocalEnginesSettings from './LocalEnginesSettings'
 import useTips from '../useTips'
 
 const PRESET_FAMILIES = [
@@ -538,8 +539,11 @@ export default function SettingsModal({ onClose, toast }) {
             {/* ── Local AI tab ─────────────────────────────────────────────────── */}
             {activeTab === 'local' && (
               <>
+                <div className="section-title">Local Engines</div>
+                <LocalEnginesSettings />
+
                 {!cudaEnabled && (
-                  <div className="glass p-3 mb-4" style={{
+                  <div className="glass p-3 mb-4 mt-4" style={{
                     borderRadius: 'var(--radius-sm)',
                     background: 'rgba(245,158,11,0.08)',
                     border: '1px solid rgba(245,158,11,0.35)'

@@ -791,6 +791,111 @@
   overflow-wrap: anywhere;
 }
 
+.runtime-engine-settings {
+  border-block: 1px solid var(--glass-border);
+}
+
+.runtime-engine-summary,
+.runtime-engine-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 2px;
+}
+
+.runtime-engine-summary {
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.runtime-engine-summary-title,
+.runtime-engine-name {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.runtime-engine-list {
+  display: grid;
+}
+
+.runtime-engine-row + .runtime-engine-row {
+  border-top: 1px solid var(--glass-border);
+}
+
+.runtime-engine-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.runtime-engine-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.runtime-engine-state {
+  flex-shrink: 0;
+  min-width: 86px;
+  padding: 3px 7px;
+  color: var(--text-muted);
+  border: 1px solid var(--glass-border);
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.runtime-engine-state.is-ready,
+.runtime-engine-state.is-verified {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+
+.runtime-engine-state.is-failed,
+.runtime-engine-state.is-needs_repair {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.runtime-engine-state.is-installing,
+.runtime-engine-state.is-needs_update {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
+.runtime-engine-error {
+  margin-top: 4px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.runtime-engine-operation {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.runtime-engine-progress {
+  width: min(260px, 100%);
+  height: 4px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--glass-border) 70%, transparent);
+  border-radius: 2px;
+}
+
+.runtime-engine-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent-primary);
+  transition: width .2s ease;
+}
+
 .voice-list {
   display: grid;
   gap: 10px;
@@ -852,5 +957,28 @@
   .voice-engine-option-detail {
     max-width: 100%;
     white-space: normal;
+  }
+
+  .runtime-engine-summary,
+  .runtime-engine-row {
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  .runtime-engine-summary,
+  .runtime-engine-row {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .runtime-engine-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .runtime-engine-state {
+    min-width: 0;
   }
 }

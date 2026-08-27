@@ -1,0 +1,29 @@
+[project]
+name = "narratible-runtime-f5-tts"
+version = "1.0.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "f5-tts==1.1.22",
+    "soundfile==0.14.0",
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
+    "transformers @ git+https://github.com/huggingface/transformers.git@a530903e4e61784ca980bdbbca187f2b4db5ed59",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
+required-environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
+override-dependencies = [
+    "torch==2.11.0",
+    "torchaudio==2.11.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

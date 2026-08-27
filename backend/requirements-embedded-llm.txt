@@ -1,0 +1,7 @@
+-c constraints.txt
+
+# Optional source-checkout support. Packaged builds install this stack into a
+# managed CUDA runtime instead of freezing it into narratible.exe.
+transformers @ git+https://github.com/huggingface/transformers.git@a530903e4e61784ca980bdbbca187f2b4db5ed59
+accelerate==1.14.0
+bitsandbytes==0.50.1

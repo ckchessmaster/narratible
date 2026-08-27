@@ -19,15 +19,19 @@ For Windows users who want to run the app natively without Docker or starting se
 3. Run the installer and launch narratible from your Start Menu.
    - A background server will initialize quietly, and your default web browser will open to the app natively.
    - During the installation, FFmpeg is automatically downloaded via Windows Package Manager (`winget`) so that high-quality audio merging is fully enabled without triggering GPL distribution violations in the installer.
-   - The installer bundles all other core dependencies (including the PyTorch CUDA extensions offline) so you can use high-quality local TTS engines like Kokoro, F5-TTS, and Chatterbox without extra dependency setup. Qwen3-TTS remains experimental and is disabled in the UI.
+   - The installer keeps the base app small and offers a checked-by-default NVIDIA CUDA + Kokoro setup. CUDA PyTorch is downloaded from the official PyTorch index into an isolated, app-managed runtime rather than bundled inside `narratible_Installer.exe`.
+   - CUDA setup progress is shown inside the installer. The helper process runs without a separate command window; leave Setup open while dependencies and the Kokoro model are verified.
+   - If compatible NVIDIA hardware is unavailable, or the runtime download is skipped or interrupted, the base app still installs with Edge-TTS, cloud LLM, parsing, editing, and export support. Retry from **Settings > Local AI**.
+   - F5-TTS, Chatterbox, Qwen3-TTS, and the embedded LLM are separate managed profiles. Profiles without a published lock are shown as unavailable instead of modifying the frozen application environment.
+   - F5-TTS and Chatterbox can be installed independently from **Settings > Local AI**. Their setup, hardware detection, and persistent synthesis workers run without opening command windows. Qwen3-TTS remains labeled **Coming Soon** while generation stability work continues.
 
-*Note: Data and configuration for packaged apps are saved in your user profile at `%APPDATA%\narratible`.*
+*Note: Projects and configuration are stored at `%APPDATA%\narratible`. Managed CUDA environments and their shared `uv` cache are stored at `%LOCALAPPDATA%\narratible-engine-runtime`.*
 
 ### Build the Windows executable locally
 
-Local native builds require Windows, Python 3.12, and Node.js 20. The build
+Local native builds require Windows, Python 3.12, and Node.js 24. The build
 script creates a dedicated `.venv-build` environment and installs the locked
-backend, GPU voice, Chatterbox, Qwen3-TTS, and PyInstaller dependencies automatically.
+base backend, PyInstaller, private Python, and `uv` tooling automatically.
 It does not modify or depend on the development environment in `backend\.venv`.
 
 From the repository root:
@@ -42,10 +46,9 @@ cd ..
 .\build_local.ps1
 ```
 
-The first run downloads the CUDA-enabled PyTorch and local voice dependencies,
-so it can take several minutes and requires substantial disk space. Later runs
-reuse `.venv-build`, only synchronize it when a dependency file changes, and
-skip the expensive ML import preflight when that environment is unchanged.
+The first run stages a private Python 3.12 runtime for post-install local AI.
+CUDA PyTorch and engine packages are not frozen into the executable; the
+installed app downloads them only when local AI setup is selected.
 
 Each local build gets an identifier such as
 `0.0.0-dev-a1b2c3d-4e5f6a`, which is displayed in the application header and
@@ -116,6 +119,7 @@ python run.py                   # starts FastAPI on http://localhost:8000
 > .venv\Scripts\pip install "pip==26.2.1" "setuptools==70.2.0"
 > .venv\Scripts\pip install -c constraints.txt "torch==2.11.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu128
 > .venv\Scripts\pip install -r requirements.txt
+> .venv\Scripts\pip install -r requirements-embedded-llm.txt  # optional local LLM
 > .venv\Scripts\pip install -r requirements-gpu.txt
 > .venv\Scripts\pip install -r requirements-chatterbox.txt  # optional
 > .venv\Scripts\pip install -r requirements-qwen3-tts.txt   # optional support packages
@@ -190,9 +194,9 @@ The API is also available directly at **http://localhost:8000/docs** (Swagger UI
 | Engine | Quality | Speed | Requires |
 |---|---|---|---|
 | Edge-TTS | Good | Instant | Internet |
-| Kokoro-82M | Great | Fast (GPU) | Local model (auto-downloaded) |
-| F5-TTS Clone | Excellent | Moderate (GPU) | Your `.wav` voice sample |
-| Chatterbox Clone | Excellent | Moderate | Your voice sample; CUDA, MPS, or CPU |
+| Kokoro-82M | Great | Fast (GPU) | Verified managed CUDA profile |
+| F5-TTS Clone | Excellent | Moderate (GPU) | Optional managed profile and `.wav` sample |
+| Chatterbox Clone | Excellent | Moderate (GPU) | Optional managed profile and voice sample |
 | Qwen3-TTS Clone | Coming soon | Experimental | Disabled in the UI pending generation stabilization |
 
 Local engines use narratible's audio-only text preparation layer before
@@ -211,9 +215,9 @@ voice cloning, so narratible adds these deterministic speech cues locally.
 ### Voice Library with clone engines
 1. Record a clean 10-15 second `.wav` clip of the voice you want to clone.
 2. Open **Voice Library**, create a reusable voice, and test it before saving or using it.
-3. Choose F5-TTS or Chatterbox and select the saved voice in Step 3.
-4. Model weights download automatically on first use (~800 MB for F5-TTS or
-   ~3 GB for Chatterbox and ~4 GB for Qwen3-TTS 1.7B).
+3. Install the engine profile from **Settings > Local AI** when it becomes available.
+4. Choose F5-TTS or Chatterbox and select the saved voice in Step 3. Dependency
+   and model downloads remain outside the frozen app and can be repaired or removed independently.
 
 The Qwen3-TTS backend integration is experimental and currently disabled in the
 UI while generation stability is improved. Its optional runtime dependencies
@@ -236,10 +240,9 @@ python -m pip install -r backend/requirements-chatterbox.txt
 Then install the PyTorch build recommended by the
 [official selector](https://pytorch.org/get-started/locally/) for the target
 machine. This is especially important for newer NVIDIA GPU generations.
-Narratible uses the selected CUDA device when available, Apple Metal on a Mac,
-and otherwise CPU. Selecting CPU explicitly in Settings is also respected.
-The official Windows installer already includes Chatterbox and a compatible
-CUDA-enabled PyTorch build; these manual steps are only for source checkouts.
+Source checkouts use the selected CUDA device when available. The packaged
+Windows app does not install CPU PyTorch as a fallback; unsupported systems keep
+Edge-TTS and cloud functionality. These manual pip steps are only for source checkouts.
 
 Qwen3-TTS is also installed separately because its package pins older shared ML
 libraries than narratible. Install its support packages first, then install the

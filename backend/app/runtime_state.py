@@ -21,6 +21,7 @@ RUNTIME_DIR = APP_DATA_DIR / "runtime"
 LOG_DIR = APP_DATA_DIR / "logs"
 LOG_FILE = LOG_DIR / "narratible.log"
 TASKS_FILE = RUNTIME_DIR / "tasks.json"
+ENGINE_MANIFEST_FILE = RUNTIME_DIR / "engines-manifest.json"
 
 
 def _utc_now() -> str:
@@ -49,6 +50,34 @@ def load_task_snapshot() -> dict[str, Any]:
     return {
         "updated_at": data.get("updated_at"),
         "tasks": data.get("tasks") or {},
+    }
+
+
+def save_engine_manifest(manifest: dict[str, Any]) -> None:
+    """Atomically persist managed local-AI runtime state."""
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = ENGINE_MANIFEST_FILE.with_name(f"{ENGINE_MANIFEST_FILE.name}.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, ENGINE_MANIFEST_FILE)
+
+
+def load_engine_manifest() -> dict[str, Any]:
+    """Load managed runtime state, defaulting safely before first setup."""
+    if not ENGINE_MANIFEST_FILE.exists():
+        return {
+            "schema_version": 1,
+            "active_app_version": None,
+            "profiles": {},
+        }
+    with open(ENGINE_MANIFEST_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return {
+        "schema_version": data.get("schema_version", 1),
+        "active_app_version": data.get("active_app_version"),
+        "profiles": data.get("profiles") or {},
     }
 
 

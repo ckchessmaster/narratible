@@ -234,6 +234,11 @@ export const TIPS = [
     body: 'Choose an embedded LLM — Gemma 4 is recommended. Enable 4-bit quantization to fit larger models on smaller GPUs.',
   },
   {
+    id: 's-local-engines', context: 'settings', tab: 'local', anchor: 'settings-local-engines', placement: 'bottom',
+    title: 'Manage local engines',
+    body: 'Install and verify CUDA-powered engines here. Each engine uses an isolated runtime so dependency updates stay contained.',
+  },
+  {
     id: 's-chunk', context: 'settings', tab: 'local', anchor: 'settings-chunk', placement: 'top',
     title: 'Chunk size',
     body: 'Larger chunks give the model more context but use more VRAM.',

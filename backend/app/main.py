@@ -72,7 +72,16 @@ from .voice_enhancement import (
     VoiceEnhancementUnavailableError,
     enhance_reference_audio,
 )
+from .runtime_engines import (
+    RuntimeSetupError,
+    install_profile,
+    nvidia_preflight,
+    remove_profile,
+    runtime_status,
+    verify_installed_profile,
+)
 from .runtime_state import save_task_snapshot
+from .subprocess_utils import hidden_process_kwargs
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -92,8 +101,13 @@ mcp_app = mcp_server.streamable_http_app(
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    async with mcp_server.session_manager.run():
-        yield
+    try:
+        async with mcp_server.session_manager.run():
+            yield
+    finally:
+        from .runtime_workers import shutdown_runtime_workers
+
+        shutdown_runtime_workers()
 
 
 app = FastAPI(title="narratible API", version=APP_VERSION, lifespan=lifespan)
@@ -197,32 +211,18 @@ async def health_check():
 
 
 def _nvidia_smi_gpus() -> list[dict]:
-    """Fallback: query nvidia-smi for NVIDIA GPUs when torch CUDA is unavailable."""
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode != 0:
-            return []
-        gpus = []
-        for line in result.stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) == 3:
-                try:
-                    gpus.append({
-                        "index": int(parts[0]),
-                        "name": parts[1],
-                        "vram_mb": int(parts[2]),
-                        "cuda": False,  # torch CUDA unavailable; GPU is present but PyTorch can't reach it
-                        "cuda_unavailable_reason": "GPU detected but CUDA is unavailable. Ensure your NVIDIA drivers are up to date.",
-                    })
-                except ValueError:
-                    pass
-        return gpus
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    """Return CUDA-capable NVIDIA hardware without importing PyTorch."""
+    preflight = nvidia_preflight()
+    if not preflight["supported"]:
         return []
+    return [
+        {
+            **gpu,
+            "cuda": True,
+            "cuda_runtime": "managed",
+        }
+        for gpu in preflight["gpus"]
+    ]
 
 
 @app.get("/api/system/info")
@@ -257,6 +257,112 @@ async def system_info():
         gpus.append({"index": -1, "name": "CPU (No GPU)", "vram_mb": 0, "cuda": False})
         info["gpus"] = gpus
     return info
+
+
+@app.get("/api/runtime/engines")
+async def api_runtime_engines():
+    """Return the managed local-AI catalog and installed profile state."""
+    return runtime_status()
+
+
+@app.get("/api/runtime/preflight")
+async def api_runtime_preflight():
+    """Probe NVIDIA hardware without requiring PyTorch in the base app."""
+    return nvidia_preflight()
+
+
+def _runtime_profile(profile_id: str, *, require_installable: bool = False) -> dict:
+    profile = next(
+        (item for item in runtime_status()["profiles"] if item["id"] == profile_id),
+        None,
+    )
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Unknown runtime profile: {profile_id}")
+    if require_installable and not profile["installable"]:
+        raise HTTPException(status_code=409, detail=f"{profile['label']} is not installable yet.")
+    return profile
+
+
+def _running_runtime_task(profile_id: str) -> str | None:
+    for task_id, task in _tasks.items():
+        if (
+            task.get("runtime_profile") == profile_id
+            and task.get("status") not in {"done", "error", "cancelled"}
+        ):
+            return task_id
+    return None
+
+
+async def _run_runtime_install_task(task_id: str, profile_id: str) -> None:
+    def report(message: str, progress: int, stage: str) -> None:
+        _set_task(task_id, "running", message, progress, stage=stage)
+
+    try:
+        result = await asyncio.to_thread(install_profile, profile_id, report)
+    except (RuntimeSetupError, ValueError) as exc:
+        _set_task(task_id, "error", str(exc), stage="failed")
+        return
+    _tasks[task_id]["runtime"] = result
+    _set_task(task_id, "done", f"{profile_id} is ready.", 100, stage="complete")
+
+
+async def _run_runtime_verify_task(task_id: str, profile_id: str) -> None:
+    _set_task(task_id, "running", f"Verifying {profile_id}...", 20, stage="verifying")
+    try:
+        result = await asyncio.to_thread(verify_installed_profile, profile_id)
+    except (RuntimeSetupError, ValueError) as exc:
+        _set_task(task_id, "error", str(exc), stage="failed")
+        return
+    _tasks[task_id]["runtime"] = result
+    _set_task(task_id, "done", f"{profile_id} is verified.", 100, stage="complete")
+
+
+def _start_runtime_task(profile_id: str, operation: str, background_tasks: BackgroundTasks) -> dict:
+    running_task = _running_runtime_task(profile_id)
+    if running_task:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A runtime operation is already running for {profile_id}: {running_task}",
+        )
+    task_id = f"runtime-{operation}-{profile_id}-{uuid.uuid4().hex[:8]}"
+    _tasks[task_id] = {"runtime_profile": profile_id, "runtime_operation": operation}
+    _set_task(task_id, "queued", f"Queued {operation} for {profile_id}.", 0, stage="queued")
+    runner = _run_runtime_verify_task if operation == "verify" else _run_runtime_install_task
+    background_tasks.add_task(runner, task_id, profile_id)
+    return {"task_id": task_id}
+
+
+@app.post("/api/runtime/engines/{profile_id}/install")
+async def api_install_runtime_engine(profile_id: str, background_tasks: BackgroundTasks):
+    _runtime_profile(profile_id, require_installable=True)
+    return _start_runtime_task(profile_id, "install", background_tasks)
+
+
+@app.post("/api/runtime/engines/{profile_id}/repair")
+async def api_repair_runtime_engine(profile_id: str, background_tasks: BackgroundTasks):
+    _runtime_profile(profile_id, require_installable=True)
+    return _start_runtime_task(profile_id, "repair", background_tasks)
+
+
+@app.post("/api/runtime/engines/{profile_id}/verify")
+async def api_verify_runtime_engine(profile_id: str, background_tasks: BackgroundTasks):
+    profile = _runtime_profile(profile_id, require_installable=True)
+    if profile["status"] == "not_installed":
+        raise HTTPException(status_code=409, detail=f"{profile['label']} is not installed.")
+    return _start_runtime_task(profile_id, "verify", background_tasks)
+
+
+@app.delete("/api/runtime/engines/{profile_id}")
+async def api_remove_runtime_engine(profile_id: str):
+    _runtime_profile(profile_id, require_installable=True)
+    running_task = _running_runtime_task(profile_id)
+    if running_task:
+        raise HTTPException(status_code=409, detail="Cannot remove a runtime while an operation is running.")
+    try:
+        await asyncio.to_thread(remove_profile, profile_id)
+    except RuntimeSetupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "removed", "profile": profile_id}
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
@@ -1982,7 +2088,7 @@ def _resolve_clone_voice_reference(project_id: str, engine: str, voice: str):
         return (
             get_library_voice_sample_path(voice),
             None,
-            (library_voice.reference_text or None) if engine == "qwen3-tts" else None,
+            (library_voice.reference_text or None) if engine in {"f5-tts", "qwen3-tts"} else None,
             library_voice.temperature,
         )
     return None, _voices_dir(project_id), None, None
@@ -2247,7 +2353,7 @@ async def api_test_voice_library_draft(
             exaggeration=exaggeration,
             cfg_weight=cfg_weight,
             voice_sample_path=sample_path if is_clone_engine else None,
-            voice_reference_text=(reference_text or None) if engine == "qwen3-tts" else None,
+            voice_reference_text=(reference_text or None) if engine in {"f5-tts", "qwen3-tts"} else None,
         )
     except Exception as e:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2281,7 +2387,7 @@ async def api_test_voice_library_item(voice_id: str, req: VoiceLibraryTestReques
             exaggeration=req.exaggeration if req.exaggeration is not None else voice.exaggeration,
             cfg_weight=req.cfg_weight if req.cfg_weight is not None else voice.cfg_weight,
             voice_sample_path=get_library_voice_sample_path(voice_id) if is_clone_engine else None,
-            voice_reference_text=(req.reference_text or voice.reference_text or None) if voice.engine == "qwen3-tts" else None,
+            voice_reference_text=(req.reference_text or voice.reference_text or None) if voice.engine in {"f5-tts", "qwen3-tts"} else None,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -2578,7 +2684,10 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                             [ffprobe_exe, "-v", "error", "-show_entries",
                              "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
                              str(audio_path)],
-                            capture_output=True, text=True, check=True
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                            **hidden_process_kwargs(),
                         )
                         duration_ms = int(float(result.stdout.strip()) * 1000)
                         chapter_entries.append((cursor_ms, cursor_ms + duration_ms, ch.get("title", "")))
@@ -2645,7 +2754,11 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 cmd += [*codec_args, str(merged_path)]
                 subprocess.run(
                     cmd,
-                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    **hidden_process_kwargs(),
                 )
                 # optionally clean up individual chapters
                 list_path.unlink(missing_ok=True)

@@ -23,24 +23,24 @@ const ENGINE_LABELS = {
   'qwen3-tts': 'Qwen3-TTS',
 }
 
-const engineNeedsCuda = engine => engine === 'kokoro' || engine === 'f5-tts'
+const engineNeedsRuntime = engine => ['kokoro', 'f5-tts', 'chatterbox', 'qwen3-tts'].includes(engine)
 const engineComingSoon = engine => engine === 'qwen3-tts'
 const voiceKey = item => `${item.engine}:${item.id}`
 const normalizeBuiltIn = (item, engine) => ({ ...item, engine, kind: 'built-in', engine_configured: true })
 const normalizeCustom = item => ({ ...item, kind: 'custom', locale: 'Custom voice' })
 
-function VoiceCard({ item, selected, disabled, onSelect }) {
+function VoiceCard({ item, selected, disabled, disabledReason, onSelect }) {
   const engineLabel = ENGINE_LABELS[item.engine] || item.engine
-  const disabledReason = engineComingSoon(item.engine)
+  const reason = disabledReason || (engineComingSoon(item.engine)
     ? `${engineLabel} is coming soon.`
-    : `${engineLabel} is unavailable on the selected hardware.`
+    : `${engineLabel} is unavailable.`)
   return (
     <button
       type="button"
       className={`voice-catalog-card glass glass-hover${selected ? ' is-selected' : ''}`}
       disabled={disabled}
       onClick={() => onSelect(item)}
-      title={disabled ? disabledReason : item.name}
+      title={disabled ? reason : item.name}
     >
       <span className="voice-catalog-card-main">
         <span className="voice-catalog-name">{item.name}</span>
@@ -58,6 +58,7 @@ export default function VoiceCatalogStep({
   onBack,
   toast,
   cudaEnabled = true,
+  runtimeProfiles = {},
   onOpenVoiceLibrary,
   voiceLibraryRevision = 0,
 }) {
@@ -147,7 +148,17 @@ export default function VoiceCatalogStep({
   const builtInVoices = useMemo(() => [...edgeVoices, ...kokoroVoices], [edgeVoices, kokoroVoices])
   const allVoices = useMemo(() => [...builtInVoices, ...libraryVoices], [builtInVoices, libraryVoices])
   const selectedVoice = allVoices.find(item => item.engine === engine && item.id === voice) || null
-  const selectedUnavailable = selectedVoice && (engineComingSoon(selectedVoice.engine) || (engineNeedsCuda(selectedVoice.engine) && !cudaEnabled))
+  const engineAvailable = candidate => {
+    if (engineComingSoon(candidate)) return false
+    if (!engineNeedsRuntime(candidate)) return true
+    return cudaEnabled && runtimeProfiles[candidate]?.status === 'verified'
+  }
+  const unavailableReason = candidate => {
+    if (engineComingSoon(candidate)) return `${ENGINE_LABELS[candidate]} is coming soon.`
+    if (!cudaEnabled) return `${ENGINE_LABELS[candidate]} requires a compatible NVIDIA GPU and driver.`
+    return `${ENGINE_LABELS[candidate]} is not installed. Open Settings > Local AI to install or repair it.`
+  }
+  const selectedUnavailable = selectedVoice && !engineAvailable(selectedVoice.engine)
   const recommended = RECOMMENDED_VOICES
     .map(recommendation => builtInVoices.find(item => item.engine === recommendation.engine && item.id === recommendation.id))
     .filter(Boolean)
@@ -168,7 +179,10 @@ export default function VoiceCatalogStep({
       toast(`${ENGINE_LABELS[item.engine]} is coming soon.`, 'error')
       return
     }
-    if (engineNeedsCuda(item.engine) && !cudaEnabled) return
+    if (!engineAvailable(item.engine)) {
+      toast(unavailableReason(item.engine), 'error')
+      return
+    }
     setEngine(item.engine)
     setVoice(item.id)
     setTtsDebug(null)
@@ -268,7 +282,8 @@ export default function VoiceCatalogStep({
               <VoiceCard
                 key={voiceKey(item)} item={item}
                 selected={item.engine === engine && item.id === voice}
-                disabled={engineNeedsCuda(item.engine) && !cudaEnabled}
+                disabled={!engineAvailable(item.engine)}
+                disabledReason={unavailableReason(item.engine)}
                 onSelect={selectCatalogVoice}
               />
             ))}
@@ -289,7 +304,8 @@ export default function VoiceCatalogStep({
                     key={voiceKey(item)}
                     item={{ ...item, name: item.engine_configured ? item.name : `${item.name} (confirm engine)` }}
                     selected={item.engine === engine && item.id === voice}
-                    disabled={item.engine_configured && (engineComingSoon(item.engine) || (engineNeedsCuda(item.engine) && !cudaEnabled))}
+                    disabled={item.engine_configured && !engineAvailable(item.engine)}
+                    disabledReason={unavailableReason(item.engine)}
                     onSelect={selectCatalogVoice}
                   />
                 ))}
@@ -332,7 +348,8 @@ export default function VoiceCatalogStep({
                     <VoiceCard
                       key={voiceKey(item)} item={item}
                       selected={item.engine === engine && item.id === voice}
-                      disabled={engineNeedsCuda(item.engine) && !cudaEnabled}
+                      disabled={!engineAvailable(item.engine)}
+                      disabledReason={unavailableReason(item.engine)}
                       onSelect={selectCatalogVoice}
                     />
                   ))}

@@ -1,0 +1,1 @@
+"""Plain-source entry points executed by managed local-AI runtimes."""

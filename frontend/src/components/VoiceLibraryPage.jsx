@@ -44,6 +44,7 @@ const ENGINE_OPTIONS = [
 
 const ENGINE_LABELS = Object.fromEntries(ENGINE_OPTIONS.map(option => [option.value, option.label]))
 const isEngineDisabled = engine => ENGINE_OPTIONS.some(option => option.value === engine && option.disabled)
+const managedEngines = new Set(['kokoro', 'f5-tts', 'chatterbox', 'qwen3-tts'])
 
 const isCloneEngine = engine => engine === 'f5-tts' || engine === 'chatterbox' || engine === 'qwen3-tts'
 
@@ -73,7 +74,7 @@ function draftFromVoice(voice) {
   }
 }
 
-export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
+export default function VoiceLibraryPage({ onBack, toast, onChanged, runtimeProfiles = {} }) {
   const [voices, setVoices] = useState([])
   const [selectedId, setSelectedId] = useState(null)
   const [draft, setDraft] = useState(NEW_DRAFT)
@@ -102,6 +103,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
   }, [selectedVoice])
   const isNew = !selectedVoice
   const draftUsesCloneEngine = isCloneEngine(draft.engine)
+  const engineNeedsInstall = engine => managedEngines.has(engine) && !isEngineDisabled(engine) && runtimeProfiles[engine]?.status !== 'verified'
 
   useEffect(() => {
     if (isCloneEngine(draft.engine)) {
@@ -445,13 +447,14 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged }) {
                         key={option.value}
                         className={`voice-engine-option${draft.engine === option.value ? ' is-active' : ''}`}
                         aria-checked={draft.engine === option.value}
-                        disabled={option.disabled}
+                        disabled={option.disabled || engineNeedsInstall(option.value)}
+                        title={engineNeedsInstall(option.value) ? `${option.label} must be installed in Settings > Local AI first.` : option.description}
                         onClick={() => updateDraft({ engine: option.value, provider_voice_id: '' })}
                       >
                         <span className="voice-engine-option-heading">
                           <span>{option.label}</span>
                           <span className={`voice-engine-option-detail${option.disabled ? ' is-coming-soon' : ''}`}>
-                            {option.detail}
+                            {engineNeedsInstall(option.value) ? 'Install in Settings' : option.detail}
                           </span>
                         </span>
                         <span className="voice-engine-option-description">{option.description}</span>

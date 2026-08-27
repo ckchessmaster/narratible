@@ -162,7 +162,7 @@ def test_chapter_tts_regenerates_only_requested_stale_chapter(tmp_path, monkeypa
     assert projects.project_file(project.id, updated[1]["tts"]["audio_path"]).exists()
 
 
-def test_library_voice_reference_resolution_ignores_saved_transcript(tmp_path, monkeypatch):
+def test_library_voice_reference_resolution_forwards_saved_f5_transcript(tmp_path, monkeypatch):
     monkeypatch.setattr(
         main,
         "get_library_voice",
@@ -170,7 +170,7 @@ def test_library_voice_reference_resolution_ignores_saved_transcript(tmp_path, m
             name="Narrator",
             engine="f5-tts",
             engine_configured=True,
-            reference_text="This saved transcript is ignored.",
+                reference_text="This saved transcript is forwarded.",
             temperature=0.8,
         ),
     )
@@ -184,7 +184,7 @@ def test_library_voice_reference_resolution_ignores_saved_transcript(tmp_path, m
 
     assert voice_sample_path == tmp_path / "reference.wav"
     assert voice_samples_dir is None
-    assert voice_reference_text is None
+    assert voice_reference_text == "This saved transcript is forwarded."
     assert temperature == 0.8
 
 

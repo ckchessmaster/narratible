@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Packaging
+- Replaced the monolithic CUDA-enabled Windows bundle with a slim base app and an isolated, post-install local-AI runtime managed by private Python and `uv`.
+- Added checked-by-default installer setup for NVIDIA CUDA PyTorch and Kokoro, with hardware preflight, model verification, retryable failures, and update-time refresh of installed profiles.
+- Added a 1.8 GiB release safety limit, Node.js 24 frontend builds, and GitHub CLI release uploads to avoid deprecated Node action runtimes and GitHub's 2 GiB asset failure.
+
+### Features
+- Added **Settings > Local AI** engine status and management for installing, verifying, repairing, and removing managed profiles.
+- Added a persistent Kokoro sidecar worker so isolated dependencies do not require reloading the model for every chapter.
+- Added isolated CUDA 12.8 profiles and persistent workers for F5-TTS and Chatterbox; Qwen3-TTS is now labeled Coming Soon instead of appearing as a broken setup.
+
+### Safety
+- Explicitly disallowed CPU PyTorch fallback and bound Kokoro installation to a hashed Windows/Python 3.12 CUDA 12.8 lockfile.
+- Added staged environment activation and rollback pointers so failed local-AI updates preserve the last verified runtime.
+
+### Bugfixes
+- Suppressed Windows console windows for GPU detection, runtime installation and verification, persistent TTS workers, voice enhancement, and FFmpeg helpers; cached hardware preflight also removes duplicate Settings probes.
+- Fixed windowed packaged startup by disabling Uvicorn's console-aware formatter and using narratible's file-backed logging configuration.
+- Added SoundFile and its native dependencies to the isolated Kokoro lock, and marked environments from older locks for update before synthesis.
+- Replaced the packaged Tk update prompt with the native Windows dialog and migrated to the current `pymupdf` import, removing Tcl version and `fitz` deprecation errors at startup.
+- Integrated CUDA/Kokoro setup progress into the installer and switched the packaged app to the Windows GUI subsystem so runtime maintenance no longer opens a command window.
+
 ## v1.7.0 - 2026-08-26
 
 ### Features

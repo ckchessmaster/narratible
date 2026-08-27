@@ -14,6 +14,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from .subprocess_utils import hidden_process_kwargs
+
 logger = logging.getLogger(__name__)
 
 
@@ -172,7 +174,13 @@ def enhance_reference_audio(
         "--nfe", str(nfe),
     ]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            **hidden_process_kwargs(),
+        )
     except OSError as exc:
         raise VoiceEnhancementUnavailableError(
             f"Could not start the configured voice enhancement Python: {enhancer_python}"

@@ -7,8 +7,6 @@ import webbrowser
 from pathlib import Path
 import uvicorn
 import requests
-import tkinter as tk
-from tkinter import messagebox
 
 # Set python path to backend to avoid structural import issues
 sys.path.insert(0, str(Path(__file__).parent / "backend"))
@@ -21,6 +19,140 @@ from backend.app.hf_cache import configure_frozen_huggingface_cache
 from backend.app.version import APP_VERSION
 
 configure_frozen_huggingface_cache()
+
+
+def _runtime_cli_option(name: str) -> str:
+    if name not in sys.argv:
+        return ""
+    try:
+        return sys.argv[sys.argv.index(name) + 1]
+    except IndexError:
+        return ""
+
+
+def _write_runtime_ini(path_value: str, section: str, values: dict) -> None:
+    if not path_value:
+        return
+    path = Path(path_value)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"[{section}]"]
+    for key, value in values.items():
+        clean_value = str(value).replace("\r", " ").replace("\n", " ")
+        lines.append(f"{key}={clean_value}")
+    temp_path = path.with_name(f"{path.name}.tmp")
+    temp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(temp_path, path)
+
+
+def _run_runtime_cli() -> int | None:
+    """Handle installer/runtime commands before importing the FastAPI app."""
+    runtime_flags = {
+        "--runtime-preflight",
+        "--runtime-status",
+        "--runtime-bootstrap",
+        "--runtime-update-installed",
+        "--runtime-verify",
+    }
+    if not runtime_flags.intersection(sys.argv):
+        return None
+
+    progress_file = _runtime_cli_option("--runtime-progress-file")
+    result_file = _runtime_cli_option("--runtime-result-file")
+
+    def publish(message: str, progress: int, stage: str, profile: str = "") -> None:
+        payload = {
+            "status": "running",
+            "stage": stage,
+            "progress": progress,
+            "message": message,
+        }
+        if profile:
+            payload["profile"] = profile
+        print_json(payload)
+        _write_runtime_ini(progress_file, "progress", payload)
+
+    def finish(exit_code: int, message: str = "") -> int:
+        _write_runtime_ini(
+            result_file,
+            "result",
+            {"exit_code": exit_code, "message": message},
+        )
+        return exit_code
+
+    from backend.app.runtime_engines import (
+        RUNTIME_EXIT_OK,
+        RUNTIME_EXIT_SETUP_FAILED,
+        RUNTIME_EXIT_UNSUPPORTED_HARDWARE,
+        RUNTIME_EXIT_VERIFICATION_FAILED,
+        RuntimeSetupError,
+        install_profile,
+        nvidia_preflight,
+        print_json,
+        runtime_status,
+        update_installed_profiles,
+        verify_profile_environment,
+    )
+
+    if "--runtime-preflight" in sys.argv:
+        result = nvidia_preflight()
+        print_json(result)
+        return finish(
+            RUNTIME_EXIT_OK if result["supported"] else RUNTIME_EXIT_UNSUPPORTED_HARDWARE,
+            result.get("reason") or "NVIDIA hardware is supported.",
+        )
+
+    if "--runtime-update-installed" in sys.argv:
+        try:
+            result = update_installed_profiles(
+                lambda message, progress, stage: publish(message, progress, stage)
+            )
+        except (RuntimeSetupError, ValueError) as exc:
+            print_json({"status": "error", "message": str(exc)})
+            return finish(RUNTIME_EXIT_SETUP_FAILED, str(exc))
+        print_json({"status": "complete", "profiles": result})
+        return finish(RUNTIME_EXIT_OK, "Installed local AI profiles are up to date.")
+
+    for flag, operation, failure_code in (
+        ("--runtime-bootstrap", install_profile, RUNTIME_EXIT_SETUP_FAILED),
+        ("--runtime-verify", verify_profile_environment, RUNTIME_EXIT_VERIFICATION_FAILED),
+    ):
+        if flag not in sys.argv:
+            continue
+        try:
+            profile_id = sys.argv[sys.argv.index(flag) + 1]
+        except IndexError:
+            print_json({"status": "error", "message": f"{flag} requires a profile ID."})
+            return finish(failure_code, f"{flag} requires a profile ID.")
+        if flag == "--runtime-bootstrap":
+            preflight = nvidia_preflight()
+            if not preflight["supported"]:
+                print_json(preflight)
+                return finish(RUNTIME_EXIT_UNSUPPORTED_HARDWARE, preflight.get("reason", "Unsupported hardware."))
+        try:
+            if flag == "--runtime-bootstrap":
+                result = operation(
+                    profile_id,
+                    lambda message, progress, stage: publish(message, progress, stage, profile_id),
+                )
+            else:
+                result = operation(profile_id)
+        except (RuntimeSetupError, ValueError) as exc:
+            print_json({"status": "error", "profile": profile_id, "message": str(exc)})
+            return finish(failure_code, str(exc))
+        print_json({"status": "verified", "profile": profile_id, "runtime": result})
+        return finish(RUNTIME_EXIT_OK, f"{profile_id} is ready.")
+
+    print_json(runtime_status())
+    return finish(RUNTIME_EXIT_OK, "Runtime status loaded.")
+
+
+if __name__ == "__main__":
+    from backend.app.subprocess_utils import configure_child_process_job
+
+    configure_child_process_job()
+    runtime_exit_code = _run_runtime_cli()
+    if runtime_exit_code is not None:
+        raise SystemExit(runtime_exit_code)
 
 
 def _verify_packaged_frontend():
@@ -36,39 +168,29 @@ def _verify_packaged_frontend():
 
 
 def _verify_packaged_tts_imports():
-    """Import every bundled TTS runtime and its packaged support assets."""
+    """Verify the slim base runtime and managed-engine metadata."""
     _verify_packaged_frontend()
     import numpy
-    import scipy.linalg
-    import scipy.sparse
-    import torch
-    import torchaudio
+    import edge_tts
 
-    from backend.app.tts import _prepare_frozen_torch, _prepare_qwen3_transformers
+    from backend.app.runtime_engines import load_runtime_catalog, runtime_python, uv_executable
 
-    _prepare_frozen_torch(torch)
-    _prepare_qwen3_transformers()
-    import en_core_web_sm
-    from kokoro import KPipeline  # noqa: F401
-    from f5_tts.api import F5TTS  # noqa: F401
-    from chatterbox.tts import ChatterboxTTS  # noqa: F401
-    from qwen_tts import Qwen3TTSModel  # noqa: F401
-    from perth.perth_net import PerthImplicitWatermarker
-
-    en_core_web_sm.load(
-        disable=["tok2vec", "tagger", "parser", "attribute_ruler", "lemmatizer", "ner"]
-    )
-    PerthImplicitWatermarker()
+    catalog = load_runtime_catalog()
+    if not any(profile["id"] == "kokoro" for profile in catalog["profiles"]):
+        raise RuntimeError("Managed runtime catalog is missing Kokoro.")
+    if getattr(sys, "frozen", False):
+        if not runtime_python().is_file():
+            raise RuntimeError("Private runtime Python is missing from the packaged app.")
+        if not uv_executable().is_file():
+            raise RuntimeError("uv is missing from the packaged app.")
 
     print(
-        "Packaged TTS imports OK | numpy",
+        "Packaged base imports OK | numpy",
         numpy.__version__,
-        "| torch",
-        torch.__version__,
-        "| torchaudio",
-        torchaudio.__version__,
-        "| cuda",
-        torch.version.cuda,
+        "| edge-tts",
+        edge_tts.__version__,
+        "| managed profiles",
+        len(catalog["profiles"]),
     )
 
 
@@ -78,6 +200,26 @@ if __name__ == "__main__" and "--verify-tts-imports" in sys.argv:
 
 
 from backend.app.main import app
+
+
+def _ask_to_open_update(latest_version: str) -> bool:
+    """Show a native Windows prompt without loading Tcl/Tk."""
+    if os.name != "nt":
+        return False
+    import ctypes
+
+    message = (
+        f"A new version of narratible is available! (v{latest_version})\n\n"
+        f"You are currently running v{APP_VERSION}.\n\n"
+        "Would you like to open GitHub to download the update?"
+    )
+    result = ctypes.windll.user32.MessageBoxW(
+        None,
+        message,
+        "narratible Update Available",
+        0x00000004 | 0x00000040,
+    )
+    return result == 6
 
 def check_for_updates():
     """Check GitHub for newer releases and prompt the user."""
@@ -96,13 +238,8 @@ def check_for_updates():
                 return tuple(int(x) for x in v.split(".") if x.isdigit())
                 
             if parse_ver(latest_version) > parse_ver(APP_VERSION):
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes("-topmost", True)
-                msg = f"A new version of narratible is available! (v{latest_version})\n\nYou are currently running v{APP_VERSION}.\n\nWould you like to open GitHub to download the update?"
-                if messagebox.askyesno("Update Available", msg):
+                if _ask_to_open_update(latest_version):
                     webbrowser.open(latest_release.get("html_url"))
-                root.destroy()
     except Exception as e:
         print(f"Update check failed: {e}")
 
@@ -144,6 +281,17 @@ def _augment_path_with_ffmpeg():
                 return
 
 
+def _run_server(port: int) -> None:
+    """Run Uvicorn through narratible's file-backed logging configuration."""
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="info",
+        log_config=None,
+    )
+
+
 if __name__ == "__main__":
     check_for_updates()
 
@@ -156,4 +304,4 @@ if __name__ == "__main__":
     threading.Thread(target=open_browser, args=(url,), daemon=True).start()
     
     print(f"Starting narratible on {url}...")
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+    _run_server(port)
