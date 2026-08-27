@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.7.1 - 2026-08-27
+
 ### Packaging
 - Replaced the monolithic CUDA-enabled Windows bundle with a slim base app and an isolated, post-install local-AI runtime managed by private Python and `uv`.
 - Added checked-by-default installer setup for NVIDIA CUDA PyTorch and Kokoro, with hardware preflight, model verification, retryable failures, and update-time refresh of installed profiles.
