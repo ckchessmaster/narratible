@@ -65,13 +65,6 @@ jobs:
           key: pip-base-${{ runner.os }}-${{ hashFiles('backend/requirements*.txt', 'backend/constraints.txt') }}
           restore-keys: pip-base-${{ runner.os }}-
 
-      - name: Cache PyInstaller work directory
-        uses: actions/cache@v4
-        with:
-          path: build
-          key: pyinstaller-slim-runtime-${{ runner.os }}-${{ hashFiles('narratible.spec', 'desktop_app.py', 'backend/**/*.py', 'backend/runtime_profiles/**', 'packaging/prepare_runtime_tools.ps1') }}
-          restore-keys: pyinstaller-slim-runtime-${{ runner.os }}-
-
       - name: Build Frontend
         run: |
           cd frontend
@@ -100,7 +93,7 @@ jobs:
       - name: Compile PyInstaller Standalone App
         shell: pwsh
         run: |
-          python -m PyInstaller narratible.spec --noconfirm --workpath build\pyinstaller-work --distpath dist
+          python -m PyInstaller narratible.spec --clean --noconfirm --workpath build\pyinstaller-work --distpath dist
           if ($LASTEXITCODE -ne 0) {
             throw "PyInstaller failed (exit code $LASTEXITCODE)."
           }
@@ -109,9 +102,16 @@ jobs:
       - name: Verify slim packaged runtime
         shell: pwsh
         run: |
-          & 'dist\narratible\narratible.exe' --verify-tts-imports
+          $env:NARRATIBLE_RUNTIME_CATALOG = (Resolve-Path 'dist\narratible\_internal\runtime_profiles\catalog.json').Path
+          python -c "from backend.app.runtime_engines import load_runtime_catalog; load_runtime_catalog(); print('Packaged runtime profile hashes OK')"
           if ($LASTEXITCODE -ne 0) {
-            throw "Slim packaged runtime verification failed (exit code $LASTEXITCODE)."
+            throw "Packaged runtime profile validation failed (exit code $LASTEXITCODE)."
+          }
+          Remove-Item Env:NARRATIBLE_RUNTIME_CATALOG
+
+          $verification = Start-Process -FilePath 'dist\narratible\narratible.exe' -ArgumentList '--verify-tts-imports' -Wait -PassThru
+          if ($verification.ExitCode -ne 0) {
+            throw "Slim packaged runtime verification failed (exit code $($verification.ExitCode))."
           }
 
       - name: Verify local AI is external to dist
