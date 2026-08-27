@@ -97,6 +97,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "PyInstaller failed (exit code $LASTEXITCODE)."
           }
+          pwsh -File packaging\stage_runtime_profiles.ps1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Runtime profile staging failed (exit code $LASTEXITCODE)."
+          }
           Set-Content -Path 'dist\narratible\app-version.txt' -Value $env:APP_VERSION -NoNewline
 
       - name: Verify slim packaged runtime

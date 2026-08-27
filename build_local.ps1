@@ -174,6 +174,7 @@ Invoke-NativeCommand -FilePath $buildPython -ArgumentList @("-m", "PyInstaller",
 
 $packageDirectory = Join-Path $repoRoot "dist\narratible"
 $packagedExecutable = Join-Path $packageDirectory "narratible.exe"
+& (Join-Path $repoRoot "packaging\stage_runtime_profiles.ps1") -DestinationDir (Join-Path $packageDirectory "_internal\runtime_profiles")
 Set-Content -Path (Join-Path $packageDirectory "app-version.txt") -Value $Version -NoNewline
 if (-not $SkipPackageVerification) {
     Write-Host "`nVerifying slim packaged runtime..." -ForegroundColor Yellow
