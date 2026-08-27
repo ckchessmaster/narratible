@@ -86,9 +86,18 @@ jobs:
         shell: pwsh
         run: |
           python -c "from backend.app.runtime_engines import load_runtime_catalog; import edge_tts; catalog=load_runtime_catalog(); print('Slim base ready | edge-tts', edge_tts.__version__, '| managed profiles', len(catalog['profiles']))"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Runtime profile source validation failed (exit code $LASTEXITCODE)."
+          }
           $privatePython = Join-Path 'build\runtime-tools' (Get-Content 'build\runtime-tools\python-path.txt' -Raw)
           & $privatePython -c "import platform; print('Private Python', platform.python_version())"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Private Python validation failed (exit code $LASTEXITCODE)."
+          }
           & 'build\runtime-tools\uv.exe' --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "uv validation failed (exit code $LASTEXITCODE)."
+          }
 
       - name: Compile PyInstaller Standalone App
         shell: pwsh
@@ -96,10 +105,6 @@ jobs:
           python -m PyInstaller narratible.spec --clean --noconfirm --workpath build\pyinstaller-work --distpath dist
           if ($LASTEXITCODE -ne 0) {
             throw "PyInstaller failed (exit code $LASTEXITCODE)."
-          }
-          pwsh -File packaging\stage_runtime_profiles.ps1
-          if ($LASTEXITCODE -ne 0) {
-            throw "Runtime profile staging failed (exit code $LASTEXITCODE)."
           }
           Set-Content -Path 'dist\narratible\app-version.txt' -Value $env:APP_VERSION -NoNewline
 

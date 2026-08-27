@@ -5,6 +5,7 @@
 
 datas = [
     ('frontend/dist', 'frontend_dist'),
+    ('backend/runtime_profiles', 'runtime_profiles'),
     ('backend/app/runtime_worker_scripts', 'runtime_workers'),
     ('build/runtime-tools', 'runtime-tools'),
     ('packaging/logo.ico', 'packaging'),
