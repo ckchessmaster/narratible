@@ -101,9 +101,9 @@ jobs:
       - name: Restore release ML builds
         run: |
           pip install --upgrade --force-reinstall -c backend/constraints.txt "torch==2.11.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu128
-          # Chatterbox replaces the pinned Transformers commit with its own
-          # release. Restore the shared build Qwen3-TTS was validated against.
-          pip install --force-reinstall --no-deps -c backend/constraints.txt "transformers @ git+https://github.com/huggingface/transformers.git@a530903e4e61784ca980bdbbca187f2b4db5ed59"
+          # Chatterbox replaces Transformers and its coupled dependencies with
+          # older releases. Restore the complete constrained Transformers stack.
+          pip install --upgrade --force-reinstall -c backend/constraints.txt "transformers @ git+https://github.com/huggingface/transformers.git@a530903e4e61784ca980bdbbca187f2b4db5ed59"
 
       - name: Verify CUDA-enabled PyTorch
         shell: pwsh
@@ -113,7 +113,7 @@ jobs:
           # what determines whether the shipped app can ever reach a GPU.
           python -c "import torch, torchaudio, sys; print('torch', torch.__version__, '| torchaudio', torchaudio.__version__, '| cuda', torch.version.cuda); sys.exit(0 if torch.version.cuda else 1)"
           if ($LASTEXITCODE -ne 0) { throw 'PyTorch is a CPU-only build (torch.version.cuda is None). Aborting to avoid shipping a non-GPU installer.' }
-          python -c "from chatterbox.tts import ChatterboxTTS; import torch; print('Chatterbox import OK with torch', torch.__version__)"
+          python -c "from chatterbox.tts import ChatterboxTTS; import tokenizers, torch, transformers; print('Chatterbox import OK with torch', torch.__version__, '| transformers', transformers.__version__, '| tokenizers', tokenizers.__version__)"
           python -c "from backend.app.tts import _prepare_qwen3_transformers; _prepare_qwen3_transformers(); from qwen_tts import Qwen3TTSModel; import torch, transformers; print('Qwen3-TTS import OK with torch', torch.__version__, '| transformers', transformers.__version__)"
 
       - name: Compile PyInstaller Standalone App
