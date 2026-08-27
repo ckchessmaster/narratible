@@ -13,7 +13,7 @@ from pathlib import Path
 import psutil
 from typing import Literal, Any
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Query, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Query, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -80,7 +80,13 @@ from .runtime_engines import (
     runtime_status,
     verify_installed_profile,
 )
-from .runtime_state import save_task_snapshot
+from .runtime_state import LOG_FILE, current_file_offset, save_task_snapshot, tail_file_lines, watch_file_lines
+from .desktop_runtime import (
+    DesktopRuntimeUnavailable,
+    desktop_capabilities,
+    open_desktop_log_folder,
+    request_desktop_shutdown,
+)
 from .subprocess_utils import hidden_process_kwargs
 
 configure_logging()
@@ -207,7 +213,92 @@ async def api_cancel_task(project_id: str):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "version": APP_VERSION}
+    return {
+        "status": "ok",
+        "version": APP_VERSION,
+        "desktop": desktop_capabilities(),
+    }
+
+
+def _require_desktop_request(request: Request) -> None:
+    if not desktop_capabilities()["available"]:
+        raise HTTPException(status_code=503, detail="Desktop controls are not available in this runtime.")
+
+    if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
+        raise HTTPException(status_code=403, detail="Cross-site desktop control requests are not allowed.")
+
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+
+    request_origin = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+    allowed_origins = {
+        request_origin.rstrip("/"),
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    }
+    if origin.rstrip("/") not in allowed_origins:
+        raise HTTPException(status_code=403, detail="This origin cannot use desktop controls.")
+
+
+@app.get("/api/desktop/logs")
+async def desktop_logs(
+    request: Request,
+    lines: int = Query(200, ge=1, le=1000),
+    level: str | None = None,
+    contains: str | None = None,
+):
+    _require_desktop_request(request)
+    try:
+        log_lines = tail_file_lines(LOG_FILE, lines=lines, level=level, contains=contains)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "log_file": str(LOG_FILE),
+        "lines": log_lines,
+        "line_count": len(log_lines),
+        "next_offset": current_file_offset(LOG_FILE),
+    }
+
+
+@app.get("/api/desktop/logs/watch")
+async def desktop_log_watch(
+    request: Request,
+    start_offset: int | None = Query(None, ge=0),
+    seconds: float = Query(10, ge=0.1, le=30),
+    max_lines: int = Query(200, ge=1, le=1000),
+    level: str | None = None,
+    contains: str | None = None,
+):
+    _require_desktop_request(request)
+    try:
+        return await watch_file_lines(
+            LOG_FILE,
+            start_offset=start_offset,
+            seconds=seconds,
+            max_lines=max_lines,
+            level=level,
+            contains=contains,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/desktop/open-log-folder")
+async def desktop_open_log_folder(request: Request):
+    _require_desktop_request(request)
+    try:
+        open_desktop_log_folder()
+    except DesktopRuntimeUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"status": "opened", "log_folder": str(LOG_FILE.parent)}
+
+
+@app.post("/api/desktop/quit", status_code=202)
+async def desktop_quit(request: Request, background_tasks: BackgroundTasks):
+    _require_desktop_request(request)
+    background_tasks.add_task(request_desktop_shutdown)
+    return {"status": "shutting_down"}
 
 
 def _nvidia_smi_gpus() -> list[dict]:

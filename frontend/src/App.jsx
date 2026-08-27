@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import { Terminal } from 'lucide-react'
 import { cancelTask, deleteProject, getAppInfo, getRuntimeEngines, getRuntimePreflight, getSystemInfo, getSettings, listProjects } from './api'
 import './App.css'
 import './index.css'
@@ -7,6 +8,7 @@ import Step2Editor from './components/Step2Editor'
 import Step3TTS from './components/VoiceCatalogStep'
 import Step4Export from './components/Step4Export'
 import SettingsModal from './components/SettingsModal'
+import DiagnosticsModal from './components/DiagnosticsModal'
 import VoiceLibraryPage from './components/VoiceLibraryPage'
 import Coachmark from './components/Coachmark'
 import useTips from './useTips'
@@ -30,6 +32,8 @@ export default function App() {
   const [maxStep, setMaxStep] = useState(1)
   const [projectId, setProjectId] = useState(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [showDiagnostics, setShowDiagnostics] = useState(false)
+  const [desktopAvailable, setDesktopAvailable] = useState(false)
   const [view, setView] = useState('wizard')
   const [voiceLibraryRevision, setVoiceLibraryRevision] = useState(0)
   const [toasts, setToasts] = useState([])
@@ -69,7 +73,17 @@ export default function App() {
   useEffect(() => { refreshHardwareState() }, [refreshHardwareState])
   useEffect(() => {
     getAppInfo()
-      .then(appInfo => setAppVersion(appInfo?.version || import.meta.env.VITE_APP_VERSION || 'dev'))
+      .then(appInfo => {
+        setAppVersion(appInfo?.version || import.meta.env.VITE_APP_VERSION || 'dev')
+        const desktopIsAvailable = !!appInfo?.desktop?.available
+        setDesktopAvailable(desktopIsAvailable)
+        const url = new URL(window.location.href)
+        if (desktopIsAvailable && url.searchParams.get('diagnostics') === '1') {
+          setShowDiagnostics(true)
+          url.searchParams.delete('diagnostics')
+          window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+        }
+      })
       .catch(() => {})
   }, [])
 
@@ -159,6 +173,15 @@ export default function App() {
 
         <div className="header-actions">
           <span className="app-version" title={`narratible ${appVersion}`}>v{appVersion}</span>
+          {desktopAvailable && (
+            <button
+              className="btn btn-ghost btn-sm"
+              data-tip-anchor="diagnostics-button"
+              onClick={() => setShowDiagnostics(true)}
+            >
+              <Terminal size={15} aria-hidden="true" /> Diagnostics
+            </button>
+          )}
           <button
             className={`btn btn-ghost btn-sm${view === 'voice-library' ? ' is-active' : ''}`}
             data-tip-anchor="voice-library-button"
@@ -297,13 +320,17 @@ export default function App() {
       </main>
 
       {/* First-time-user coach-mark tips (hidden while Settings modal is open) */}
-      {!showSettings && (
+      {!showSettings && !showDiagnostics && (
         <Coachmark tips={activeTips} onDismiss={dismiss} onDisableAll={disableAll} zIndex={150} />
       )}
 
       {/* Settings modal */}
       {showSettings && (
         <SettingsModal onClose={() => { setShowSettings(false); refreshHardwareState() }} toast={toast} />
+      )}
+
+      {showDiagnostics && (
+        <DiagnosticsModal onClose={() => setShowDiagnostics(false)} toast={toast} />
       )}
 
       {/* Toasts */}

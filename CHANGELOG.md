@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Features
+- Added a Windows system tray menu for reopening narratible, viewing logs, opening the log folder, and quitting the hidden desktop process gracefully.
+- Added a desktop-only Diagnostics view with live filtered logs, pause and refresh controls, copy and download actions, and an explicit Quit command.
+
+### Improvements
+- Closing the browser tab now leaves narratible available from the system tray while preserving FastAPI and local-AI worker cleanup on explicit shutdown.
+
+### Bugfixes
+- Fixed the tray Quit confirmation buttons becoming unresponsive by moving the native dialog and shutdown work outside pystray's Windows message callback.
+
 ## v1.7.1 - 2026-08-27
 
 ### Packaging

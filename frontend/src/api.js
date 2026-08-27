@@ -4,8 +4,8 @@ const DEFAULT_TASK_POLL_INTERVAL_MS = Number.isFinite(parsedPollIntervalMs) && p
   ? parsedPollIntervalMs
   : 2000
 
-async function request(method, path, body, isFormData = false) {
-  const opts = { method, headers: {} }
+async function request(method, path, body, isFormData = false, signal = undefined) {
+  const opts = { method, headers: {}, signal }
   if (body) {
     if (isFormData) {
       opts.body = body
@@ -31,6 +31,22 @@ async function request(method, path, body, isFormData = false) {
 
 // API endpoints
 export const getAppInfo = () => request('GET', '/health')
+
+function desktopLogQuery(options = {}) {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined && value !== null && value !== '') params.set(key, value)
+  }
+  const query = params.toString()
+  return query ? `?${query}` : ''
+}
+
+export const getDesktopLogs = ({ lines = 200, level, contains, signal } = {}) =>
+  request('GET', `/desktop/logs${desktopLogQuery({ lines, level, contains })}`, null, false, signal)
+export const watchDesktopLogs = ({ startOffset, seconds = 10, maxLines = 200, level, contains, signal } = {}) =>
+  request('GET', `/desktop/logs/watch${desktopLogQuery({ start_offset: startOffset, seconds, max_lines: maxLines, level, contains })}`, null, false, signal)
+export const openDesktopLogFolder = () => request('POST', '/desktop/open-log-folder')
+export const quitDesktopApp = () => request('POST', '/desktop/quit')
 
 // Settings
 export const getSettings = () => request('GET', '/settings')

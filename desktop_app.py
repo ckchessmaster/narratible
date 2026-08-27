@@ -1,4 +1,5 @@
 import multiprocessing
+import logging
 import os
 import sys
 import threading
@@ -200,6 +201,14 @@ if __name__ == "__main__" and "--verify-tts-imports" in sys.argv:
 
 
 from backend.app.main import app
+from backend.app.desktop_runtime import (
+    DesktopRuntimeCallbacks,
+    clear_desktop_runtime,
+    register_desktop_runtime,
+)
+from backend.app.runtime_state import LOG_DIR
+
+logger = logging.getLogger(__name__)
 
 
 def _ask_to_open_update(latest_version: str) -> bool:
@@ -220,6 +229,22 @@ def _ask_to_open_update(latest_version: str) -> bool:
         0x00000004 | 0x00000040,
     )
     return result == 6
+
+
+def _ask_to_quit() -> bool:
+    """Confirm an explicit tray-initiated shutdown on Windows."""
+    if os.name != "nt":
+        return True
+    import ctypes
+
+    result = ctypes.windll.user32.MessageBoxW(
+        None,
+        "Quit narratible? Any processing currently in progress will stop.",
+        "Quit narratible",
+        0x00000004 | 0x00000030,
+    )
+    return result == 6
+
 
 def check_for_updates():
     """Check GitHub for newer releases and prompt the user."""
@@ -281,15 +306,130 @@ def _augment_path_with_ffmpeg():
                 return
 
 
-def _run_server(port: int) -> None:
-    """Run Uvicorn through narratible's file-backed logging configuration."""
-    uvicorn.run(
+def _create_server(port: int) -> uvicorn.Server:
+    """Create a server whose shutdown can be requested by desktop controls."""
+    config = uvicorn.Config(
         app,
         host="127.0.0.1",
         port=port,
         log_level="info",
         log_config=None,
     )
+    return uvicorn.Server(config)
+
+
+def _request_server_shutdown(server: uvicorn.Server) -> None:
+    server.should_exit = True
+
+
+def _open_log_folder() -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        os.startfile(str(LOG_DIR))
+
+
+def _tray_icon_path() -> Path:
+    root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).parent
+    return root / "packaging" / "logo.ico"
+
+
+def _create_tray_icon(url: str, server: uvicorn.Server):
+    import pystray
+    from PIL import Image
+
+    quit_prompt_open = threading.Event()
+
+    def open_app(_icon=None, _item=None):
+        webbrowser.open(url)
+
+    def open_diagnostics(_icon=None, _item=None):
+        webbrowser.open(f"{url}/?diagnostics=1")
+
+    def open_log_folder(_icon=None, _item=None):
+        _open_log_folder()
+
+    def confirm_quit(icon):
+        try:
+            if not _ask_to_quit():
+                return
+            _request_server_shutdown(server)
+            icon.stop()
+        finally:
+            quit_prompt_open.clear()
+
+    def quit_app(icon, _item=None):
+        if quit_prompt_open.is_set():
+            return
+        quit_prompt_open.set()
+        try:
+            threading.Thread(
+                target=confirm_quit,
+                args=(icon,),
+                name="narratible-quit-confirmation",
+                daemon=True,
+            ).start()
+        except Exception:
+            quit_prompt_open.clear()
+            raise
+
+    menu = pystray.Menu(
+        pystray.MenuItem("Open narratible", open_app, default=True),
+        pystray.MenuItem("View Logs", open_diagnostics),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Open Log Folder", open_log_folder),
+        pystray.MenuItem("Quit narratible", quit_app),
+    )
+    with Image.open(_tray_icon_path()) as icon_file:
+        icon_image = icon_file.copy()
+
+    return pystray.Icon(
+        "narratible",
+        icon_image,
+        "narratible",
+        menu,
+    )
+
+
+def _run_desktop_app(port: int) -> None:
+    url = f"http://127.0.0.1:{port}"
+    server = _create_server(port)
+    tray_icon = None
+    tray_thread = None
+
+    callbacks = DesktopRuntimeCallbacks(
+        open_app=lambda: webbrowser.open(url),
+        open_diagnostics=lambda: webbrowser.open(f"{url}/?diagnostics=1"),
+        open_log_folder=_open_log_folder,
+        request_shutdown=lambda: _request_server_shutdown(server),
+    )
+    register_desktop_runtime(callbacks)
+
+    try:
+        try:
+            tray_icon = _create_tray_icon(url, server)
+            tray_thread = threading.Thread(
+                target=tray_icon.run,
+                name="narratible-tray",
+                daemon=True,
+            )
+            tray_thread.start()
+        except Exception:
+            logger.exception("Failed to initialize the Windows system tray icon.")
+
+        threading.Thread(target=open_browser, args=(url,), daemon=True).start()
+        logger.info("Starting narratible on %s", url)
+        server.run()
+    finally:
+        clear_desktop_runtime()
+        if tray_icon is not None:
+            tray_icon.stop()
+        if tray_thread is not None:
+            tray_thread.join(timeout=2)
+
+
+def _run_server(port: int) -> None:
+    """Run Uvicorn through narratible's file-backed logging configuration."""
+    _create_server(port).run()
 
 
 if __name__ == "__main__":
@@ -298,10 +438,4 @@ if __name__ == "__main__":
     if getattr(sys, 'frozen', False):
         _augment_path_with_ffmpeg()
 
-    port = 8000
-    url = f"http://127.0.0.1:{port}"
-    
-    threading.Thread(target=open_browser, args=(url,), daemon=True).start()
-    
-    print(f"Starting narratible on {url}...")
-    _run_server(port)
+    _run_desktop_app(8000)

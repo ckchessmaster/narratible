@@ -22,6 +22,11 @@ export const TIPS = [
     body: 'First time here? Open Settings to add a Gemini or OpenAI key (or set up Local AI) before you begin.',
   },
   {
+    id: 'w1-diagnostics', context: 'wizard', step: 1, anchor: 'diagnostics-button', placement: 'bottom',
+    title: 'Runs from the system tray',
+    body: 'Closing this browser tab leaves narratible running. Use Diagnostics or the Windows tray icon to reopen the app, view logs, or quit.',
+  },
+  {
     id: 'w1-resume-projects', context: 'wizard', step: 1, anchor: 'resume-projects', placement: 'bottom',
     title: 'Resume saved work',
     body: 'Saved projects appear here so you can continue without re-running completed parsing, cleanup, or audio steps.',

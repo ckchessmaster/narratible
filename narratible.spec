@@ -8,6 +8,7 @@ datas = [
     ('backend/runtime_profiles', 'runtime_profiles'),
     ('backend/app/runtime_worker_scripts', 'runtime_workers'),
     ('build/runtime-tools', 'runtime-tools'),
+    ('packaging/logo.ico', 'packaging'),
     # Resemble Enhance must use an isolated Python/Torch environment. Ship a
     # real source worker because an external interpreter cannot import modules
     # from PyInstaller's PYZ archive.
@@ -15,7 +16,7 @@ datas = [
     ('backend/requirements-voice-enhancement.txt', 'optional_runtime'),
 ]
 binaries = []
-hiddenimports = []
+hiddenimports = ['pystray._win32']
 
 a = Analysis(
     ['desktop_app.py'],

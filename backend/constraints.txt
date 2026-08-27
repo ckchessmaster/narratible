@@ -155,6 +155,7 @@ pyparsing==3.3.2
 pypdfium2==5.13.0
 pypinyin==0.55.0
 pytest==9.1.1
+pystray==0.19.5; sys_platform == "win32"
 python-dateutil==2.9.0.post0
 python-multipart==0.0.32
 pywin32==312; sys_platform == "win32"
