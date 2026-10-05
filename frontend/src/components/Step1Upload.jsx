@@ -282,9 +282,8 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
       setProgress(100)
       const durationSeconds = typeof finalTask.duration_seconds === 'number' ? Math.max(0, Math.round(finalTask.duration_seconds)) : timeElapsed
       setFinalTime(durationSeconds)
-      toast('PDF parsed successfully!', 'success')
+      toast('PDF parsed successfully! Ready for Chapter Studio.', 'success')
       onProjectChanged?.()
-      setTimeout(onNext, 600)
     } catch (e) {
       if (e.cancelled) {
         setStatus('cancelled')
@@ -643,14 +642,27 @@ export default function Step1Upload({ projectId, setProjectId, onNext, toast, cu
                 Abort
               </button>
             )}
-            {projectId && !busy && (
-              <button className="btn btn-secondary btn-lg" onClick={onNext}>
-                Continue →
-              </button>
+            {status === 'done' ? (
+              <>
+                <button className="btn btn-secondary btn-lg" onClick={handleSubmit} title="Re-parse PDF with current settings">
+                  Re-parse PDF
+                </button>
+                <button className="btn btn-primary btn-lg" onClick={onNext}>
+                  Open Chapter Studio →
+                </button>
+              </>
+            ) : (
+              <>
+                {projectId && !busy && (
+                  <button className="btn btn-secondary btn-lg" onClick={onNext}>
+                    Continue →
+                  </button>
+                )}
+                <button className="btn btn-primary btn-lg" data-tip-anchor="parse-button" onClick={handleSubmit} disabled={busy}>
+                  {busy ? 'Processing...' : 'Parse PDF →'}
+                </button>
+              </>
             )}
-            <button className="btn btn-primary btn-lg" data-tip-anchor="parse-button" onClick={handleSubmit} disabled={busy}>
-              {busy ? 'Processing...' : 'Parse PDF →'}
-            </button>
           </div>
         </div>
       </div>

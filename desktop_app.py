@@ -151,6 +151,22 @@ if __name__ == "__main__":
     from backend.app.subprocess_utils import configure_child_process_job
 
     configure_child_process_job()
+
+    if "--mcp-stdio" in sys.argv or "--mcp" in sys.argv:
+        from backend.app.mcp_server import create_mcp_server
+        from backend.app.config import load_config
+
+        cfg = load_config()
+        if not cfg.mcp_enabled and "--force" not in sys.argv:
+            sys.stderr.write(
+                "Error: MCP server is disabled in Narratible settings.\n"
+                "Enable it in Settings or pass --force to run anyway.\n"
+            )
+            raise SystemExit(1)
+        mcp = create_mcp_server()
+        mcp.run("stdio")
+        raise SystemExit(0)
+
     runtime_exit_code = _run_runtime_cli()
     if runtime_exit_code is not None:
         raise SystemExit(runtime_exit_code)

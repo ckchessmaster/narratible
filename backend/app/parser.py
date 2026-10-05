@@ -1,6 +1,7 @@
 import pymupdf as fitz
 import logging
 import re
+import uuid
 from pathlib import Path
 from typing import Dict, Any
 
@@ -167,31 +168,57 @@ def _extract_via_toc(doc: fitz.Document, toc: list, progress_callback=None) -> D
             progress_callback(f"Reading section {i+1} of {total}…", (i + 1) / total)
 
         chapter_text = []
+        chapter_blocks = []
         for page_num in range(start_page, end_page):
-            chapter_text.append(doc[page_num].get_text())
-            
+            p_text = doc[page_num].get_text() or ""
+            chapter_text.append(p_text)
+            for para in p_text.split("\n\n"):
+                para_clean = para.strip()
+                if para_clean:
+                    chapter_blocks.append({
+                        "id": f"blk_{uuid.uuid4().hex[:8]}",
+                        "source_page": page_num + 1,
+                        "text": para_clean,
+                        "audio_muted": False,
+                        "warning": None,
+                    })
+
         raw_text = "\n\n".join(chapter_text).strip()
         if raw_text:
             chapters.append({
                 "title": title.strip(),
                 "raw_text": raw_text,
+                "blocks": chapter_blocks,
                 "confidence": 1.0,
-                "warnings": []
+                "warnings": [],
             })
             full_text.append(raw_text)
-            
+
     # Handle frontmatter before first bookmark
     if bookmarks and bookmarks[0][2] - 1 > 0:
         frontmatter_text = []
+        frontmatter_blocks = []
         for page_num in range(0, bookmarks[0][2] - 1):
-            frontmatter_text.append(doc[page_num].get_text())
+            p_text = doc[page_num].get_text() or ""
+            frontmatter_text.append(p_text)
+            for para in p_text.split("\n\n"):
+                para_clean = para.strip()
+                if para_clean:
+                    frontmatter_blocks.append({
+                        "id": f"blk_{uuid.uuid4().hex[:8]}",
+                        "source_page": page_num + 1,
+                        "text": para_clean,
+                        "audio_muted": False,
+                        "warning": None,
+                    })
         front_raw = "\n\n".join(frontmatter_text).strip()
         if front_raw:
             chapters.insert(0, {
                 "title": "Frontmatter",
                 "raw_text": front_raw,
+                "blocks": frontmatter_blocks,
                 "confidence": 1.0,
-                "warnings": []
+                "warnings": [],
             })
             full_text.insert(0, front_raw)
 
@@ -261,6 +288,7 @@ def _assemble_chapters_from_blocks(page_blocks: list, median_size: float) -> Dic
     cleaned_full_text = []
     current_chapter_title = "Frontmatter"
     current_chapter_text = []
+    current_chapter_blocks = []
     chapters = []
     # Track whether body text has accumulated since the last heading so that
     # back-to-back headings merge into one title instead of new chapters.
@@ -273,6 +301,7 @@ def _assemble_chapters_from_blocks(page_blocks: list, median_size: float) -> Dic
             chapters.append({
                 "title": _despace_title(current_chapter_title),
                 "raw_text": ch_text,
+                "blocks": list(current_chapter_blocks),
                 "confidence": 0.8,
                 "warnings": ["Detected via visual layout heuristic. Please verify boundaries."],
             })
@@ -310,10 +339,21 @@ def _assemble_chapters_from_blocks(page_blocks: list, median_size: float) -> Dic
                     finalize_current()
                     current_chapter_title = text
                     current_chapter_text = []
+                    current_chapter_blocks = []
                     title_is_placeholder = False
                 title_open = True
             else:
                 current_chapter_text.append(text)
+                src_p = b.get("page", 1)
+                if isinstance(src_p, int) and src_p == 0:
+                    src_p = 1
+                current_chapter_blocks.append({
+                    "id": f"blk_{uuid.uuid4().hex[:8]}",
+                    "source_page": src_p,
+                    "text": text,
+                    "audio_muted": False,
+                    "warning": None,
+                })
                 title_open = False
 
     finalize_current()
@@ -321,17 +361,21 @@ def _assemble_chapters_from_blocks(page_blocks: list, median_size: float) -> Dic
     # If we only found Frontmatter, fallback to treating the whole document as one chapter
     if len(chapters) <= 1:
         raw = "\n\n".join(cleaned_full_text).strip()
+        fallback_blocks = []
+        for ch in chapters:
+            fallback_blocks.extend(ch.get("blocks", []))
         chapters = [{
             "title": "Document",
             "raw_text": raw,
+            "blocks": fallback_blocks,
             "confidence": 0.5,
-            "warnings": ["No chapters detected. Document was not split."]
+            "warnings": ["No chapters detected. Document was not split."],
         }]
 
     return {
         "raw_text": "\n\n".join(cleaned_full_text),
         "chapters": chapters,
-        "method": "layout"
+        "method": "layout",
     }
 
 
@@ -372,7 +416,7 @@ def _extract_via_layout(doc: fitz.Document, progress_callback=None) -> Dict[str,
                         block_text = " ".join(block_lines)
                 if block_text.strip():
                     avg_size = sum(block_fonts) / len(block_fonts) if block_fonts else 0
-                    text_blocks.append({"text": block_text.strip(), "size": avg_size, "page": page_num})
+                    text_blocks.append({"text": block_text.strip(), "size": avg_size, "page": page_num + 1})
         page_blocks.append(text_blocks)
         if progress_callback:
             # Reserve the last slice of the bar for boundary detection below.

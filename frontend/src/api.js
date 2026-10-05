@@ -89,6 +89,32 @@ export const getModernizationProfiles = () => request('GET', '/modernization-pro
 
 export const cancelTask = (projectId) => request('POST', `/projects/${projectId}/cancel`)
 
+// PDF Pages & Inspection
+export const getPageInfo = (projectId) => request('GET', `/projects/${projectId}/pages/info`)
+export const pageImageUrl = (projectId, pageNumber, dpi = 150) =>
+  `${BASE}/projects/${projectId}/pages/${pageNumber}.jpg?dpi=${dpi}`
+
+// Semantic Layout & Zoning
+export const getPageLayout = (projectId, pageNumber) =>
+  request('GET', `/projects/${projectId}/pages/${pageNumber}/layout`)
+
+export const updatePageLayout = (projectId, pageNumber, blocks, reextractText = true) =>
+  request('POST', `/projects/${projectId}/pages/${pageNumber}/layout`, {
+    blocks,
+    reextract_text: reextractText,
+  })
+
+export const propagateLayout = (projectId, payload) =>
+  request('POST', `/projects/${projectId}/layout/propagate`, payload)
+
+export const visionExtractPage = (projectId, pageNumber, provider = 'gemini', model = 'gemini-2.0-flash') =>
+  request('POST', `/projects/${projectId}/pages/${pageNumber}/vision-extract`, {
+    provider,
+    model,
+    prompt_preset: 'academic_marginalia',
+  })
+
+
 // Chapters
 export const getChapters = (id) => request('GET', `/projects/${id}/chapters`)
 export const saveChapters = (id, chapters) => request('PUT', `/projects/${id}/chapters`, chapters)
@@ -255,3 +281,10 @@ export async function pollTask(taskId, onProgress, intervalMs = DEFAULT_TASK_POL
     }, intervalMs)
   })
 }
+
+// MCP Server
+export const getMcpStatus = () => request('GET', '/mcp/status')
+export const toggleMcp = (enabled) => request('POST', '/mcp/toggle', { enabled })
+export const getMcpTokens = () => request('GET', '/mcp/tokens')
+export const createMcpToken = (name) => request('POST', '/mcp/tokens', { name })
+export const deleteMcpToken = (tokenId) => request('DELETE', `/mcp/tokens/${encodeURIComponent(tokenId)}`)

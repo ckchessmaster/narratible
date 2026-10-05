@@ -143,13 +143,20 @@ Then open **http://localhost:5173** in your browser.
 
 ### MCP server for agents
 
-The backend exposes an MCP server for local agents while it is running:
+The application exposes a Model Context Protocol (MCP) server for local AI agents (Claude Desktop, Cursor, VS Code, etc.):
 
-- Streamable HTTP endpoint: `http://localhost:8000/mcp`
-- Stdio entry point: `cd backend && .venv\Scripts\python.exe -m app.mcp_server`
-
-Current MCP tools include project/task inspection plus `tail_logs` and `watch_logs`
-for reading live backend logs.
+- **Toggle & Security**: Disabled by default. Enable it under **Settings → MCP Server**.
+- **Authentication**: HTTP requests require a Personal Access Token (`Authorization: Bearer ntb_...`), generated in Settings.
+- **Endpoints & Transports**:
+  - Streamable HTTP: `http://localhost:8000/mcp`
+  - Stdio (Development): `cd backend && .venv\Scripts\python.exe -m app.mcp_server`
+  - Stdio (Packaged Desktop App): `narratible.exe --mcp-stdio`
+- **Capabilities**:
+  - **Full Control Tools**: Cancel background tasks (`cancel_task`), update project settings (`update_project_metadata`), edit chapter text/titles (`update_chapter_content`), clean chapter OCR text (`clean_chapter_text`), export EPUB (`export_project_epub`), delete projects (`delete_narratible_project`), and discover voices/runtimes (`list_available_voices`, `get_runtime_status`).
+  - **Log Monitoring**: `tail_logs`, `watch_logs`, `get_log_cursor`.
+  - **MCP Resources**: `narratible://logs/latest`, `narratible://projects`, `narratible://projects/{id}`, `narratible://projects/{id}/chapters/{id}`, `narratible://runtime/status`.
+  - **MCP Prompts**: `diagnose_pipeline_error`, `audit_chapter_cleaning`.
+  - **One-Click Config**: The Settings UI includes ready-to-paste JSON configuration generators for Claude Desktop, Cursor, and VS Code.
 
 ---
 

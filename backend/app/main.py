@@ -15,7 +15,7 @@ from typing import Literal, Any
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Query, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from .config import AppConfig, load_config, save_config, get_device_string
 from .logging_config import configure_logging
 from .mcp_server import create_mcp_server
+from .mcp_auth import generate_pat, list_tokens, revoke_token, validate_token
 from .version import APP_VERSION
 from .projects import (
     PROJECTS_DIR,
@@ -45,7 +46,15 @@ from .projects import (
     save_cleaning_eval,
     load_modernization_eval,
     save_modernization_eval,
+    load_page_layout,
+    save_page_layout,
+    sync_page_layout_to_chapters,
     _project_path,
+)
+from .services.layout import (
+    LayoutUpdateRequest,
+    LayoutPropagateRequest,
+    VisionExtractRequest,
 )
 from .parser import extract_structured_from_pdf, extract_pdf_metadata, extract_pdf_cover
 from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters, llm_extract_book_metadata, list_cleaning_profiles, get_cleaning_profile
@@ -98,7 +107,23 @@ logger = logging.getLogger(__name__)
 # text", "Cleaning text"); "message" carries the finer detail shown beneath it.
 _tasks: dict[str, dict] = {}
 
-mcp_server = create_mcp_server(lambda: _tasks)
+
+def _cancel_task_by_id(task_id: str) -> bool:
+    found = False
+    if task_id in _tasks:
+        _tasks[task_id]["is_cancelled"] = True
+        found = True
+    for prefix in ("parse-", "tts-", "modernize-"):
+        key = f"{prefix}{task_id}"
+        if key in _tasks:
+            _tasks[key]["is_cancelled"] = True
+            found = True
+    if found:
+        save_task_snapshot(_tasks)
+    return found
+
+
+mcp_server = create_mcp_server(lambda: _tasks, _cancel_task_by_id)
 mcp_app = mcp_server.streamable_http_app(
     streamable_http_path="/",
     stateless_http=True,
@@ -582,6 +607,8 @@ class ChapterPatchRequest(BaseModel):
     title: str | None = None
     text: str | None = None
     order: int | None = None
+    include_in_audio: bool | None = None
+    blocks: list[dict] | None = None
 
 
 class TaskDecisionRequest(BaseModel):
@@ -1015,9 +1042,40 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                     if review_count and review_count != fallback_count:
                         warnings.append(f"{review_count} cleaning chunk(s) need review")
 
+                    orig_blocks = ch.get("blocks", [])
+                    cleaned_paras = [p.strip() for p in cleaned_ch_text.split("\n\n") if p.strip()]
+                    cleaned_blocks = []
+                    for p_idx, para in enumerate(cleaned_paras):
+                        src_p = None
+                        if p_idx < len(orig_blocks):
+                            src_p = orig_blocks[p_idx].get("source_page")
+                        elif orig_blocks:
+                            src_p = orig_blocks[-1].get("source_page")
+                        cleaned_blocks.append({
+                            "id": f"blk_{uuid.uuid4().hex[:8]}",
+                            "source_page": src_p,
+                            "text": para,
+                            "audio_muted": False,
+                            "warning": None,
+                        })
+                    for chunk_eval in chapter_eval.get("chunks", []):
+                        if chunk_eval.get("recommended_action") == "review" or chunk_eval.get("risk_level") == "high" or chunk_eval.get("fallback"):
+                            src_chunk = (chunk_eval.get("source_text") or "").strip()
+                            clean_chunk = (chunk_eval.get("cleaned_text") or "").strip()
+                            for b in cleaned_blocks:
+                                if (src_chunk and (src_chunk[:30] in b["text"] or b["text"][:30] in src_chunk)) or (clean_chunk and clean_chunk[:30] in b["text"]):
+                                    b["warning"] = {
+                                        "type": "anchor_fallback" if chunk_eval.get("fallback") else "review_needed",
+                                        "message": chunk_eval.get("warning") or "Passage flagged during cleaning evaluation",
+                                        "raw_text": src_chunk,
+                                        "status": "pending",
+                                    }
+                                    break
+
                     cleaned_chapters.append({
                         "title": ch_title,
                         "text": cleaned_ch_text,
+                        "blocks": cleaned_blocks,
                         "audio_path": None,
                         "confidence": ch.get("confidence", 1.0),
                         "warnings": warnings,
@@ -1040,12 +1098,29 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                     ch["raw_text"],
                     known_titles=[meta.title, ch_title],
                 )
+                orig_blocks = ch.get("blocks", [])
+                cleaned_paras = [p.strip() for p in cleaned_txt.split("\n\n") if p.strip()]
+                cleaned_blocks = []
+                for p_idx, para in enumerate(cleaned_paras):
+                    src_p = None
+                    if p_idx < len(orig_blocks):
+                        src_p = orig_blocks[p_idx].get("source_page")
+                    elif orig_blocks:
+                        src_p = orig_blocks[-1].get("source_page")
+                    cleaned_blocks.append({
+                        "id": f"blk_{uuid.uuid4().hex[:8]}",
+                        "source_page": src_p,
+                        "text": para,
+                        "audio_muted": False,
+                        "warning": None,
+                    })
                 cleaned_chapters.append({
                     "title": ch["title"],
                     "text": cleaned_txt,
+                    "blocks": cleaned_blocks,
                     "audio_path": None,
                     "confidence": ch.get("confidence", 1.0),
-                    "warnings": ch.get("warnings", [])
+                    "warnings": ch.get("warnings", []),
                 })
                 full_cleaned_text += cleaned_txt + "\n\n"
 
@@ -2114,6 +2189,298 @@ async def upload_cover(project_id: str, file: UploadFile = File(...)):
     return {"message": "Cover uploaded.", "cover_image": dest.name}
 
 
+@app.get("/api/projects/{project_id}/cover")
+async def get_project_cover(project_id: str):
+    try:
+        meta = get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    if not meta.cover_image:
+        raise HTTPException(status_code=404, detail="No cover image for this project.")
+    cover_path = _project_path(project_id) / meta.cover_image
+    if not cover_path.exists():
+        raise HTTPException(status_code=404, detail="Cover file not found.")
+    media_type = "image/png" if cover_path.suffix.lower() == ".png" else "image/jpeg"
+    return FileResponse(cover_path, media_type=media_type)
+
+
+# ── PDF Page Inspection ───────────────────────────────────────────────────────
+
+@app.get("/api/projects/{project_id}/pages/info")
+async def api_get_project_pages_info(project_id: str):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    pdf_path = source_pdf_path(project_id)
+    if not pdf_path.exists():
+        return {"total_pages": 0, "has_source_pdf": False}
+
+    try:
+        import pymupdf as fitz
+        with fitz.open(str(pdf_path)) as doc:
+            return {"total_pages": len(doc), "has_source_pdf": True}
+    except Exception as e:
+        logger.warning(f"Failed to inspect PDF page count for {project_id}: {e}")
+        return {"total_pages": 0, "has_source_pdf": False, "error": str(e)}
+
+
+@app.get("/api/projects/{project_id}/pages/{page_number}.jpg")
+async def api_get_project_page_image(project_id: str, page_number: int, dpi: int = 150):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    pdf_path = source_pdf_path(project_id)
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="Source PDF not found.")
+
+    cache_dir = artifact_dir(project_id) / "pages"
+    cache_path = cache_dir / f"page_{page_number}_{dpi}.jpg"
+
+    if cache_path.exists():
+        return FileResponse(
+            cache_path,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+    try:
+        import pymupdf as fitz
+        with fitz.open(str(pdf_path)) as doc:
+            if page_number < 1 or page_number > len(doc):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Page {page_number} is out of bounds (1-{len(doc)}).",
+                )
+            page = doc[page_number - 1]
+            scale = dpi / 72.0
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            pix.save(str(cache_path), output="jpg")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to render PDF page %s for project %s", page_number, project_id)
+        raise HTTPException(status_code=500, detail=f"Failed to render page: {e}")
+
+    return FileResponse(
+        cache_path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+# ── Semantic Page Layout & Zoning ─────────────────────────────────────────────
+
+@app.get("/api/projects/{project_id}/pages/{page_number}/layout")
+async def api_get_page_layout(project_id: str, page_number: int):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # 1. Try loading cached layout
+    cached = load_page_layout(project_id, page_number)
+    if cached:
+        return cached
+
+    # 2. Extract on-the-fly from source PDF
+    pdf_path = source_pdf_path(project_id)
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="Source PDF not found.")
+
+    try:
+        import pymupdf as fitz
+        from app.services.layout.engine import analyze_page_layout
+        with fitz.open(str(pdf_path)) as doc:
+            if page_number < 1 or page_number > len(doc):
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Page {page_number} is out of bounds (1-{len(doc)}).",
+                )
+            page = doc[page_number - 1]
+            layout = analyze_page_layout(page, page_number)
+            layout_dict = layout.model_dump()
+            save_page_layout(project_id, page_number, layout_dict)
+            return layout_dict
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to analyze layout for page %s: %s", page_number, e)
+        raise HTTPException(status_code=500, detail=f"Failed to analyze page layout: {e}")
+
+
+@app.post("/api/projects/{project_id}/pages/{page_number}/layout")
+async def api_update_page_layout(project_id: str, page_number: int, req: LayoutUpdateRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    pdf_path = source_pdf_path(project_id)
+    blocks = req.blocks
+    width, height = 612.0, 792.0
+
+    if pdf_path.exists() and req.reextract_text:
+        try:
+            import pymupdf as fitz
+            from app.services.layout.extractor import extract_layout_blocks_text
+            with fitz.open(str(pdf_path)) as doc:
+                if 1 <= page_number <= len(doc):
+                    page = doc[page_number - 1]
+                    width, height = float(page.rect.width), float(page.rect.height)
+                    blocks = extract_layout_blocks_text(page, blocks, width, height)
+        except Exception as e:
+            logger.warning("Failed to re-extract bounded text for page %s: %s", page_number, e)
+
+    layout_dict = {
+        "page_number": page_number,
+        "width": round(width, 2),
+        "height": round(height, 2),
+        "blocks": [b.model_dump() for b in blocks],
+    }
+
+    # Persist layout
+    save_page_layout(project_id, page_number, layout_dict)
+
+    # Sync directly into chapter blocks
+    sync_page_layout_to_chapters(project_id, page_number, layout_dict["blocks"])
+
+    return layout_dict
+
+
+@app.post("/api/projects/{project_id}/layout/propagate")
+async def api_propagate_layout(project_id: str, req: LayoutPropagateRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    pdf_path = source_pdf_path(project_id)
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="Source PDF not found.")
+
+    import pymupdf as fitz
+    from app.services.layout.extractor import extract_layout_blocks_text
+    from app.services.layout.models import LayoutBlock
+
+    # Load templates
+    template_even = None
+    template_odd = None
+    template_single = None
+
+    if req.mode == "alternating":
+        if req.template_even_page:
+            template_even = load_page_layout(project_id, req.template_even_page)
+        if req.template_odd_page:
+            template_odd = load_page_layout(project_id, req.template_odd_page)
+        if not template_even and not template_odd:
+            raise HTTPException(status_code=400, detail="At least one template page (even or odd) must be provided.")
+    else:
+        if not req.template_page:
+            raise HTTPException(status_code=400, detail="template_page is required for single mode.")
+        template_single = load_page_layout(project_id, req.template_page)
+        if not template_single:
+            raise HTTPException(status_code=404, detail=f"Template page {req.template_page} layout not found.")
+
+    updated_pages = []
+
+    with fitz.open(str(pdf_path)) as doc:
+        total_doc_pages = len(doc)
+        start_p = max(1, req.target_start_page)
+        end_p = min(total_doc_pages, req.target_end_page)
+
+        for p_num in range(start_p, end_p + 1):
+            if req.mode == "alternating":
+                chosen_template = (template_even if p_num % 2 == 0 else template_odd) or template_even or template_odd
+            else:
+                chosen_template = template_single
+
+            if not chosen_template:
+                continue
+
+            page = doc[p_num - 1]
+            p_width, p_height = float(page.rect.width), float(page.rect.height)
+
+            # Clone bounding boxes with fresh block IDs
+            cloned_blocks = []
+            for b in chosen_template.get("blocks", []):
+                cloned_blocks.append(
+                    LayoutBlock(
+                        id=f"blk_{p_num}_{uuid.uuid4().hex[:6]}",
+                        type=b.get("type", "body"),
+                        order=b.get("order"),
+                        audio_muted=b.get("audio_muted", False),
+                        bbox=b["bbox"],
+                        text="",
+                        confidence=1.0,
+                    )
+                )
+
+            # Extract bounded text
+            if req.reextract_all:
+                cloned_blocks = extract_layout_blocks_text(page, cloned_blocks, p_width, p_height)
+
+            p_layout = {
+                "page_number": p_num,
+                "width": round(p_width, 2),
+                "height": round(p_height, 2),
+                "blocks": [b.model_dump() for b in cloned_blocks],
+            }
+
+            save_page_layout(project_id, p_num, p_layout)
+            sync_page_layout_to_chapters(project_id, p_num, p_layout["blocks"])
+            updated_pages.append(p_num)
+
+    return {
+        "status": "success",
+        "updated_pages_count": len(updated_pages),
+        "updated_pages": updated_pages,
+    }
+
+
+@app.post("/api/projects/{project_id}/pages/{page_number}/vision-extract")
+async def api_vision_extract_page(project_id: str, page_number: int, req: VisionExtractRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    pdf_path = source_pdf_path(project_id)
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="Source PDF not found.")
+
+    try:
+        import pymupdf as fitz
+        from app.services.layout.vision import extract_layout_via_vision
+        with fitz.open(str(pdf_path)) as doc:
+            if page_number < 1 or page_number > len(doc):
+                raise HTTPException(status_code=404, detail=f"Page {page_number} is out of bounds.")
+            page = doc[page_number - 1]
+            scale = 150 / 72.0
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            img_bytes = pix.tobytes("jpeg")
+
+        blocks = await extract_layout_via_vision(
+            image_bytes=img_bytes,
+            page_number=page_number,
+            provider=req.provider,
+            model=req.model,
+        )
+        return {
+            "page_number": page_number,
+            "blocks": [b.model_dump() for b in blocks],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("AI Vision extraction failed for page %s: %s", page_number, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── TTS ───────────────────────────────────────────────────────────────────────
 
 @app.get("/api/tts/voices")
@@ -2576,6 +2943,9 @@ async def synthesize_project_chapter(
         enabled_modules=meta.enabled_modules,
     )
 
+    if not chapter.get("include_in_audio", True):
+        return {"status": "skipped", "chapter": chapter, "audio_path": None, "message": "Chapter excluded from audio."}
+
     if chapter_audio_current(chapter, settings_hash, project_id) and not force:
         return {"status": "skipped", "chapter": chapter, "audio_path": chapter["tts"]["audio_path"]}
 
@@ -2607,8 +2977,17 @@ async def synthesize_project_chapter(
             project_id, engine, voice
         )
 
+        if chapter.get("blocks"):
+            audible_blocks = [
+                b["text"] for b in chapter["blocks"]
+                if not b.get("audio_muted", False) and (b.get("text") or "").strip()
+            ]
+            body_to_speak = "\n\n".join(audible_blocks)
+        else:
+            body_to_speak = chapter.get("text", "")
+
         await synthesize_speech(
-            text=compose_tts_text(chapter.get("title", f"Chapter {index + 1}"), chapter.get("text", ""), read_headings),
+            text=compose_tts_text(chapter.get("title", f"Chapter {index + 1}"), body_to_speak, read_headings),
             output_path=temp_path,
             engine=engine,
             voice=effective_voice,
@@ -2705,6 +3084,10 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
         audio_files = []
 
         for i, ch in enumerate(chapters):
+            if not ch.get("include_in_audio", True):
+                logger.info("Skipping chapter %s ('%s') - marked not for audio.", i + 1, ch.get("title"))
+                continue
+
             t = _get_task(task_id)
             if t and t.get("is_cancelled"):
                 _set_task(task_id, "cancelled", "Task was cancelled.", t.get("progress", 0), stage="Cancelled")
@@ -3217,9 +3600,99 @@ async def get_task_status(task_id: str):
     return _tasks[task_id]
 
 
-# ── MCP Server ────────────────────────────────────────────────────────────────
+# ── MCP Server & Token Management ─────────────────────────────────────────────
 
-app.mount("/mcp", mcp_app)
+class MCPProtectedApp:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            cfg = load_config()
+            if not cfg.mcp_enabled:
+                response = JSONResponse(
+                    {"error": "MCP server is disabled in settings. Enable it in Settings to access this endpoint."},
+                    status_code=403,
+                )
+                await response(scope, receive, send)
+                return
+
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode("latin1").strip()
+            token = None
+            if auth_header.lower().startswith("bearer "):
+                token = auth_header[7:].strip()
+            else:
+                from urllib.parse import parse_qs
+                query_string = scope.get("query_string", b"").decode("latin1")
+                params = parse_qs(query_string)
+                if "token" in params and params["token"]:
+                    token = params["token"][0]
+
+            if not token or not validate_token(token):
+                response = JSONResponse(
+                    {"error": "Unauthorized: A valid MCP Personal Access Token is required."},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                await response(scope, receive, send)
+                return
+
+        await self.app(scope, receive, send)
+
+
+class MCPToggleRequest(BaseModel):
+    enabled: bool
+
+
+class CreateTokenRequest(BaseModel):
+    name: str
+
+
+@app.get("/api/mcp/status")
+async def get_mcp_status(request: Request):
+    cfg = load_config()
+    tokens = list_tokens()
+    base_url = f"{request.url.scheme}://{request.headers.get('host', 'localhost:8000')}"
+    return {
+        "enabled": cfg.mcp_enabled,
+        "token_count": len(tokens),
+        "http_url": f"{base_url}/mcp",
+        "stdio_command": "narratible --mcp-stdio" if getattr(sys, "frozen", False) else "python -m app.mcp_server",
+    }
+
+
+@app.post("/api/mcp/toggle")
+async def toggle_mcp(req: MCPToggleRequest):
+    cfg = load_config()
+    cfg.mcp_enabled = req.enabled
+    save_config(cfg)
+    return {"enabled": cfg.mcp_enabled}
+
+
+@app.get("/api/mcp/tokens")
+async def get_mcp_tokens():
+    return list_tokens()
+
+
+@app.post("/api/mcp/tokens")
+async def create_mcp_token(req: CreateTokenRequest):
+    record, raw_token = generate_pat(req.name)
+    return {
+        "token": record,
+        "secret": raw_token,
+    }
+
+
+@app.delete("/api/mcp/tokens/{token_id}")
+async def delete_mcp_token(token_id: str):
+    success = revoke_token(token_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Token not found.")
+    return {"message": "Token revoked successfully."}
+
+
+app.mount("/mcp", MCPProtectedApp(mcp_app))
 
 
 # ── Static Frontend Serving (PyInstaller Packaged) ────────────────────────────

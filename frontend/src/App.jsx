@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { Terminal } from 'lucide-react'
 import { cancelTask, deleteProject, getAppInfo, getRuntimeEngines, getRuntimePreflight, getSystemInfo, getSettings, listProjects } from './api'
 import './App.css'
@@ -15,7 +15,7 @@ import useTips from './useTips'
 
 const STEPS = [
   { label: 'Upload' },
-  { label: 'Review' },
+  { label: 'Chapter Studio' },
   { label: 'Voice' },
   { label: 'Export' },
 ]
@@ -106,7 +106,13 @@ export default function App() {
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000)
   }, [])
 
-  const next = () => setStep(s => { const n = Math.min(s + 1, 4); setMaxStep(m => Math.max(m, n)); return n })
+  const nextCallRef = useRef(0)
+  const next = () => {
+    const now = Date.now()
+    if (now - nextCallRef.current < 450) return
+    nextCallRef.current = now
+    setStep(s => { const n = Math.min(s + 1, 4); setMaxStep(m => Math.max(m, n)); return n })
+  }
   const back = () => setStep(s => Math.max(s - 1, 1))
   const resumeProject = (project) => {
     const resumeStep = STEP_BY_STATUS[project.current_step] || (project.chapter_count ? 2 : 1)

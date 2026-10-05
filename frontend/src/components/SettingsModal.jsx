@@ -3,6 +3,7 @@ import { getSettings, saveSettings, getSystemInfo,
          validateGeminiKey, validateOpenAIKey, validateHuggingFaceToken } from '../api'
 import Coachmark from './Coachmark'
 import LocalEnginesSettings from './LocalEnginesSettings'
+import McpSettings from './McpSettings'
 import useTips from '../useTips'
 
 const PRESET_FAMILIES = [
@@ -57,6 +58,7 @@ const PRESET_FAMILIES = [
 const TABS = [
   ['ai', 'Cloud LLM Keys'],
   ['local', 'Local AI'],
+  ['mcp', 'MCP Server'],
   ['integrations', 'Integrations'],
   ['system', 'System'],
 ]
@@ -406,10 +408,14 @@ export default function SettingsModal({ onClose, toast }) {
                       </div>
                     )}
                   </div>
-
                 </div>
               )
             })()}
+
+            {/* ── MCP Server tab ─────────────────────────────────────── */}
+            {activeTab === 'mcp' && (
+              <McpSettings toast={toast} />
+            )}
 
             {/* ── Integrations tab ────────────────────────────────────── */}
             {activeTab === 'integrations' && (

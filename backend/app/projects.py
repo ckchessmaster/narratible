@@ -93,9 +93,18 @@ def _write_json_atomic(path: Path, data: Any):
     os.replace(tmp_path, path)
 
 
-def chapter_text_hash(title: str, text: str) -> str:
-    """Hash the text that can affect synthesized chapter audio."""
+def chapter_text_hash(
+    title: str,
+    text: str,
+    audible_text: str | None = None,
+    include_in_audio: bool = True,
+) -> str:
+    """Hash the text and narration settings that affect synthesized chapter audio."""
     payload = f"{title or ''}\0{text or ''}"
+    if audible_text is not None and audible_text != text:
+        payload += f"\0audible:{audible_text}"
+    if not include_in_audio:
+        payload += "\0audio_excluded"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -232,7 +241,15 @@ def update_chapter(project_id: str, chapter_id: str, updates: dict) -> dict:
     chapters = load_chapters(project_id)
     for index, chapter in enumerate(chapters):
         if str(chapter.get("id", index)) == chapter_id:
-            allowed = {key: updates[key] for key in ("title", "text", "order") if key in updates}
+            allowed = {
+                key: updates[key]
+                for key in ("title", "text", "order", "include_in_audio", "blocks")
+                if key in updates
+            }
+            if "blocks" in allowed and "text" not in updates:
+                allowed["text"] = "\n\n".join(
+                    b.get("text", "") for b in allowed["blocks"] if (b.get("text") or "").strip()
+                )
             chapters[index] = {**chapter, **allowed}
             save_chapters(project_id, chapters)
             return load_chapters(project_id)[index]
@@ -248,10 +265,90 @@ def normalize_chapters(chapters: list[dict], previous: list[dict] | None = None)
     for index, chapter in enumerate(chapters):
         prior = previous_by_id.get(chapter.get("id")) or (previous[index] if index < len(previous) else {})
         title = chapter.get("title") or f"Chapter {index + 1}"
-        text = chapter.get("text") or ""
-        text_hash = chapter_text_hash(title, text)
-        old_hash = prior.get("text_hash")
         chapter_id = chapter.get("id") or prior.get("id") or str(uuid.uuid4())
+
+        include_in_audio = chapter.get("include_in_audio")
+        if include_in_audio is None:
+            include_in_audio = prior.get("include_in_audio", True)
+        include_in_audio = bool(include_in_audio)
+
+        incoming_blocks = chapter.get("blocks")
+        prior_blocks = prior.get("blocks") or []
+        prior_blocks_by_id = {b.get("id"): b for b in prior_blocks if b.get("id")}
+        incoming_text = chapter.get("text")
+
+        normalized_blocks = []
+        if incoming_blocks is not None and len(incoming_blocks) > 0:
+            raw_text_edited = (
+                incoming_text is not None
+                and prior.get("text") is not None
+                and incoming_text.strip() != prior.get("text", "").strip()
+                and incoming_blocks == prior_blocks
+            )
+            if raw_text_edited:
+                text = incoming_text
+                paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+                for p_idx, para in enumerate(paras):
+                    prior_b = prior_blocks[p_idx] if p_idx < len(prior_blocks) else {}
+                    normalized_blocks.append({
+                        "id": f"{chapter_id}_b{p_idx + 1}",
+                        "source_page": prior_b.get("source_page"),
+                        "text": para,
+                        "audio_muted": bool(prior_b.get("audio_muted", False)),
+                        "warning": prior_b.get("warning"),
+                    })
+            else:
+                for b_idx, blk in enumerate(incoming_blocks):
+                    b_id = blk.get("id") or f"{chapter_id}_b{b_idx + 1}"
+                    prior_b = prior_blocks_by_id.get(b_id, {})
+                    normalized_blocks.append({
+                        "id": b_id,
+                        "type": blk.get("type", prior_b.get("type", "body")),
+                        "source_page": blk.get("source_page", prior_b.get("source_page")),
+                        "text": blk.get("text", ""),
+                        "audio_muted": bool(blk.get("audio_muted", False)),
+                        "warning": blk.get("warning") if "warning" in blk else prior_b.get("warning"),
+                        "associated_para_id": blk.get("associated_para_id", prior_b.get("associated_para_id")),
+                    })
+                # For readable text flow, primary chapter text reflects body and callout prose
+                body_paras = [
+                    b["text"] for b in normalized_blocks
+                    if b.get("type", "body") in {"body", "callout"} and (b.get("text") or "").strip()
+                ]
+                text = "\n\n".join(body_paras) if body_paras else "\n\n".join(
+                    b["text"] for b in normalized_blocks if (b.get("text") or "").strip()
+                )
+        elif incoming_text is not None:
+            text = incoming_text
+            paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+            for p_idx, para in enumerate(paras):
+                prior_b = prior_blocks[p_idx] if p_idx < len(prior_blocks) else {}
+                normalized_blocks.append({
+                    "id": f"{chapter_id}_b{p_idx + 1}",
+                    "type": prior_b.get("type", "body"),
+                    "source_page": prior_b.get("source_page"),
+                    "text": para,
+                    "audio_muted": bool(prior_b.get("audio_muted", False)),
+                    "warning": prior_b.get("warning"),
+                    "associated_para_id": prior_b.get("associated_para_id"),
+                })
+        else:
+            text = prior.get("text") or ""
+            normalized_blocks = prior_blocks
+
+        audible_blocks = [
+            b["text"] for b in normalized_blocks
+            if not b.get("audio_muted", False) and (b.get("text") or "").strip()
+        ]
+        audible_text = "\n\n".join(audible_blocks) if normalized_blocks else text
+
+        text_hash = chapter_text_hash(
+            title,
+            text,
+            audible_text=audible_text,
+            include_in_audio=include_in_audio,
+        )
+        old_hash = prior.get("text_hash")
         tts = dict(chapter.get("tts") or prior.get("tts") or {})
         legacy_audio_path = chapter.get("audio_path") or prior.get("audio_path")
         if legacy_audio_path and not tts.get("audio_path"):
@@ -279,8 +376,10 @@ def normalize_chapters(chapters: list[dict], previous: list[dict] | None = None)
             "id": chapter_id,
             "order": index + 1,
             "title": title,
+            "include_in_audio": include_in_audio,
             "text": text,
             "text_hash": text_hash,
+            "blocks": normalized_blocks,
             "updated_at": now if old_hash != text_hash else chapter.get("updated_at") or prior.get("updated_at") or now,
             "tts": tts,
             "audio_path": tts.get("audio_path"),
@@ -399,3 +498,109 @@ def auto_split_chapters(text: str) -> list[dict]:
             
         chapters.append({"title": title, "text": body, "audio_path": None})
     return chapters
+
+
+# ── Page Layout Storage & Sync ────────────────────────────────────────────────
+
+def layout_dir(project_id: str) -> Path:
+    return artifact_dir(project_id) / "layouts"
+
+
+def page_layout_path(project_id: str, page_number: int) -> Path:
+    return layout_dir(project_id) / f"page_{page_number}.json"
+
+
+def load_page_layout(project_id: str, page_number: int) -> dict | None:
+    path = page_layout_path(project_id, page_number)
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_page_layout(project_id: str, page_number: int, layout: dict):
+    _write_json_atomic(page_layout_path(project_id, page_number), layout)
+
+
+def sync_page_layout_to_chapters(
+    project_id: str,
+    page_number: int,
+    layout_blocks: list[dict],
+) -> bool:
+    """
+    Synchronize modified layout blocks from a page directly into the project's chapters.
+    Updates the chapter blocks for that source_page, marks chapter TTS as stale,
+    and saves the chapters atomically.
+    """
+    chapters = load_chapters(project_id)
+    if not chapters:
+        return False
+
+    # Filter out header/footer blocks from chapter text
+    usable_blocks = [
+        b for b in layout_blocks
+        if b.get("type") != "header_footer" and (b.get("text") or "").strip()
+    ]
+
+    # Convert layout blocks into chapter block format
+    new_chapter_blocks = []
+    for b in usable_blocks:
+        b_type = b.get("type", "body")
+        # Peripheral apparatus notes are muted by default
+        is_muted = bool(b.get("audio_muted", b_type in {"marginalia", "footnote", "figure_caption"}))
+        new_chapter_blocks.append({
+            "id": b.get("id") or f"blk_{page_number}_{uuid.uuid4().hex[:6]}",
+            "type": b_type,
+            "source_page": page_number,
+            "text": b.get("text", "").strip(),
+            "audio_muted": is_muted,
+            "warning": None,
+            "associated_para_id": b.get("associated_para_id"),
+        })
+
+    # Find which chapter contains this page
+    target_ch_idx = None
+    for idx, ch in enumerate(chapters):
+        ch_pages = {b.get("source_page") for b in ch.get("blocks", []) if b.get("source_page")}
+        if page_number in ch_pages:
+            target_ch_idx = idx
+            break
+
+    # If no chapter explicitly has page_number, default to first chapter
+    if target_ch_idx is None:
+        target_ch_idx = 0 if chapters else None
+
+    if target_ch_idx is None:
+        return False
+
+    target_ch = chapters[target_ch_idx]
+    orig_blocks = target_ch.get("blocks", [])
+
+    # Replace blocks on page_number with new_chapter_blocks
+    prefix_blocks = []
+    suffix_blocks = []
+    seen_page = False
+
+    for b in orig_blocks:
+        sp = b.get("source_page")
+        if sp == page_number:
+            seen_page = True
+        elif not seen_page and (sp is None or sp < page_number):
+            prefix_blocks.append(b)
+        else:
+            suffix_blocks.append(b)
+
+    assembled_blocks = prefix_blocks + new_chapter_blocks + suffix_blocks
+    target_ch["blocks"] = assembled_blocks
+
+    # Recompute primary readable text
+    body_paras = [
+        b["text"] for b in assembled_blocks
+        if b.get("type", "body") in {"body", "callout"} and b.get("text")
+    ]
+    target_ch["text"] = "\n\n".join(body_paras) if body_paras else "\n\n".join(b["text"] for b in assembled_blocks if b.get("text"))
+
+    chapters[target_ch_idx] = target_ch
+    save_chapters(project_id, chapters)
+    return True
+

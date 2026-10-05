@@ -34,3 +34,6 @@ packaging/Output/
 packaging/build/
 packaging/dist/
 frontend_dist/
+
+# vscode
+#.vscode/mcp.json
