@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 BlockType = Literal[
     "body",
+    "heading",
     "marginalia",
     "footnote",
     "callout",

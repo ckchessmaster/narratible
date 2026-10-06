@@ -59,6 +59,12 @@ const BLOCK_COLORS = {
     badge: '#0891b2',
     label: 'Caption',
   },
+  heading: {
+    stroke: '#6366f1',
+    fill: 'rgba(99, 102, 241, 0.20)',
+    badge: '#4f46e5',
+    label: 'Heading',
+  },
   header_footer: {
     stroke: '#64748b',
     fill: 'rgba(100, 116, 139, 0.20)',

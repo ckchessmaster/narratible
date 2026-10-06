@@ -880,7 +880,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
         # llm_chapters_only* bypass the TOC check so debug mode always runs the review.
         _debug_cleaners = ("llm_chapters_only", "llm_chapters_only_embedded")
         if cleaner in ("llm", "embedded") + _debug_cleaners and (
-            pdf_data.get("method") != "toc" or cleaner in _debug_cleaners
+            pdf_data.get("method") not in ("toc", "printed_toc") or cleaner in _debug_cleaners
         ):
             review_provider: str = "gemini"
             if cleaner == "embedded" or cleaner == "llm_chapters_only_embedded":
@@ -913,7 +913,7 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
             def _review_progress(msg: str, pct: int):
                 _set_task(task_id, "running", msg, pct, stage="Reviewing chapters")
 
-            if cleaner in _debug_cleaners and pdf_data.get("method") == "toc":
+            if cleaner in _debug_cleaners and pdf_data.get("method") in ("toc", "printed_toc"):
                 _set_task(task_id, "running",
                     "PDF has an embedded table of contents - normally chapter review "
                     "would be skipped. Running it anyway…", 15, stage="Reviewing chapters")

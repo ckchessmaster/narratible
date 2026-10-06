@@ -331,11 +331,41 @@ export default function Step2Editor({
     }
   }, [currentChapter?.blocks])
 
+  // Progressive rendering limit for large chapters to avoid DOM thrashing
+  const [visibleLimit, setVisibleLimit] = useState(60)
+  const sentinelRef = useRef(null)
+
+  useEffect(() => {
+    setVisibleLimit(60)
+  }, [selectedIdx])
+
+  const displayedBodyBlocks = useMemo(() => {
+    return bodyBlocks.slice(0, visibleLimit)
+  }, [bodyBlocks, visibleLimit])
+
+  useEffect(() => {
+    if (visibleLimit >= bodyBlocks.length) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setVisibleLimit((prev) => Math.min(prev + 60, bodyBlocks.length))
+        }
+      },
+      { rootMargin: '350px' }
+    )
+    const el = sentinelRef.current
+    if (el) observer.observe(el)
+    return () => {
+      if (el) observer.unobserve(el)
+    }
+  }, [visibleLimit, bodyBlocks.length])
+
   // Fallback textarea height adjustment for older browser engines without field-sizing support
   useEffect(() => {
     if (typeof CSS !== 'undefined' && CSS.supports && CSS.supports('field-sizing', 'content')) return
     const timer = setTimeout(() => {
-      Object.values(blockRefs.current).forEach(el => {
+      displayedBodyBlocks.forEach(b => {
+        const el = blockRefs.current[b.id]
         if (el) {
           el.style.height = 'auto'
           el.style.height = `${Math.max(el.scrollHeight, 28)}px`
@@ -343,7 +373,7 @@ export default function Step2Editor({
       })
     }, 50)
     return () => clearTimeout(timer)
-  }, [selectedIdx])
+  }, [selectedIdx, displayedBodyBlocks])
 
   // Word count & narration estimates
   const currentChapterStats = useMemo(() => {
@@ -1269,7 +1299,7 @@ export default function Step2Editor({
                     </div>
                   ) : (
                     <>
-                      {bodyBlocks.map((block) => {
+                      {displayedBodyBlocks.map((block) => {
                         const realIdx = blockIndexMap.get(block.id) ?? allBlocks.findIndex(b => b.id === block.id)
                         const isMuted = !!block.audio_muted
                         const hasWarning = block.warning && block.warning.status !== 'resolved'
@@ -1575,6 +1605,21 @@ export default function Step2Editor({
                               </div>
                             )
                           })}
+
+                          {visibleLimit < bodyBlocks.length && (
+                            <div ref={sentinelRef} className="py-6 flex flex-col items-center justify-center gap-2 border-t border-border/30 mt-4">
+                              <span className="text-xs text-muted">
+                                Showing {displayedBodyBlocks.length} of {bodyBlocks.length} paragraphs
+                              </span>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm text-xs"
+                                onClick={() => setVisibleLimit((prev) => Math.min(prev + 100, bodyBlocks.length))}
+                              >
+                                Load more paragraphs
+                              </button>
+                            </div>
+                          )}
 
                           {/* Scholarly Apparatus Pane (Option 2) */}
                           {hasApparatus && (

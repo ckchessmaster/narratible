@@ -139,6 +139,56 @@ def test_small_ordinary_footnote_blocks_are_still_skipped():
     assert "small footnote" not in raw_text
 
 
+def test_detect_printed_toc_and_folio_calibration():
+    import pymupdf as fitz
+    from app.parser import _detect_printed_toc
+
+    doc = fitz.open()
+
+    # Sheet 1: Cover/Front matter
+    p0 = doc.new_page(width=400, height=600)
+    p0.insert_text(fitz.Point(50, 100), "A Great Treatise on Economics")
+
+    # Sheet 2: Printed Table of Contents
+    p1 = doc.new_page(width=400, height=600)
+    p1.insert_text(fitz.Point(50, 50), "Contents")
+    p1.insert_text(fitz.Point(50, 100), "Introduction ........................ 1")
+    p1.insert_text(fitz.Point(50, 130), "Supply and Demand .................. 10")
+    p1.insert_text(fitz.Point(50, 160), "Market Equilibrium ................. 25")
+
+    # Sheets 3..35: Content with printed page numbers in header
+    # Printed page 1 starts on Sheet 3 (offset = sheet_index_1based - printed_page = 3 - 1 = +2)
+    for printed_pg in range(1, 30):
+        p = doc.new_page(width=400, height=600)
+        # Header with printed page number
+        p.insert_text(fitz.Point(350, 30), str(printed_pg))
+        if printed_pg == 1:
+            p.insert_text(fitz.Point(50, 60), "Introduction")
+            p.insert_text(fitz.Point(50, 100), "Welcome to this treatise on economic foundations.")
+        elif printed_pg == 10:
+            p.insert_text(fitz.Point(50, 60), "Supply and Demand")
+            p.insert_text(fitz.Point(50, 100), "The law of supply and demand dictates the distribution.")
+        elif printed_pg == 25:
+            p.insert_text(fitz.Point(50, 60), "Market Equilibrium")
+            p.insert_text(fitz.Point(50, 100), "When buyers and sellers reach clearing prices.")
+        else:
+            p.insert_text(fitz.Point(50, 100), f"Body paragraph content for page {printed_pg}.")
+
+    bookmarks = _detect_printed_toc(doc)
+    assert bookmarks is not None
+    assert len(bookmarks) == 3
+
+    # Check that entries match and sheet numbers are calibrated to physical sheets
+    assert bookmarks[0][1] == "Introduction"
+    assert bookmarks[0][2] == 3  # Physical Sheet 3
+
+    assert bookmarks[1][1] == "Supply and Demand"
+    assert bookmarks[1][2] == 12  # Physical Sheet 12 (10 + 2)
+
+    assert bookmarks[2][1] == "Market Equilibrium"
+    assert bookmarks[2][2] == 27  # Physical Sheet 27 (25 + 2)
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

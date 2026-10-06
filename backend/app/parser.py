@@ -3,7 +3,7 @@ import logging
 import re
 import uuid
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List, Tuple
 
 from .page_artifacts import looks_like_small_text_content_line
 
@@ -133,13 +133,118 @@ def extract_structured_from_pdf(pdf_path: Path, progress_callback=None) -> Dict[
         if toc:
             logger.info("Found native TOC, extracting by bookmarks...")
             return _extract_via_toc(doc, toc, progress_callback=progress_callback)
+
+        printed_toc = _detect_printed_toc(doc)
+        if printed_toc:
+            logger.info(f"Found printed TOC with {len(printed_toc)} sections, extracting...")
+            res = _extract_via_toc(doc, printed_toc, progress_callback=progress_callback)
+            res["method"] = "printed_toc"
+            return res
             
-        logger.info("No native TOC found, performing layout analysis...")
+        logger.info("No native or printed TOC found, performing layout analysis...")
         return _extract_via_layout(doc, progress_callback=progress_callback)
         
     except Exception as e:
         logger.error(f"Failed to parse PDF: {e}")
         raise
+
+
+def _is_toc_heading(text: str) -> bool:
+    for l in text.split("\n")[:10]:
+        clean = re.sub(r"[^a-zA-Z\s]", "", l).strip().lower()
+        if clean in {"table of contents", "contents", "index of chapters", "table des matieres", "inhalt"} or "table of contents" in clean:
+            return True
+    return False
+
+
+def _detect_printed_toc(doc: fitz.Document) -> Optional[List[List[Any]]]:
+    """
+    Scans the first 25 pages of a document for a printed Table of Contents.
+    If found, extracts entries (title, page) and calibrates the folio offset
+    between printed page numbers and physical PDF sheets.
+
+    Returns a list of [level, title, sheet_num_1based] matching doc.get_toc() format,
+    or None if no printed TOC is detected.
+    """
+    toc_pages = [p for p in range(min(25, len(doc))) if _is_toc_heading(doc[p].get_text())]
+    if not toc_pages:
+        return None
+
+    logger.info(f"Detected printed TOC header on physical sheet(s): {[p + 1 for p in toc_pages]}")
+
+    entries = []
+    for p_idx in toc_pages:
+        p_lines = [l.strip() for l in doc[p_idx].get_text().split("\n") if l.strip()]
+        for i, raw_l in enumerate(p_lines):
+            l = raw_l.rstrip(" .~_-,:;")
+            m = re.search(r"^(.*?)(?:[\.\s_~-]{2,}|\s+)(\d{1,4})\s*$", l)
+            if m:
+                t, pg = m.group(1).strip(" .~_-:"), int(m.group(2))
+                if len(t) >= 2 and 0 < pg <= len(doc) + 50 and not re.match(r"^\d+:\d+", t):
+                    entries.append((t, pg))
+            elif i + 1 < len(p_lines):
+                next_l = p_lines[i + 1].rstrip(" .~_-,:;")
+                if re.match(r"^\d{1,4}$", next_l):
+                    t, pg = l.strip(" .~_-:"), int(next_l)
+                    if len(t) >= 2 and not re.match(r"^\d+$", t) and not re.match(r"^\d+:\d+", t) and 0 < pg <= len(doc) + 50:
+                        entries.append((t, pg))
+
+    entries.sort(key=lambda x: x[1])
+    unique_entries = []
+    seen = set()
+    for t, pg in entries:
+        if pg not in seen:
+            seen.add(pg)
+            unique_entries.append((t, pg))
+
+    if len(unique_entries) < 3:
+        return None
+
+    last_toc_page = max(toc_pages)
+    sample = [e for e in unique_entries if e[1] > last_toc_page + 1][:20]
+    best_delta = 0
+    best_score = -1
+
+    for delta in range(-15, 41):
+        score = 0
+        for title, pg in sample:
+            sheet_0based = pg + delta - 1
+            if 0 <= sheet_0based < len(doc):
+                txt = doc[sheet_0based].get_text().lower()
+                lines = [l.strip() for l in txt.split("\n") if l.strip()]
+                hdr_ftr = " ".join(lines[:3] + lines[-3:])
+                if str(pg) in hdr_ftr:
+                    score += 4
+                words = [w for w in re.split(r"[^a-zA-Z0-9]", title.lower()) if len(w) >= 3]
+                for w in words:
+                    if w in txt[:500]:
+                        score += 2
+        if score > best_score:
+            best_score = score
+            best_delta = delta
+
+    logger.info(f"Calibrated printed TOC folio offset: {best_delta} (confidence score: {best_score})")
+
+    toc_bookmarks = []
+    prev_sheet = last_toc_page + 1
+    for title, pg in unique_entries:
+        target_sheet = max(prev_sheet + 1, min(len(doc), pg + best_delta))
+        best_s = target_sheet
+        for s in range(max(prev_sheet + 1, target_sheet - 2), min(len(doc) + 1, target_sheet + 3)):
+            txt = doc[s - 1].get_text()[:400].lower()
+            words = [w for w in re.split(r"[^a-zA-Z0-9]", title.lower()) if len(w) >= 3]
+            if words and any(w in txt for w in words):
+                best_s = s
+                break
+        target_sheet = best_s
+        if target_sheet > prev_sheet and target_sheet <= len(doc):
+            toc_bookmarks.append([1, title, target_sheet])
+            prev_sheet = target_sheet
+
+    if len(toc_bookmarks) >= 3:
+        return toc_bookmarks
+    return None
+
 
 def _extract_via_toc(doc: fitz.Document, toc: list, progress_callback=None) -> Dict[str, Any]:
     chapters = []
@@ -199,6 +304,14 @@ def _extract_via_toc(doc: fitz.Document, toc: list, progress_callback=None) -> D
                 "warnings": [],
             })
             full_text.append(raw_text)
+        else:
+            chapters.append({
+                "title": title.strip(),
+                "raw_text": "",
+                "blocks": [],
+                "confidence": 0.0,
+                "warnings": ["No embedded text found on these pages (scanned image)."],
+            })
 
     # Handle frontmatter before first bookmark
     if bookmarks and bookmarks[0][2] - 1 > 0:
@@ -443,27 +556,39 @@ def _extract_via_layout(doc: fitz.Document, progress_callback=None) -> Dict[str,
             lines = text.split("\n")
             first_line = lines[0].strip() if lines else text
 
+            # Scan lines[:3] in case the heading is preceded by an isolated dust speck or blank line
+            candidate_line = first_line
+            for l in lines[:3]:
+                l_str = l.strip()
+                if len(l_str) >= 3 and not re.match(r"^[^a-zA-Z0-9]+$", l_str):
+                    candidate_line = l_str
+                    break
+
             is_heading = False
-            if re.match(r'^(Chapter|Part|Section|Book)\s+[IVXLCDM0-9]+', first_line, re.IGNORECASE) and len(first_line) < 60:
+            heading_title = candidate_line
+            if b.type == "heading":
                 is_heading = True
-            elif first_line.isupper() and 3 < len(first_line) < 40 and first_line in {"PREFACE", "INTRODUCTION", "CONTENTS", "EPILOGUE", "PROLOGUE", "CONCLUSION"}:
+                heading_title = text.replace("\n", " ").strip()
+            elif re.match(r'^(Chapter|Part|Section|Book)\s+[IVXLCDM0-9]+', candidate_line, re.IGNORECASE) and len(candidate_line) < 60:
+                is_heading = True
+            elif candidate_line.upper() in {"PREFACE", "INTRODUCTION", "CONTENTS", "EPILOGUE", "PROLOGUE", "CONCLUSION", "FOREWORD", "ACKNOWLEDGMENTS", "BIBLIOGRAPHY", "INDEX"} and 3 < len(candidate_line) < 40:
                 is_heading = True
 
             if is_heading:
                 if title_open:
-                    current_chapter_title = f"{current_chapter_title} {first_line}"
+                    current_chapter_title = f"{current_chapter_title} {heading_title}"
                 elif title_is_placeholder and not current_chapter_text:
-                    current_chapter_title = first_line
+                    current_chapter_title = heading_title
                     title_is_placeholder = False
                 else:
                     finalize_current()
-                    current_chapter_title = first_line
+                    current_chapter_title = heading_title
                     current_chapter_text = []
                     current_chapter_blocks = []
                     title_is_placeholder = False
                 title_open = True
 
-                remainder = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+                remainder = "\n".join(lines[1:]).strip() if (b.type != "heading" and len(lines) > 1) else ""
                 if remainder:
                     current_chapter_text.append(remainder)
                     current_chapter_blocks.append({
@@ -471,7 +596,7 @@ def _extract_via_layout(doc: fitz.Document, progress_callback=None) -> Dict[str,
                         "text": remainder,
                     })
                     title_open = False
-                else:
+                elif b.type != "heading":
                     current_chapter_blocks.append(b_dict)
             else:
                 current_chapter_text.append(text)

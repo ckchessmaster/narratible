@@ -7,23 +7,33 @@ FOOTNOTE_PATTERN = re.compile(
 )
 
 MARGINALIA_PATTERN = re.compile(
-    r"^(?:cf\.|see|ibid\.|psalm|john|matt|mark|luke|rom|cor|gen|ex|deut|act|rev|gal|eph|phil|col|thess|tim|tit|heb|pet|jas|jude|v\.|vv\.|p\.|pp\.|ch\.|vol\.|bk\.|\d{1,3}\b)",
+    r"^(?:(?:cf?['\.,]|~f|rf|tf|ef)\.?\s*|see\b|ibid\b|psalm\b|john\b|matt\b|mark\b|luke\b|rom\b|cor\b|gen\b|ex\b|deut\b|act\b|rev\b|gal\b|eph\b|phil\b|col\b|thess\b|tim\b|tit\b|heb\b|pet\b|jas\b|jude\b|dan\b|l>an\b|isa\b|jer\b|ezek\b|v\.|vv\.|p\.|pp\.|ch\.|vol\.|bk\.|[ivxlcdm]{1,8}\.|\b[1i]v\b|\d{1,3}\s*[\.:,]\s*\d+|\b[1-3]\b\s+[A-Za-z]{2,}|\d{1,3}\.)",
     re.IGNORECASE,
 )
 
 
 def is_header_footer(bbox: Sequence[float], text: str) -> bool:
-    """Return True if block is in the extreme top or bottom band and not a footnote."""
+    """Return True if block is in the extreme top or bottom band and matches header/footer traits."""
     y0, y1 = bbox[1], bbox[3]
     clean_text = text.strip()
-    # Extreme top (running header): typically y1 <= 0.12 or y0 <= 0.08
-    if y1 <= 0.09:
-        return True
-    if y0 <= 0.09 and y1 <= 0.13 and len(clean_text.splitlines()) <= 2:
-        return True
+    if not clean_text:
+        return False
+
+    # Extreme top (running header): must be short title, folio, or header pattern
+    if y1 <= 0.10 or (y0 <= 0.08 and y1 <= 0.12):
+        lines = [line.strip() for line in clean_text.splitlines() if line.strip()]
+        # Legitimate body paragraphs continuing from previous page have many words or start with lowercase
+        is_continuation = clean_text[0].islower()
+        is_prose_paragraph = len(clean_text) > 100 or len(clean_text.split()) > 14 or len(lines) > 2
+        if not is_continuation and not is_prose_paragraph:
+            return True
+        return False
+
     # Extreme bottom (folio / page number)
     if y0 >= 0.92 and not is_footnote(bbox, text):
-        return True
+        # Folios are typically short (e.g. page numbers '1-6', '44')
+        if len(clean_text) <= 35 or len(clean_text.split()) <= 6 or y0 >= 0.95:
+            return True
     return False
 
 
@@ -83,8 +93,18 @@ def is_marginalia(
     if is_header_footer(bbox, text):
         return False
 
-    # Check textual citation pattern
+    # Discard non-alphanumeric noise and isolated single-char specks
+    has_alnum = any(c.isalnum() for c in clean_text)
+    if not has_alnum or len(clean_text) <= 1:
+        return False
+
+    # Check textual citation pattern or multi-word note
     has_ref_pattern = bool(MARGINALIA_PATTERN.match(clean_text))
+    has_multiple_words = len(clean_text.split()) >= 2 and any(c.isalpha() for c in clean_text)
+    has_valid_content = has_ref_pattern or has_multiple_words
+    if not has_valid_content:
+        return False
+
     is_narrow = (x1 - x0) <= 0.28
 
     # 1. Definite left margin: Block is to the left of the body column

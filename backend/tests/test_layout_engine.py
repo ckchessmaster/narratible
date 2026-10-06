@@ -171,3 +171,174 @@ def test_academic_page_with_scripture_marginalia_and_footnotes():
     assert len(header_blocks) == 1
     assert "TERTULLIAN AGAINST PRAXEAS" in header_blocks[0].text
     assert header_blocks[0].audio_muted is True
+
+
+def test_two_column_page_with_narrow_gutter_and_top_continuation():
+    """Verify that a two-column page with tight gutters (~9pt) and text at top does not merge columns or cut off top text."""
+    import pymupdf as fitz
+    from app.services.layout.engine import analyze_page_layout
+
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=800)
+
+    # Column 1: x in [40, 260] (width 220)
+    page.insert_text(fitz.Point(40, 45), "Airport Program text starting right at top.")
+    page.insert_text(fitz.Point(40, 60), "civil airports throughout the country.")
+    page.insert_text(fitz.Point(40, 100), "The Federal Aviation Act of 1958.")
+    page.insert_text(fitz.Point(40, 150), "By mid-century, air traffic had increased.")
+
+    # Column 2: x in [270, 500] (gutter between 260 and 270 is 10pt)
+    page.insert_text(fitz.Point(270, 45), "the future. DOT began operation in 1967.")
+    page.insert_text(fitz.Point(270, 60), "Federal Aviation Agency was renamed FAA.")
+    page.insert_text(fitz.Point(270, 100), "The role of CAB was assumed by NTSB.")
+    page.insert_text(fitz.Point(270, 150), "investigation of all transport accidents.")
+
+    # Folio at bottom
+    page.insert_text(fitz.Point(40, 750), "1-6")
+
+    layout = analyze_page_layout(page, page_number=6)
+
+    # 1. Body should be partitioned into TWO distinct ordered columns
+    body_blocks = [b for b in layout.blocks if b.type == "body"]
+    assert len(body_blocks) == 2, f"Expected 2 body blocks, got {len(body_blocks)}"
+
+    assert body_blocks[0].order == 1
+    assert "Airport Program" in body_blocks[0].text
+    assert "By mid-century" in body_blocks[0].text
+    assert "the future" not in body_blocks[0].text  # Col 1 must not interleave Col 2!
+
+    assert body_blocks[1].order == 2
+    assert "the future" in body_blocks[1].text
+    assert "investigation of all transport accidents" in body_blocks[1].text
+
+    # 2. Folio should be recognized as footer
+    footers = [b for b in layout.blocks if b.type == "header_footer"]
+    assert any("1-6" in f.text for f in footers)
+    assert not any("Airport Program" in f.text for f in footers)  # Top text must NOT be a header!
+
+
+def test_page_with_diagram_and_figure_caption():
+    """Verify figure captions are identified and muted, while body columns remain readable."""
+    import pymupdf as fitz
+    from app.services.layout.engine import analyze_page_layout
+
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=800)
+
+    # Figure caption
+    page.insert_text(fitz.Point(40, 300), "Figure 1-10. First Administrator of the FAA was General Quesada.")
+
+    # Body narrative text
+    page.insert_text(fitz.Point(40, 100), "Standard running narrative body paragraph text here.")
+    page.insert_text(fitz.Point(40, 150), "More continuous body text explaining aviation history.")
+
+    layout = analyze_page_layout(page, page_number=10)
+
+    captions = [b for b in layout.blocks if b.type == "figure_caption"]
+    assert len(captions) == 1
+    assert "Figure 1-10" in captions[0].text
+    assert captions[0].audio_muted is True
+
+    bodies = [b for b in layout.blocks if b.type == "body"]
+    assert len(bodies) == 1
+    assert "Standard running narrative" in bodies[0].text
+    assert "Figure 1-10" not in bodies[0].text  # Caption must NOT be in body text
+
+
+def test_academic_running_header_with_folio_and_ocr_marginalia():
+    """Verify that running headers with folios (e.g. '32 TERTULLIAN AGAINST PRAXEAS') and OCR'd margin notes are properly handled."""
+    import pymupdf as fitz
+    from app.services.layout.engine import analyze_page_layout
+
+    doc = fitz.open()
+    # 304 x 481 small book page
+    page = doc.new_page(width=304, height=481)
+
+    # 1. Running Header line with folio
+    page.insert_text(fitz.Point(66, 38), "32")
+    page.insert_text(fitz.Point(100, 38), "TERTULLIAN AGAINST PRAXEAS")
+
+    # 2. Main body column (x from 66 to 295)
+    page.insert_text(fitz.Point(66, 60), "anxious to preach 1 \"monarchy,\" while even the")
+    page.insert_text(fitz.Point(66, 75), "Greeks are unwilling to understand \"economy.\"")
+    page.insert_text(fitz.Point(66, 90), "But I, if I have culled any knowledge of both")
+    page.insert_text(fitz.Point(66, 105), "languages, know that \"monarchy\" means nothing")
+    page.insert_text(fitz.Point(66, 350), "angels,\" as it is written: \"a hundred thousand")
+
+    # 3. Left margin notes with OCR noise (x in [25, 58])
+    page.insert_text(fitz.Point(27, 365), "c'. Matt.")
+    page.insert_text(fitz.Point(27, 375), "xxvi. 53")
+
+    # 4. Footnote apparatus at bottom (smaller size)
+    page.insert_text(fitz.Point(66, 410), "1 Sonare = praedicare, significare.", fontsize=8)
+    page.insert_text(fitz.Point(66, 422), "2 \"Agents.\" Personas in theology.", fontsize=8)
+
+    layout = analyze_page_layout(page, page_number=36)
+
+    # Header check
+    headers = [b for b in layout.blocks if b.type == "header_footer"]
+    assert len(headers) == 1
+    assert "TERTULLIAN AGAINST PRAXEAS" in headers[0].text
+    assert "32" in headers[0].text
+    assert headers[0].audio_muted is True
+
+    # Marginalia check: c'. Matt. and xxvi. 53 must NOT be swallowed into body
+    marginalia = [b for b in layout.blocks if b.type == "marginalia"]
+    assert len(marginalia) == 1
+    assert "c'. Matt." in marginalia[0].text
+    assert "xxvi." in marginalia[0].text
+    assert marginalia[0].audio_muted is True
+
+    # Body check: must NOT contain margin notes
+    bodies = [b for b in layout.blocks if b.type == "body"]
+    assert len(bodies) == 1
+    assert "c'. Matt." not in bodies[0].text
+    assert "anxious to preach" in bodies[0].text
+    assert bodies[0].audio_muted is False
+
+    # Footnote check
+    footnotes = [b for b in layout.blocks if b.type == "footnote"]
+    assert len(footnotes) == 1
+    assert "Sonare = praedicare" in footnotes[0].text
+    assert footnotes[0].audio_muted is True
+
+
+def test_textbook_two_column_top_headings_not_marked_as_headers():
+    """Verify that multi-column textbook pages starting with section headings at top do NOT mark headings as headers."""
+    import pymupdf as fitz
+    from app.services.layout.engine import analyze_page_layout
+
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=800)
+
+    # Col 1 top: Section Title + paragraph
+    page.insert_text(fitz.Point(40, 50), "Flight Standards District Office (FSDO)")
+    page.insert_text(fitz.Point(40, 65), "The FAA has approximately 80 FSDOs. These")
+    page.insert_text(fitz.Point(40, 80), "offices provide information and services.")
+
+    # Col 2 top: Paragraph text
+    page.insert_text(fitz.Point(320, 50), "Safety Team (FAASTeam) exemplifies this commitment.")
+    page.insert_text(fitz.Point(320, 65), "The FAASTeam has replaced the Aviation Safety Program.")
+    page.insert_text(fitz.Point(320, 80), "Its success led to its demise because causes were fixed.")
+
+    # Bottom footer
+    page.insert_text(fitz.Point(540, 760), "1-9")
+
+    layout = analyze_page_layout(page, page_number=9)
+
+    # There should be 2 body columns
+    bodies = [b for b in layout.blocks if b.type == "body"]
+    assert len(bodies) == 2
+
+    # Column 1 should include the section heading at the top
+    assert "Flight Standards District Office (FSDO)" in bodies[0].text
+    assert "The FAA has approximately 80 FSDOs" in bodies[0].text
+
+    # Column 2 should include its top text
+    assert "Safety Team (FAASTeam)" in bodies[1].text
+
+    # No spurious running header
+    headers = [b for b in layout.blocks if b.type == "header_footer" and b.bbox[1] < 0.2]
+    assert len(headers) == 0
+
+

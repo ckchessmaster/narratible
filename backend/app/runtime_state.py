@@ -28,18 +28,40 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+import uuid
+
+
 def save_task_snapshot(tasks: dict[str, dict]) -> None:
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "updated_at": _utc_now(),
         "tasks": tasks,
     }
-    tmp_path = TASKS_FILE.with_name(f"{TASKS_FILE.name}.tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, TASKS_FILE)
+    tmp_path = RUNTIME_DIR / f"{TASKS_FILE.name}.{uuid.uuid4().hex}.tmp"
+    for attempt in range(5):
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, TASKS_FILE)
+            return
+        except (PermissionError, OSError) as e:
+            if attempt == 4:
+                try:
+                    with open(TASKS_FILE, "w", encoding="utf-8") as f:
+                        json.dump(payload, f, indent=2, ensure_ascii=False)
+                    return
+                except Exception:
+                    pass
+                raise e
+            time.sleep(0.05 * (attempt + 1))
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
 
 
 def load_task_snapshot() -> dict[str, Any]:
@@ -56,12 +78,31 @@ def load_task_snapshot() -> dict[str, Any]:
 def save_engine_manifest(manifest: dict[str, Any]) -> None:
     """Atomically persist managed local-AI runtime state."""
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    tmp_path = ENGINE_MANIFEST_FILE.with_name(f"{ENGINE_MANIFEST_FILE.name}.tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, ENGINE_MANIFEST_FILE)
+    tmp_path = RUNTIME_DIR / f"{ENGINE_MANIFEST_FILE.name}.{uuid.uuid4().hex}.tmp"
+    for attempt in range(5):
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, ENGINE_MANIFEST_FILE)
+            return
+        except (PermissionError, OSError) as e:
+            if attempt == 4:
+                try:
+                    with open(ENGINE_MANIFEST_FILE, "w", encoding="utf-8") as f:
+                        json.dump(manifest, f, indent=2, ensure_ascii=False)
+                    return
+                except Exception:
+                    pass
+                raise e
+            time.sleep(0.05 * (attempt + 1))
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
 
 
 def load_engine_manifest() -> dict[str, Any]:
