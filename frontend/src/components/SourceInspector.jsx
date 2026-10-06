@@ -24,10 +24,9 @@ import {
   pageImageUrl,
   getPageLayout,
   updatePageLayout,
-  visionExtractPage,
+  reextractAllLayouts,
 } from '../api'
 import LayoutPropagateModal from './LayoutPropagateModal'
-import VisionDiffModal from './VisionDiffModal'
 
 const BLOCK_COLORS = {
   body: {
@@ -99,6 +98,8 @@ export default function SourceInspector({
   const [selectedBlockId, setSelectedBlockId] = useState(highlightBlockId)
   const [isExtracting, setIsExtracting] = useState(false)
   const [extractSuccess, setExtractSuccess] = useState(false)
+  const [isExtractingAll, setIsExtractingAll] = useState(false)
+  const [extractAllSuccess, setExtractAllSuccess] = useState(false)
 
   // Drawing state
   const [drawingStart, setDrawingStart] = useState(null)
@@ -109,8 +110,6 @@ export default function SourceInspector({
 
   // Modals
   const [isPropagateModalOpen, setIsPropagateModalOpen] = useState(false)
-  const [isVisionLoading, setIsVisionLoading] = useState(false)
-  const [visionDiffData, setVisionDiffData] = useState(null)
   const [templateMenuOpen, setTemplateMenuOpen] = useState(false)
 
   // Sync initialPage from outside
@@ -143,18 +142,21 @@ export default function SourceInspector({
   }, [projectId])
 
   // Fetch or refresh layout for current page
-  const fetchLayout = useCallback(async (page) => {
+  const fetchLayout = useCallback(async (page, recompute = false) => {
     if (!projectId) return
     setLayoutLoading(true)
     try {
-      const data = await getPageLayout(projectId, page)
+      const data = await getPageLayout(projectId, page, recompute)
       setLayout(data)
+      if (recompute && onChapterUpdated) {
+        onChapterUpdated()
+      }
     } catch {
       setLayout(null)
     } finally {
       setLayoutLoading(false)
     }
-  }, [projectId])
+  }, [projectId, onChapterUpdated])
 
   useEffect(() => {
     if (viewMode === 'zones') {
@@ -375,6 +377,26 @@ export default function SourceInspector({
     }
   }
 
+  // Re-extract All Pages Action
+  const handleReextractAll = async () => {
+    if (!projectId) return
+    setIsExtractingAll(true)
+    setExtractAllSuccess(false)
+    try {
+      await reextractAllLayouts(projectId)
+      setExtractAllSuccess(true)
+      await fetchLayout(currentPage)
+      if (onChapterUpdated) {
+        onChapterUpdated()
+      }
+      setTimeout(() => setExtractAllSuccess(false), 3000)
+    } catch (err) {
+      alert(`Batch re-extraction failed: ${err.message}`)
+    } finally {
+      setIsExtractingAll(false)
+    }
+  }
+
   // Copy Layout from Previous Page
   const handleCopyFromPrevious = async () => {
     if (currentPage <= 1 || !projectId) return
@@ -396,39 +418,6 @@ export default function SourceInspector({
     } finally {
       setIsExtracting(false)
       setTemplateMenuOpen(false)
-    }
-  }
-
-  // AI Vision Reparse Trigger
-  const handleTriggerVision = async () => {
-    if (!projectId) return
-    setIsVisionLoading(true)
-    try {
-      const res = await visionExtractPage(projectId, currentPage, 'gemini', 'gemini-2.0-flash')
-      setVisionDiffData({
-        localBlocks: layout?.blocks || [],
-        visionBlocks: res.blocks || [],
-      })
-    } catch (err) {
-      alert(`AI Vision extraction failed: ${err.message}`)
-    } finally {
-      setIsVisionLoading(false)
-    }
-  }
-
-  // Accept Vision Results
-  const handleAcceptVision = async (visionBlocks) => {
-    if (!projectId) return
-    setIsExtracting(true)
-    try {
-      const updated = await updatePageLayout(projectId, currentPage, visionBlocks, false)
-      setLayout(updated)
-      setVisionDiffData(null)
-      if (onChapterUpdated) onChapterUpdated()
-    } catch (err) {
-      alert(`Failed to save vision layout: ${err.message}`)
-    } finally {
-      setIsExtracting(false)
     }
   }
 
@@ -548,38 +537,41 @@ export default function SourceInspector({
           style={{
             background: '#151822',
             borderBottom: '1px solid #282e40',
-            padding: '6px 14px',
+            padding: '6px 12px',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            fontSize: '11.5px',
+            fontSize: '11px',
+            flexWrap: 'nowrap',
+            overflowX: 'auto',
+            gap: '8px',
           }}
         >
           {/* Tools */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
-              className={`btn-tag btn-sm flex items-center gap-1.5 ${activeTool === 'select' ? 'active' : ''}`}
+              className={`btn-tag btn-xs flex items-center gap-1 ${activeTool === 'select' ? 'active' : ''}`}
               onClick={() => setActiveTool('select')}
             >
-              <MousePointer size={13} />
+              <MousePointer size={12} />
               <span>Select</span>
             </button>
             <button
               type="button"
-              className={`btn-tag btn-sm flex items-center gap-1.5 ${activeTool === 'draw' ? 'active' : ''}`}
+              className={`btn-tag btn-xs flex items-center gap-1 ${activeTool === 'draw' ? 'active' : ''}`}
               onClick={() => setActiveTool('draw')}
             >
-              <SquareDashed size={13} />
+              <SquareDashed size={12} />
               <span>Draw Box</span>
             </button>
 
             {/* Selected Block Quick Editor */}
             {selectedBlock && (
-              <div className="flex items-center gap-2 pl-3 ml-2 border-l border-border/50">
-                <span className="text-muted text-[11px]">Tag:</span>
+              <div className="flex items-center gap-1.5 pl-2 ml-1 border-l border-border/50">
+                <span className="text-muted text-[10.5px]">Tag:</span>
                 <select
-                  className="input-text text-xs py-0.5 px-1.5"
+                  className="input-text text-xs py-0.5 px-1"
                   value={selectedBlock.type}
                   onChange={(e) => handleChangeBlockType(selectedBlock.id, e.target.value)}
                   style={{ background: '#1e2230', borderColor: '#3b4258' }}
@@ -598,56 +590,75 @@ export default function SourceInspector({
                   onClick={() => handleDeleteBlock(selectedBlock.id)}
                   title="Delete Block"
                 >
-                  <Trash2 size={13} />
+                  <Trash2 size={12} />
                 </button>
               </div>
             )}
           </div>
 
           {/* Action buttons */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 shrink-0 flex-nowrap">
             {/* Re-extract text */}
             <button
               type="button"
-              className="btn-secondary btn-sm flex items-center gap-1.5"
+              className="btn-secondary btn-xs flex items-center gap-1"
               onClick={handleReextractText}
-              disabled={isExtracting}
+              disabled={isExtracting || isExtractingAll}
               title="Extract text strictly bounded by these zones and update chapters"
             >
               {isExtracting ? (
-                <Loader2 size={13} className="spin text-accent" />
+                <Loader2 size={12} className="spin text-accent" />
               ) : extractSuccess ? (
-                <Check size={13} className="text-emerald-400" />
+                <Check size={12} className="text-emerald-400" />
               ) : (
-                <RefreshCw size={13} />
+                <RefreshCw size={12} />
               )}
-              <span>{extractSuccess ? 'Updated!' : 'Re-extract Text'}</span>
+              <span>{extractSuccess ? 'Updated!' : 'Extract'}</span>
             </button>
 
-            {/* AI Vision Reparse */}
+            {/* Re-detect Layout */}
             <button
               type="button"
-              className="btn-secondary btn-sm flex items-center gap-1.5"
-              onClick={handleTriggerVision}
-              disabled={isVisionLoading}
-              title="Run Gemini Vision Multimodal Layout Extraction on this scan"
+              className="btn-secondary btn-xs flex items-center gap-1"
+              onClick={() => fetchLayout(currentPage, true)}
+              disabled={layoutLoading || isExtractingAll}
+              title="Re-run spatial layout analysis on this page to reset zones"
             >
-              {isVisionLoading ? (
-                <Loader2 size={13} className="spin text-accent" />
+              <RefreshCw size={12} className={layoutLoading ? 'spin' : ''} />
+              <span>Detect</span>
+            </button>
+
+            {/* Apply to All Pages */}
+            <button
+              type="button"
+              className="btn-secondary btn-xs flex items-center gap-1"
+              onClick={handleReextractAll}
+              disabled={isExtractingAll}
+              title="Run layout analysis and update chapters across all pages in this document"
+              style={{
+                borderColor: extractAllSuccess ? '#10b981' : undefined,
+                color: extractAllSuccess ? '#10b981' : undefined,
+              }}
+            >
+              {isExtractingAll ? (
+                <Loader2 size={12} className="spin text-accent" />
+              ) : extractAllSuccess ? (
+                <Check size={12} className="text-emerald-400" />
               ) : (
-                <Sparkles size={13} className="text-accent" />
+                <Sparkles size={12} className="text-accent" />
               )}
-              <span>⚡ AI Vision</span>
+              <span>{extractAllSuccess ? 'Synced All!' : isExtractingAll ? 'Syncing…' : 'Apply All'}</span>
             </button>
 
             {/* Layout Templates Dropdown */}
             <div style={{ position: 'relative' }}>
               <button
                 type="button"
-                className="btn-secondary btn-sm flex items-center gap-1"
+                className="btn-secondary btn-xs flex items-center gap-1"
                 onClick={() => setTemplateMenuOpen(!templateMenuOpen)}
+                title="Layout presets and propagation options"
               >
-                <Layers size={13} />
+                <Layers size={12} />
                 <span>Templates ▾</span>
               </button>
 
@@ -686,6 +697,17 @@ export default function SourceInspector({
                   >
                     <Layers size={13} className="text-accent" />
                     <span>Propagate to Range…</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="w-full text-left px-2.5 py-1.5 text-xs text-gray-200 hover:bg-hover rounded flex items-center gap-2"
+                    onClick={() => {
+                      setTemplateMenuOpen(false)
+                      handleReextractAll()
+                    }}
+                  >
+                    <Sparkles size={13} className="text-accent" />
+                    <span>Re-extract All Pages</span>
                   </button>
                 </div>
               )}
@@ -943,17 +965,6 @@ export default function SourceInspector({
           if (onChapterUpdated) onChapterUpdated()
         }}
       />
-
-      {visionDiffData && (
-        <VisionDiffModal
-          isOpen={!!visionDiffData}
-          onClose={() => setVisionDiffData(null)}
-          pageNumber={currentPage}
-          localBlocks={visionDiffData.localBlocks}
-          visionBlocks={visionDiffData.visionBlocks}
-          onAcceptVision={handleAcceptVision}
-        />
-      )}
     </div>
   )
 }

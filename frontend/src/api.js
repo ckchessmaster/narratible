@@ -95,8 +95,8 @@ export const pageImageUrl = (projectId, pageNumber, dpi = 150) =>
   `${BASE}/projects/${projectId}/pages/${pageNumber}.jpg?dpi=${dpi}`
 
 // Semantic Layout & Zoning
-export const getPageLayout = (projectId, pageNumber) =>
-  request('GET', `/projects/${projectId}/pages/${pageNumber}/layout`)
+export const getPageLayout = (projectId, pageNumber, recompute = false) =>
+  request('GET', `/projects/${projectId}/pages/${pageNumber}/layout${recompute ? '?recompute=true' : ''}`)
 
 export const updatePageLayout = (projectId, pageNumber, blocks, reextractText = true) =>
   request('POST', `/projects/${projectId}/pages/${pageNumber}/layout`, {
@@ -107,12 +107,8 @@ export const updatePageLayout = (projectId, pageNumber, blocks, reextractText = 
 export const propagateLayout = (projectId, payload) =>
   request('POST', `/projects/${projectId}/layout/propagate`, payload)
 
-export const visionExtractPage = (projectId, pageNumber, provider = 'gemini', model = 'gemini-2.0-flash') =>
-  request('POST', `/projects/${projectId}/pages/${pageNumber}/vision-extract`, {
-    provider,
-    model,
-    prompt_preset: 'academic_marginalia',
-  })
+export const reextractAllLayouts = (projectId) =>
+  request('POST', `/projects/${projectId}/layout/reextract-all`)
 
 
 // Chapters

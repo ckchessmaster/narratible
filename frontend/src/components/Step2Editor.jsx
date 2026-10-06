@@ -20,6 +20,9 @@ import {
   ChevronUp,
   RotateCcw,
   Pencil,
+  X,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react'
 import {
   getProject,
@@ -69,6 +72,73 @@ export default function Step2Editor({
   const [inspectorHighlightBlockId, setInspectorHighlightBlockId] = useState(null)
   const [apparatusTab, setApparatusTab] = useState('footnotes') // 'footnotes' | 'marginalia' | 'callouts'
   const [apparatusCollapsed, setApparatusCollapsed] = useState(false)
+  const [activeNotesPopoverBlockId, setActiveNotesPopoverBlockId] = useState(null)
+  const [splitConfirmIdx, setSplitConfirmIdx] = useState(null)
+
+  // Layout & Resizer state
+  const [outlineCollapsed, setOutlineCollapsed] = useState(false)
+  const [inspectorWidth, setInspectorWidth] = useState(() => {
+    try {
+      const saved = localStorage.getItem('echo_scribe_inspector_width')
+      return saved ? Math.max(380, Math.min(parseInt(saved, 10), 900)) : 620
+    } catch {
+      return 620
+    }
+  })
+  const [isResizing, setIsResizing] = useState(false)
+  const resizeStartXRef = useRef(0)
+  const resizeStartWidthRef = useRef(620)
+
+  // Auto-collapse outline when inspector is pinned to give maximum reading & inspection space
+  useEffect(() => {
+    if (inspectorOpen && inspectorPinned) {
+      setOutlineCollapsed(true)
+    }
+  }, [inspectorPinned, inspectorOpen])
+
+  const handleResizerMouseDown = useCallback((e) => {
+    e.preventDefault()
+    setIsResizing(true)
+    resizeStartXRef.current = e.clientX
+    resizeStartWidthRef.current = inspectorWidth
+  }, [inspectorWidth])
+
+  useEffect(() => {
+    if (!isResizing) return
+
+    const handleMouseMove = (e) => {
+      const delta = resizeStartXRef.current - e.clientX
+      const maxW = Math.max(400, Math.floor(window.innerWidth * 0.65))
+      const newWidth = Math.max(380, Math.min(resizeStartWidthRef.current + delta, maxW))
+      setInspectorWidth(newWidth)
+    }
+
+    const handleMouseUp = () => {
+      setIsResizing(false)
+      try {
+        localStorage.setItem('echo_scribe_inspector_width', String(inspectorWidth))
+      } catch {}
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isResizing, inspectorWidth])
+
+  // Close popovers on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setActiveNotesPopoverBlockId(null)
+        setSplitConfirmIdx(null)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   // Modernization
   const [modernizationEval, setModernizationEval] = useState(null)
@@ -188,6 +258,92 @@ export default function Step2Editor({
   }, [chapters])
 
   const currentChapter = chapters[selectedIdx] || null
+
+  // Memoized blocks & apparatus lookup maps for linear O(1) performance
+  const {
+    allBlocks,
+    bodyBlocks,
+    apparatusFootnotes,
+    apparatusMarginalia,
+    apparatusCallouts,
+    blockIndexMap,
+    associatedNotesMap,
+    hasApparatus,
+  } = useMemo(() => {
+    const blocks = currentChapter?.blocks || []
+    const body = []
+    const footnotes = []
+    const marginalia = []
+    const callouts = []
+    const bIndexMap = new Map()
+    const notesByPara = new Map()
+    const notesByPage = new Map()
+
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i]
+      bIndexMap.set(b.id, i)
+      if (b.type === 'footnote') {
+        footnotes.push(b)
+      } else if (b.type === 'marginalia') {
+        marginalia.push(b)
+      } else if (b.type === 'callout') {
+        callouts.push(b)
+      } else {
+        body.push(b)
+      }
+
+      if (b.type === 'footnote' || b.type === 'marginalia') {
+        if (b.associated_para_id) {
+          if (!notesByPara.has(b.associated_para_id)) notesByPara.set(b.associated_para_id, [])
+          notesByPara.get(b.associated_para_id).push(b)
+        }
+        if (b.source_page) {
+          if (!notesByPage.has(b.source_page)) notesByPage.set(b.source_page, [])
+          notesByPage.get(b.source_page).push(b)
+        }
+      }
+    }
+
+    const assocMap = new Map()
+    for (const b of body) {
+      const direct = notesByPara.get(b.id) || []
+      const byPage = b.source_page ? (notesByPage.get(b.source_page) || []) : []
+      const seen = new Set()
+      const combined = []
+      for (const n of [...direct, ...byPage]) {
+        if (!seen.has(n.id)) {
+          seen.add(n.id)
+          combined.push(n)
+        }
+      }
+      assocMap.set(b.id, combined)
+    }
+
+    return {
+      allBlocks: blocks,
+      bodyBlocks: body,
+      apparatusFootnotes: footnotes,
+      apparatusMarginalia: marginalia,
+      apparatusCallouts: callouts,
+      blockIndexMap: bIndexMap,
+      associatedNotesMap: assocMap,
+      hasApparatus: footnotes.length > 0 || marginalia.length > 0 || callouts.length > 0,
+    }
+  }, [currentChapter?.blocks])
+
+  // Fallback textarea height adjustment for older browser engines without field-sizing support
+  useEffect(() => {
+    if (typeof CSS !== 'undefined' && CSS.supports && CSS.supports('field-sizing', 'content')) return
+    const timer = setTimeout(() => {
+      Object.values(blockRefs.current).forEach(el => {
+        if (el) {
+          el.style.height = 'auto'
+          el.style.height = `${Math.max(el.scrollHeight, 28)}px`
+        }
+      })
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [selectedIdx])
 
   // Word count & narration estimates
   const currentChapterStats = useMemo(() => {
@@ -770,183 +926,229 @@ export default function Step2Editor({
       </div>
 
       {/* ── Main Workspace Grid ──────────────────────────────────────────── */}
-      <div className={`studio-workspace-grid ${inspectorOpen && inspectorPinned ? 'with-pinned-inspector' : ''}`}>
+      <div
+        className={`studio-workspace-grid ${inspectorOpen && inspectorPinned ? 'with-pinned-inspector' : ''}`}
+        style={{
+          gridTemplateColumns: inspectorOpen && inspectorPinned
+            ? `${outlineCollapsed ? '52px' : '280px'} 1fr 6px ${inspectorWidth}px`
+            : `${outlineCollapsed ? '52px' : '320px'} 1fr`,
+          userSelect: isResizing ? 'none' : 'auto',
+        }}
+      >
         {/* Left Rail: Chapter Outline */}
-        <aside className="outline-pane">
-          {/* Book Details Summary Card */}
-          <div
-            className="outline-book-card"
-            onClick={() => setShowBookDetails(true)}
-            title="Click to view and edit book metadata and cover"
-          >
-            <div className="outline-book-thumb">
-              {meta.cover_image && !coverImgErr ? (
-                <img
-                  src={meta.cover_image}
-                  alt="Cover"
-                  className="outline-book-thumb-img"
-                  onError={() => setCoverImgErr(true)}
+        <aside className={`outline-pane ${outlineCollapsed ? 'is-collapsed' : ''}`}>
+          {outlineCollapsed ? (
+            <div className="outline-collapsed-rail">
+              <button
+                type="button"
+                className="btn-icon p-2 text-muted hover:text-accent w-full flex justify-center"
+                onClick={() => setOutlineCollapsed(false)}
+                title="Expand Chapter Outline"
+              >
+                <PanelLeftOpen size={18} />
+              </button>
+              <div className="outline-collapsed-list">
+                {chapters.map((ch, i) => (
+                  <button
+                    key={ch.id}
+                    type="button"
+                    className={`outline-collapsed-chip ${i === selectedIdx ? 'active' : ''}`}
+                    onClick={() => setSelectedIdx(i)}
+                    title={`${ch.order}. ${ch.title || 'Untitled'}`}
+                  >
+                    {ch.order}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Book Details Summary Card */}
+              <div
+                className="outline-book-card"
+                onClick={() => setShowBookDetails(true)}
+                title="Click to view and edit book metadata and cover"
+              >
+                <div className="outline-book-thumb">
+                  {meta.cover_image && !coverImgErr ? (
+                    <img
+                      src={meta.cover_image}
+                      alt="Cover"
+                      className="outline-book-thumb-img"
+                      onError={() => setCoverImgErr(true)}
+                    />
+                  ) : (
+                    <BookOpen size={18} className="text-accent" />
+                  )}
+                </div>
+                <div className="outline-book-info">
+                  <span className="outline-book-title">{meta.title || 'Untitled Book'}</span>
+                  <span className="outline-book-author">{meta.author || 'Unknown Author'}</span>
+                  <span className="outline-book-edit-hint">
+                    <Pencil size={11} className="mr-1" /> Edit Book Details
+                  </span>
+                </div>
+              </div>
+
+              <div className="outline-header">
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted">
+                  Chapter Outline ({chapters.length})
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm text-xs"
+                    onClick={handleAddChapter}
+                    title="Add a new chapter"
+                  >
+                    <Plus size={14} className="mr-1" /> New
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-icon btn-sm text-muted hover:text-gray-200"
+                    onClick={() => setOutlineCollapsed(true)}
+                    title="Collapse Outline"
+                  >
+                    <PanelLeftClose size={15} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="outline-search-box">
+                <input
+                  type="text"
+                  className="outline-search-input"
+                  value={filterQuery}
+                  onChange={e => setFilterQuery(e.target.value)}
+                  placeholder="Filter chapters…"
                 />
-              ) : (
-                <BookOpen size={18} className="text-accent" />
-              )}
-            </div>
-            <div className="outline-book-info">
-              <span className="outline-book-title">{meta.title || 'Untitled Book'}</span>
-              <span className="outline-book-author">{meta.author || 'Unknown Author'}</span>
-              <span className="outline-book-edit-hint">
-                <Pencil size={11} className="mr-1" /> Edit Book Details
-              </span>
-            </div>
-          </div>
+              </div>
 
-          <div className="outline-header">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted">
-              Chapter Outline ({chapters.length})
-            </span>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm text-xs"
-              onClick={handleAddChapter}
-              title="Add a new chapter"
-            >
-              <Plus size={14} className="mr-1" /> New
-            </button>
-          </div>
+              <div className="outline-list">
+                {filteredChapters.map((ch) => {
+                  const actualIdx = chapters.findIndex(c => c.id === ch.id)
+                  const isActiveRow = actualIdx === selectedIdx
+                  const isSelected = selectedChapterIds.has(ch.id)
+                  const isDragging = draggedIdx === actualIdx
+                  const isDragOver = dragOverIdx === actualIdx
 
-          <div className="outline-search-box">
-            <input
-              type="text"
-              className="outline-search-input"
-              value={filterQuery}
-              onChange={e => setFilterQuery(e.target.value)}
-              placeholder="Filter chapters…"
-            />
-          </div>
+                  const isMuted = ch.include_in_audio === false
+                  const warnCount = (ch.blocks || []).filter(
+                    b => b.warning && b.warning.status !== 'resolved'
+                  ).length
 
-          <div className="outline-list">
-            {filteredChapters.map((ch) => {
-              const actualIdx = chapters.findIndex(c => c.id === ch.id)
-              const isActiveRow = actualIdx === selectedIdx
-              const isSelected = selectedChapterIds.has(ch.id)
-              const isDragging = draggedIdx === actualIdx
-              const isDragOver = dragOverIdx === actualIdx
+                  const chWords = (ch.text || '').split(/\s+/).filter(Boolean).length
+                  const chMin = Math.max(1, Math.round(chWords / 150))
 
-              const isMuted = ch.include_in_audio === false
-              const warnCount = (ch.blocks || []).filter(
-                b => b.warning && b.warning.status !== 'resolved'
-              ).length
+                  return (
+                    <div
+                      key={ch.id}
+                      className={`chapter-row ${isActiveRow ? 'is-active' : ''} ${isDragOver ? 'is-drag-over' : ''}`}
+                      style={{ opacity: isDragging ? 0.4 : 1 }}
+                      draggable
+                      onDragStart={e => handleDragStart(actualIdx, e)}
+                      onDragOver={e => handleDragOver(actualIdx, e)}
+                      onDrop={() => handleDrop(actualIdx)}
+                    >
+                      <div className="chapter-drag-handle" title="Drag to reorder">
+                        <GripVertical size={14} />
+                      </div>
 
-              const chWords = (ch.text || '').split(/\s+/).filter(Boolean).length
-              const chMin = Math.max(1, Math.round(chWords / 150))
+                      <input
+                        type="checkbox"
+                        className="chapter-checkbox"
+                        checked={isSelected}
+                        onChange={e => handleCheckboxClick(actualIdx, e)}
+                        onClick={e => e.stopPropagation()}
+                        aria-label={`Select ${ch.title}`}
+                      />
 
-              return (
-                <div
-                  key={ch.id}
-                  className={`chapter-row ${isActiveRow ? 'is-active' : ''} ${isDragOver ? 'is-drag-over' : ''}`}
-                  style={{ opacity: isDragging ? 0.4 : 1 }}
-                  draggable
-                  onDragStart={e => handleDragStart(actualIdx, e)}
-                  onDragOver={e => handleDragOver(actualIdx, e)}
-                  onDrop={() => handleDrop(actualIdx)}
-                >
-                  <div className="chapter-drag-handle" title="Drag to reorder">
-                    <GripVertical size={14} />
-                  </div>
+                      <button
+                        type="button"
+                        className="chapter-info-btn"
+                        onClick={() => setSelectedIdx(actualIdx)}
+                      >
+                        <span className="chapter-title-text">
+                          {ch.order}. {ch.title || 'Untitled'}
+                        </span>
+                        <span className="chapter-meta-line">
+                          {isMuted ? (
+                            <span className="badge badge-subtle">Muted</span>
+                          ) : (
+                            <span>~{chMin} min</span>
+                          )}
+                          {warnCount > 0 && (
+                            <span className="badge badge-warning" title={`${warnCount} check(s) pending`}>
+                              ⚠️ {warnCount}
+                            </span>
+                          )}
+                        </span>
+                      </button>
 
-                  <input
-                    type="checkbox"
-                    className="chapter-checkbox"
-                    checked={isSelected}
-                    onChange={e => handleCheckboxClick(actualIdx, e)}
-                    onClick={e => e.stopPropagation()}
-                    aria-label={`Select ${ch.title}`}
-                  />
+                      <div className="chapter-row-actions">
+                        <button
+                          type="button"
+                          className={`btn-icon ${isMuted ? 'text-danger' : 'text-muted'}`}
+                          onClick={e => handleToggleChapterAudio(actualIdx, e)}
+                          title={isMuted ? 'Muted: Excluded from audio. Click to include.' : 'Included in audiobook narration. Click to mute.'}
+                          aria-label="Toggle Chapter Audio"
+                        >
+                          {isMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+                        </button>
+
+                        <button
+                          type="button"
+                          className="btn-icon text-muted hover:text-danger"
+                          onClick={e => handleDeleteChapter(actualIdx, e)}
+                          title="Delete Chapter"
+                          aria-label="Delete Chapter"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Floating Bulk Actions Toolbar */}
+              {selectedChapterIds.size > 0 && (
+                <div className="floating-bulk-toolbar">
+                  <span className="text-xs font-semibold text-primary">
+                    {selectedChapterIds.size} selected
+                  </span>
+
+                  {selectedChapterIds.size >= 2 && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={handleBulkMerge}
+                      title="Merge selected chapters sequentially into first chapter"
+                    >
+                      Merge Selected
+                    </button>
+                  )}
 
                   <button
                     type="button"
-                    className="chapter-info-btn"
-                    onClick={() => setSelectedIdx(actualIdx)}
+                    className="btn btn-danger-ghost btn-sm"
+                    onClick={handleBulkDelete}
+                    title="Delete all selected chapters"
                   >
-                    <span className="chapter-title-text">
-                      {ch.order}. {ch.title || 'Untitled'}
-                    </span>
-                    <span className="chapter-meta-line">
-                      {isMuted ? (
-                        <span className="badge badge-subtle">Muted</span>
-                      ) : (
-                        <span>~{chMin} min</span>
-                      )}
-                      {warnCount > 0 && (
-                        <span className="badge badge-warning" title={`${warnCount} check(s) pending`}>
-                          ⚠️ {warnCount}
-                        </span>
-                      )}
-                    </span>
+                    <Trash2 size={14} className="mr-1" /> Delete
                   </button>
 
-                  <div className="chapter-row-actions">
-                    <button
-                      type="button"
-                      className={`btn-icon ${isMuted ? 'text-danger' : 'text-muted'}`}
-                      onClick={e => handleToggleChapterAudio(actualIdx, e)}
-                      title={isMuted ? 'Muted: Excluded from audio. Click to include.' : 'Included in audiobook narration. Click to mute.'}
-                      aria-label="Toggle Chapter Audio"
-                    >
-                      {isMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
-                    </button>
-
-                    <button
-                      type="button"
-                      className="btn-icon text-muted hover:text-danger"
-                      onClick={e => handleDeleteChapter(actualIdx, e)}
-                      title="Delete Chapter"
-                      aria-label="Delete Chapter"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="btn-icon btn-sm"
+                    onClick={() => setSelectedChapterIds(new Set())}
+                    title="Clear selection"
+                  >
+                    ✕
+                  </button>
                 </div>
-              )
-            })}
-          </div>
-
-          {/* Floating Bulk Actions Toolbar */}
-          {selectedChapterIds.size > 0 && (
-            <div className="floating-bulk-toolbar">
-              <span className="text-xs font-semibold text-primary">
-                {selectedChapterIds.size} selected
-              </span>
-
-              {selectedChapterIds.size >= 2 && (
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  onClick={handleBulkMerge}
-                  title="Merge selected chapters sequentially into first chapter"
-                >
-                  Merge Selected
-                </button>
               )}
-
-              <button
-                type="button"
-                className="btn btn-danger-ghost btn-sm"
-                onClick={handleBulkDelete}
-                title="Delete all selected chapters"
-              >
-                <Trash2 size={14} className="mr-1" /> Delete
-              </button>
-
-              <button
-                type="button"
-                className="btn-icon btn-sm"
-                onClick={() => setSelectedChapterIds(new Set())}
-                title="Clear selection"
-              >
-                ✕
-              </button>
-            </div>
+            </>
           )}
         </aside>
 
@@ -1066,31 +1268,20 @@ export default function Step2Editor({
                       </button>
                     </div>
                   ) : (
-                    (() => {
-                      const allBlocks = currentChapter.blocks || []
-                      const bodyBlocks = allBlocks.filter(b => b.type !== 'marginalia' && b.type !== 'footnote')
-                      const apparatusFootnotes = allBlocks.filter(b => b.type === 'footnote')
-                      const apparatusMarginalia = allBlocks.filter(b => b.type === 'marginalia')
-                      const apparatusCallouts = allBlocks.filter(b => b.type === 'callout')
-                      const hasApparatus = apparatusFootnotes.length > 0 || apparatusMarginalia.length > 0 || apparatusCallouts.length > 0
+                    <>
+                      {bodyBlocks.map((block) => {
+                        const realIdx = blockIndexMap.get(block.id) ?? allBlocks.findIndex(b => b.id === block.id)
+                        const isMuted = !!block.audio_muted
+                        const hasWarning = block.warning && block.warning.status !== 'resolved'
+                        const isDiffOpen = !diffClosedBlockIds.has(block.id)
+                        const associatedNotes = associatedNotesMap.get(block.id) || []
+                        const isNotesActive = activeNotesPopoverBlockId === block.id
 
-                      return (
-                        <>
-                          {bodyBlocks.map((block) => {
-                            const realIdx = allBlocks.findIndex(b => b.id === block.id)
-                            const isMuted = !!block.audio_muted
-                            const hasWarning = block.warning && block.warning.status !== 'resolved'
-                            const isDiffOpen = !diffClosedBlockIds.has(block.id)
-                            const associatedNotes = allBlocks.filter(
-                              n => (n.type === 'marginalia' || n.type === 'footnote') &&
-                                   (n.associated_para_id === block.id || (n.source_page && n.source_page === block.source_page))
-                            )
-
-                            return (
-                              <div
-                                key={block.id || realIdx}
-                                className={`continuous-paragraph-item ${isMuted ? 'is-muted' : ''} ${hasWarning ? 'has-warning' : ''}`}
-                              >
+                        return (
+                          <div
+                            key={block.id || realIdx}
+                            className={`continuous-paragraph-item ${isMuted ? 'is-muted' : ''} ${hasWarning ? 'has-warning' : ''} ${isNotesActive ? 'is-active-notes' : ''}`}
+                          >
                                 {/* Inline Diff Accordion for AI Cleaning Warnings */}
                                 {hasWarning && (
                                   <div className="warning-accordion">
@@ -1194,30 +1385,116 @@ export default function Step2Editor({
                                     </button>
 
                                     {associatedNotes.length > 0 && (
-                                      <button
-                                        type="button"
-                                        className="gutter-notes-pill"
-                                        style={{
-                                          fontSize: '9.5px',
-                                          padding: '1px 5px',
-                                          borderRadius: '8px',
-                                          background: 'rgba(245, 158, 11, 0.15)',
-                                          color: '#fcd34d',
-                                          border: '1px solid rgba(245, 158, 11, 0.3)',
-                                          cursor: 'pointer',
-                                          marginTop: '2px',
-                                          whiteSpace: 'nowrap',
-                                        }}
-                                        onClick={() => {
-                                          setApparatusCollapsed(false)
-                                          const firstNote = associatedNotes[0]
-                                          if (firstNote.type === 'marginalia') setApparatusTab('marginalia')
-                                          else setApparatusTab('footnotes')
-                                        }}
-                                        title={`${associatedNotes.length} apparatus note(s) associated with this passage. Click to view below.`}
-                                      >
-                                        {associatedNotes.length} note{associatedNotes.length > 1 ? 's' : ''}
-                                      </button>
+                                      <div style={{ position: 'relative' }}>
+                                        <button
+                                          type="button"
+                                          className="gutter-notes-pill"
+                                          style={{
+                                            fontSize: '9.5px',
+                                            padding: '1px 5px',
+                                            borderRadius: '8px',
+                                            background: 'rgba(245, 158, 11, 0.15)',
+                                            color: '#fcd34d',
+                                            border: '1px solid rgba(245, 158, 11, 0.3)',
+                                            cursor: 'pointer',
+                                            marginTop: '2px',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setActiveNotesPopoverBlockId(activeNotesPopoverBlockId === block.id ? null : block.id)
+                                          }}
+                                          title={`${associatedNotes.length} apparatus note(s) associated with this passage. Click to view notes.`}
+                                        >
+                                          {associatedNotes.length} note{associatedNotes.length > 1 ? 's' : ''}
+                                        </button>
+
+                                        {activeNotesPopoverBlockId === block.id && (
+                                          <div className="notes-inline-popover" onClick={(e) => e.stopPropagation()}>
+                                            <div className="flex items-center justify-between pb-2 mb-2 border-b border-border/50">
+                                              <span className="text-xs font-semibold text-gray-200 flex items-center gap-1.5">
+                                                <BookOpen size={13} className="text-amber-400" />
+                                                Passage Notes ({associatedNotes.length})
+                                              </span>
+                                              <button
+                                                type="button"
+                                                className="btn-icon btn-xs text-muted hover:text-gray-200"
+                                                onClick={() => setActiveNotesPopoverBlockId(null)}
+                                                title="Close"
+                                              >
+                                                <X size={13} />
+                                              </button>
+                                            </div>
+
+                                            <div className="space-y-2.5 max-h-[280px] overflow-y-auto pr-1">
+                                              {associatedNotes.map((note) => {
+                                                const realNoteIdx = blockIndexMap.get(note.id) ?? -1
+                                                const isMuted = note.audio_muted !== false
+                                                const typeColor =
+                                                  note.type === 'marginalia'
+                                                    ? { bg: 'rgba(168, 85, 247, 0.15)', text: '#c084fc', border: 'rgba(168, 85, 247, 0.3)' }
+                                                    : note.type === 'callout'
+                                                    ? { bg: 'rgba(16, 185, 129, 0.15)', text: '#34d399', border: 'rgba(16, 185, 129, 0.3)' }
+                                                    : { bg: 'rgba(245, 158, 11, 0.15)', text: '#fbbf24', border: 'rgba(245, 158, 11, 0.3)' }
+
+                                                return (
+                                                  <div key={note.id} className="p-2.5 rounded bg-surface border border-border/60">
+                                                    <div className="flex items-center justify-between mb-1.5 text-[11px]">
+                                                      <span
+                                                        style={{
+                                                          background: typeColor.bg,
+                                                          color: typeColor.text,
+                                                          border: `1px solid ${typeColor.border}`,
+                                                          padding: '1px 6px',
+                                                          borderRadius: '4px',
+                                                          fontWeight: 600,
+                                                          textTransform: 'capitalize',
+                                                          fontSize: '10px',
+                                                        }}
+                                                      >
+                                                        {note.type}
+                                                      </span>
+                                                      <div className="flex items-center gap-1.5">
+                                                        <button
+                                                          type="button"
+                                                          className="text-[10px] text-muted hover:text-accent flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-hover"
+                                                          onClick={() => inspectPage(note.source_page || block.source_page || 1, note.id)}
+                                                          title="Inspect note on original scan"
+                                                        >
+                                                          <FileSearch size={11} /> P. {note.source_page || block.source_page || '—'} ↗
+                                                        </button>
+                                                        {realNoteIdx !== -1 && (
+                                                          <button
+                                                            type="button"
+                                                            className={`btn-tag btn-xs ${isMuted ? '' : 'active'}`}
+                                                            style={{ fontSize: '10px', padding: '1px 5px' }}
+                                                            onClick={() => handleToggleBlockMute(realNoteIdx)}
+                                                            title="Toggle TTS audio narration for this note"
+                                                          >
+                                                            {isMuted ? '🔇 Muted' : '🔊 Narrated'}
+                                                          </button>
+                                                        )}
+                                                      </div>
+                                                    </div>
+                                                    {realNoteIdx !== -1 ? (
+                                                      <textarea
+                                                        className="input-text w-full text-xs p-1.5 rounded"
+                                                        style={{ background: '#12141c', borderColor: '#2b3144', minHeight: '52px', resize: 'vertical' }}
+                                                        value={note.text || ''}
+                                                        onChange={(e) => handleBlockTextChange(realNoteIdx, e.target.value)}
+                                                        placeholder="Note text..."
+                                                        rows={2}
+                                                      />
+                                                    ) : (
+                                                      <p className="text-xs text-gray-300 whitespace-pre-wrap">{note.text}</p>
+                                                    )}
+                                                  </div>
+                                                )
+                                              })}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
                                     )}
                                   </div>
 
@@ -1231,10 +1508,6 @@ export default function Step2Editor({
                                     <textarea
                                       ref={el => {
                                         blockRefs.current[block.id] = el
-                                        if (el) {
-                                          el.style.height = 'auto'
-                                          el.style.height = `${Math.max(el.scrollHeight, 28)}px`
-                                        }
                                       }}
                                       className="continuous-textarea"
                                       value={block.text}
@@ -1252,15 +1525,51 @@ export default function Step2Editor({
 
                                 {/* Hover Split Divider */}
                                 {realIdx < allBlocks.length - 1 && (
-                                  <div
-                                    className="inter-block-split-divider"
-                                    onClick={() => handleSplitChapterAt(realIdx)}
-                                    title="Split chapter into two at this point"
-                                  >
+                                  <div className={`inter-block-split-divider ${splitConfirmIdx === realIdx ? 'is-active' : ''}`}>
                                     <div className="split-line" />
-                                    <div className="split-badge flex items-center gap-1">
-                                      <Scissors size={11} /> Split Chapter Here
-                                    </div>
+                                    <button
+                                      type="button"
+                                      className="split-badge flex items-center gap-1"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        setSplitConfirmIdx(splitConfirmIdx === realIdx ? null : realIdx)
+                                      }}
+                                      title="Split chapter into two at this paragraph boundary"
+                                    >
+                                      <Scissors size={11} /> Split Chapter
+                                    </button>
+
+                                    {splitConfirmIdx === realIdx && (
+                                      <div className="split-confirm-popover" onClick={(e) => e.stopPropagation()}>
+                                        <div className="flex items-center gap-1.5 mb-1.5 font-semibold text-xs text-gray-200">
+                                          <Scissors size={13} className="text-accent" />
+                                          <span>Split Chapter Here?</span>
+                                        </div>
+                                        <p className="text-[11.5px] text-muted mb-3 leading-relaxed">
+                                          This will divide <strong>&ldquo;{currentChapter.title}&rdquo;</strong> into two separate chapters right after this paragraph.
+                                        </p>
+                                        <div className="flex items-center justify-end gap-2">
+                                          <button
+                                            type="button"
+                                            className="btn-secondary btn-xs"
+                                            onClick={() => setSplitConfirmIdx(null)}
+                                          >
+                                            Cancel
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="btn-primary btn-xs flex items-center gap-1"
+                                            onClick={() => {
+                                              handleSplitChapterAt(realIdx)
+                                              setSplitConfirmIdx(null)
+                                            }}
+                                          >
+                                            <Check size={12} />
+                                            <span>Split Chapter</span>
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </div>
@@ -1329,7 +1638,7 @@ export default function Step2Editor({
                                   {apparatusTab === 'footnotes' && (
                                     <div className="apparatus-cards-grid">
                                       {apparatusFootnotes.map((note, fnIdx) => {
-                                        const realIdx = allBlocks.findIndex(b => b.id === note.id)
+                                        const realIdx = blockIndexMap.get(note.id) ?? -1
                                         return (
                                           <div key={note.id || fnIdx} className="apparatus-card is-footnote">
                                             <div className="apparatus-card-top">
@@ -1373,7 +1682,7 @@ export default function Step2Editor({
                                   {apparatusTab === 'marginalia' && (
                                     <div className="apparatus-cards-grid">
                                       {apparatusMarginalia.map((note, mgIdx) => {
-                                        const realIdx = allBlocks.findIndex(b => b.id === note.id)
+                                        const realIdx = blockIndexMap.get(note.id) ?? -1
                                         return (
                                           <div key={note.id || mgIdx} className="apparatus-card is-marginalia">
                                             <div className="apparatus-card-top">
@@ -1417,7 +1726,7 @@ export default function Step2Editor({
                                   {apparatusTab === 'callouts' && (
                                     <div className="apparatus-cards-grid">
                                       {apparatusCallouts.map((note, clIdx) => {
-                                        const realIdx = allBlocks.findIndex(b => b.id === note.id)
+                                        const realIdx = blockIndexMap.get(note.id) ?? -1
                                         return (
                                           <div key={note.id || clIdx} className="apparatus-card is-callout">
                                             <div className="apparatus-card-top">
@@ -1461,18 +1770,25 @@ export default function Step2Editor({
                             </div>
                           )}
                         </>
-                      )
-                    })()
-                  )}
-                </div>
+                      )}
+                    </div>
               )}
             </>
           )}
         </main>
 
+        {/* Resizer Handle between Editor and Pinned Inspector */}
+        {inspectorOpen && inspectorPinned && (
+          <div
+            className={`workspace-resizer-handle ${isResizing ? 'is-resizing' : ''}`}
+            onMouseDown={handleResizerMouseDown}
+            title="Drag to resize inspector pane"
+          />
+        )}
+
         {/* Pinned Inspector (Side-by-Side) */}
         {inspectorOpen && inspectorPinned && (
-          <aside className="inspector-pane">
+          <aside className="inspector-pane" style={{ width: `${inspectorWidth}px`, minWidth: '360px' }}>
             <SourceInspector
               projectId={projectId}
               initialPage={inspectorPage}

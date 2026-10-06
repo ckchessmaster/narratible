@@ -112,3 +112,62 @@ def test_analyze_page_layout_pipeline():
     assert marginalia_blocks[0].audio_muted is True
     # Should be bound to body block
     assert marginalia_blocks[0].associated_para_id is not None
+
+
+def test_academic_page_with_scripture_marginalia_and_footnotes():
+    import pymupdf as fitz
+    from app.services.layout.engine import analyze_page_layout
+
+    doc = fitz.open()
+    page = doc.new_page(width=600, height=800)
+
+    # 1. Running Header: 102 TERTULLIAN AGAINST PRAXEAS [26
+    page.insert_text(fitz.Point(60, 45), "102")
+    page.insert_text(fitz.Point(180, 45), "TERTULLIAN AGAINST PRAXEAS")
+    page.insert_text(fitz.Point(540, 45), "[26")
+
+    # 2. Left-hand Margin references
+    page.insert_text(fitz.Point(40, 220), "Luke i. 35")
+    page.insert_text(fitz.Point(40, 360), "Ibid.")
+    page.insert_text(fitz.Point(40, 390), "49.")
+    page.insert_text(fitz.Point(40, 430), "cf. Mark i. 24, etc.")
+
+    # 3. Main body text
+    page.insert_text(fitz.Point(150, 100), "as he himself also is from whom it comes and whose it is.")
+    page.insert_text(fitz.Point(150, 200), "portion of the whole, much more the power of the Most High.")
+    page.insert_text(fitz.Point(150, 300), "stances, but accidental attributes of each substance.")
+    page.insert_text(fitz.Point(150, 400), "Father's house? Satan, also, in his trials of Him.")
+    page.insert_text(fitz.Point(150, 500), "Himself worships the Father. When recognised by Peter as God's Christ.")
+
+    # 4. Scholarly footnotes apparatus
+    page.insert_text(fitz.Point(150, 680), "1 Tertullian's view is in error here, cf. c. 28, etc. and d'Alès, p. 84.")
+    page.insert_text(fitz.Point(150, 710), "2 hactenus . . . qua: an excellent instance of the original force of hactenus.")
+
+    layout = analyze_page_layout(page, page_number=26)
+
+    # 1. Body should be consolidated into unified reading macrozone
+    body_blocks = [b for b in layout.blocks if b.type == "body"]
+    assert len(body_blocks) == 1
+    assert "as he himself also is" in body_blocks[0].text
+    assert "Himself worships the Father" in body_blocks[0].text
+    assert body_blocks[0].order == 1
+
+    # 2. Marginalia should be consolidated into unified margin macrozone
+    marginalia_blocks = [b for b in layout.blocks if b.type == "marginalia"]
+    assert len(marginalia_blocks) == 1
+    assert "Luke i. 35" in marginalia_blocks[0].text
+    assert "Ibid." in marginalia_blocks[0].text
+    assert marginalia_blocks[0].audio_muted is True
+
+    # 3. Footnotes should be consolidated into unified scholarly apparatus macrozone
+    footnote_blocks = [b for b in layout.blocks if b.type == "footnote"]
+    assert len(footnote_blocks) == 1
+    assert "Tertullian's view is in error" in footnote_blocks[0].text
+    assert "hactenus" in footnote_blocks[0].text
+    assert footnote_blocks[0].audio_muted is True
+
+    # 4. Running Header should be consolidated into a single header block
+    header_blocks = [b for b in layout.blocks if b.type == "header_footer"]
+    assert len(header_blocks) == 1
+    assert "TERTULLIAN AGAINST PRAXEAS" in header_blocks[0].text
+    assert header_blocks[0].audio_muted is True

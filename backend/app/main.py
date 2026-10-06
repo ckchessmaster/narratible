@@ -54,7 +54,6 @@ from .projects import (
 from .services.layout import (
     LayoutUpdateRequest,
     LayoutPropagateRequest,
-    VisionExtractRequest,
 )
 from .parser import extract_structured_from_pdf, extract_pdf_metadata, extract_pdf_cover
 from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters, llm_extract_book_metadata, list_cleaning_profiles, get_cleaning_profile
@@ -124,10 +123,13 @@ def _cancel_task_by_id(task_id: str) -> bool:
 
 
 mcp_server = create_mcp_server(lambda: _tasks, _cancel_task_by_id)
-mcp_app = mcp_server.streamable_http_app(
-    streamable_http_path="/",
-    stateless_http=True,
-)
+try:
+    mcp_app = mcp_server.streamable_http_app(
+        streamable_http_path="/",
+        stateless_http=True,
+    )
+except TypeError:
+    mcp_app = mcp_server.streamable_http_app()
 
 
 @asynccontextmanager
@@ -817,6 +819,18 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
         raw_text = pdf_data["raw_text"]
         raw_chapters = pdf_data["chapters"]
 
+        # Pre-cache layout zones for all pages so Source Inspector has them immediately
+        try:
+            import pymupdf as fitz
+            from app.services.layout.engine import analyze_page_layout
+            with fitz.open(str(pdf_path)) as doc:
+                for p_num in range(1, len(doc) + 1):
+                    page = doc[p_num - 1]
+                    layout = analyze_page_layout(page, p_num)
+                    save_page_layout(project_id, p_num, layout.model_dump())
+        except Exception as lay_err:
+            logger.warning("Could not pre-cache page layouts for %s: %s", project_id, lay_err)
+
         _set_task(task_id, "running", "Extracting metadata…", 29, stage="Extracting metadata")
 
         def _metadata_progress(msg: str):
@@ -1072,6 +1086,12 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                                     }
                                     break
 
+                    apparatus_blocks = [
+                        b for b in orig_blocks
+                        if b.get("type") in {"marginalia", "footnote", "callout", "figure_caption"}
+                    ]
+                    cleaned_blocks.extend(apparatus_blocks)
+
                     cleaned_chapters.append({
                         "title": ch_title,
                         "text": cleaned_ch_text,
@@ -1094,26 +1114,50 @@ def _run_parse(project_id: str, task_id: str, cleaner: str, modules: list[str] |
                 _set_task(task_id, "running",
                     f"Cleaning chapter {i+1} of {total_ch}: '{ch_title}'…",
                     overall_prog, stage="Cleaning text")
-                cleaned_txt = regex_clean_text(
-                    ch["raw_text"],
-                    known_titles=[meta.title, ch_title],
-                )
                 orig_blocks = ch.get("blocks", [])
-                cleaned_paras = [p.strip() for p in cleaned_txt.split("\n\n") if p.strip()]
+                body_blocks = [b for b in orig_blocks if b.get("type") in {"body", "callout"} or not b.get("type")]
+                apparatus_blocks = [
+                    b for b in orig_blocks
+                    if b.get("type") in {"marginalia", "footnote", "figure_caption"}
+                ]
                 cleaned_blocks = []
-                for p_idx, para in enumerate(cleaned_paras):
-                    src_p = None
-                    if p_idx < len(orig_blocks):
-                        src_p = orig_blocks[p_idx].get("source_page")
-                    elif orig_blocks:
-                        src_p = orig_blocks[-1].get("source_page")
-                    cleaned_blocks.append({
-                        "id": f"blk_{uuid.uuid4().hex[:8]}",
-                        "source_page": src_p,
-                        "text": para,
-                        "audio_muted": False,
-                        "warning": None,
-                    })
+                cleaned_paras = []
+
+                if body_blocks:
+                    for b in body_blocks:
+                        b_text = b.get("text", "")
+                        b_clean = regex_clean_text(b_text, known_titles=[meta.title, ch_title])
+                        p_list = [p.strip() for p in b_clean.split("\n\n") if p.strip()]
+                        for p in p_list:
+                            cleaned_blocks.append({
+                                "id": b.get("id") if len(p_list) == 1 else f"blk_{uuid.uuid4().hex[:8]}",
+                                "type": "body",
+                                "source_page": b.get("source_page"),
+                                "text": p,
+                                "audio_muted": bool(b.get("audio_muted", False)),
+                                "warning": None,
+                                "associated_para_id": b.get("associated_para_id"),
+                            })
+                            cleaned_paras.append(p)
+                    cleaned_txt = "\n\n".join(cleaned_paras)
+                else:
+                    cleaned_txt = regex_clean_text(
+                        ch["raw_text"],
+                        known_titles=[meta.title, ch_title],
+                    )
+                    cleaned_paras = [p.strip() for p in cleaned_txt.split("\n\n") if p.strip()]
+                    for p in cleaned_paras:
+                        cleaned_blocks.append({
+                            "id": f"blk_{uuid.uuid4().hex[:8]}",
+                            "type": "body",
+                            "source_page": 1,
+                            "text": p,
+                            "audio_muted": False,
+                            "warning": None,
+                        })
+
+                cleaned_blocks.extend(apparatus_blocks)
+
                 cleaned_chapters.append({
                     "title": ch["title"],
                     "text": cleaned_txt,
@@ -2276,16 +2320,17 @@ async def api_get_project_page_image(project_id: str, page_number: int, dpi: int
 # ── Semantic Page Layout & Zoning ─────────────────────────────────────────────
 
 @app.get("/api/projects/{project_id}/pages/{page_number}/layout")
-async def api_get_page_layout(project_id: str, page_number: int):
+async def api_get_page_layout(project_id: str, page_number: int, recompute: bool = False):
     try:
         get_project(project_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    # 1. Try loading cached layout
-    cached = load_page_layout(project_id, page_number)
-    if cached:
-        return cached
+    # 1. Try loading cached layout unless recompute is forced
+    if not recompute:
+        cached = load_page_layout(project_id, page_number)
+        if cached:
+            return cached
 
     # 2. Extract on-the-fly from source PDF
     pdf_path = source_pdf_path(project_id)
@@ -2442,8 +2487,8 @@ async def api_propagate_layout(project_id: str, req: LayoutPropagateRequest):
     }
 
 
-@app.post("/api/projects/{project_id}/pages/{page_number}/vision-extract")
-async def api_vision_extract_page(project_id: str, page_number: int, req: VisionExtractRequest):
+@app.post("/api/projects/{project_id}/layout/reextract-all")
+async def api_reextract_all_layouts(project_id: str):
     try:
         get_project(project_id)
     except FileNotFoundError as e:
@@ -2455,30 +2500,26 @@ async def api_vision_extract_page(project_id: str, page_number: int, req: Vision
 
     try:
         import pymupdf as fitz
-        from app.services.layout.vision import extract_layout_via_vision
-        with fitz.open(str(pdf_path)) as doc:
-            if page_number < 1 or page_number > len(doc):
-                raise HTTPException(status_code=404, detail=f"Page {page_number} is out of bounds.")
-            page = doc[page_number - 1]
-            scale = 150 / 72.0
-            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-            img_bytes = pix.tobytes("jpeg")
+        from app.services.layout.engine import analyze_page_layout
 
-        blocks = await extract_layout_via_vision(
-            image_bytes=img_bytes,
-            page_number=page_number,
-            provider=req.provider,
-            model=req.model,
-        )
+        with fitz.open(str(pdf_path)) as doc:
+            total = len(doc)
+            for page_num in range(1, total + 1):
+                page = doc[page_num - 1]
+                layout = analyze_page_layout(page, page_num)
+                layout_dict = layout.model_dump()
+                save_page_layout(project_id, page_num, layout_dict)
+                sync_page_layout_to_chapters(project_id, page_num, layout_dict["blocks"])
+
         return {
-            "page_number": page_number,
-            "blocks": [b.model_dump() for b in blocks],
+            "status": "success",
+            "total_pages": total,
+            "message": f"Successfully re-extracted and synced layout for all {total} pages.",
         }
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.exception("AI Vision extraction failed for page %s: %s", page_number, e)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to re-extract all layouts for project %s: %s", project_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to re-extract layouts: {e}")
+
 
 
 # ── TTS ───────────────────────────────────────────────────────────────────────

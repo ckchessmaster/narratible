@@ -3,7 +3,10 @@ import sys
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from mcp.server import MCPServer
+try:
+    from mcp.server.fastmcp import FastMCP as MCPServer
+except ImportError:
+    from mcp.server import MCPServer
 
 from .config import load_config
 from .cleaner import regex_clean_text
@@ -55,15 +58,25 @@ def create_mcp_server(
     get_tasks: TaskProvider | None = None,
     cancel_task_fn: CancelTaskFn | None = None,
 ) -> MCPServer:
-    mcp = MCPServer(
-        "narratible",
-        version="0.2.0",
-        instructions=(
-            "Tools and resources for full management of the local Narratible app, "
-            "including project metadata, chapter editing, TTS voices and engines, "
-            "EPUB generation, background task cancellation, and live log monitoring."
-        ),
-    )
+    try:
+        mcp = MCPServer(
+            "narratible",
+            version="0.2.0",
+            instructions=(
+                "Tools and resources for full management of the local Narratible app, "
+                "including project metadata, chapter editing, TTS voices and engines, "
+                "EPUB generation, background task cancellation, and live log monitoring."
+            ),
+        )
+    except TypeError:
+        mcp = MCPServer(
+            "narratible",
+            instructions=(
+                "Tools and resources for full management of the local Narratible app, "
+                "including project metadata, chapter editing, TTS voices and engines, "
+                "EPUB generation, background task cancellation, and live log monitoring."
+            ),
+        )
 
     # ── Inspection Tools ──────────────────────────────────────────────────────
 

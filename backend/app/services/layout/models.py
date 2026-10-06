@@ -42,9 +42,3 @@ class LayoutPropagateRequest(BaseModel):
     target_start_page: int
     target_end_page: int
     reextract_all: bool = True
-
-
-class VisionExtractRequest(BaseModel):
-    provider: str = "gemini"  # "gemini" | "openai"
-    model: str = "gemini-2.0-flash"
-    prompt_preset: str = "academic_marginalia"

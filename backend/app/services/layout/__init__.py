@@ -11,7 +11,6 @@ from .models import (
     PageLayout,
     LayoutUpdateRequest,
     LayoutPropagateRequest,
-    VisionExtractRequest,
 )
 from .engine import analyze_page_layout, extract_block_text
 
@@ -21,7 +20,6 @@ __all__ = [
     "PageLayout",
     "LayoutUpdateRequest",
     "LayoutPropagateRequest",
-    "VisionExtractRequest",
     "analyze_page_layout",
     "extract_block_text",
 ]

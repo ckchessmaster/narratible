@@ -1,4 +1,5 @@
 import uuid
+from typing import Sequence
 import pymupdf as fitz
 
 from .models import PageLayout, LayoutBlock, BlockType
@@ -14,96 +15,258 @@ from .margins import (
     is_footnote,
     is_marginalia,
     compute_body_column_bounds,
+    FOOTNOTE_PATTERN,
+    MARGINALIA_PATTERN,
 )
 from .extractor import extract_block_text
 
 
-def _extract_spatial_blocks(page: fitz.Page, width: float, height: float, page_number: int) -> list[dict]:
+def _cluster_body_columns(body_segments: list[dict], width: float, height: float) -> list[list[dict]]:
     """
-    Extract text lines from PyMuPDF dict and cluster them into true spatial blocks.
-    Unlike page.get_text("blocks"), this does NOT merge lines separated by horizontal gutters
-    (such as marginalia sharing the same baseline with a body line).
+    Cluster body lines into columns. For single-column text, merges all contiguous lines
+    into a single unified reading column macrozone. For multi-column pages, detects vertical
+    gutters and cleanly partitions lines into separate column flow containers.
+    """
+    if not body_segments:
+        return []
+
+    x_min = min(s["bbox"][0] for s in body_segments)
+    x_max = max(s["bbox"][2] for s in body_segments)
+
+    # Search for vertical gutters (empty vertical strips dividing columns)
+    gutters = []
+    x_step = 2.0
+    x_probe = x_min + 35.0
+    while x_probe < x_max - 35.0:
+        crossers = [s for s in body_segments if s["bbox"][0] <= x_probe <= s["bbox"][2]]
+        if not crossers:
+            gutters.append(x_probe)
+        x_probe += x_step
+
+    if gutters:
+        gutter_ranges = []
+        cur_range = [gutters[0]]
+        for g in gutters[1:]:
+            if g - cur_range[-1] <= x_step * 1.5:
+                cur_range.append(g)
+            else:
+                gutter_ranges.append((min(cur_range), max(cur_range)))
+                cur_range = [g]
+        if cur_range:
+            gutter_ranges.append((min(cur_range), max(cur_range)))
+
+        # A valid column dividing gutter must have significant width (>= 12 points)
+        valid_gutters = [r for r in gutter_ranges if (r[1] - r[0]) >= 12.0]
+        if valid_gutters:
+            widest = max(valid_gutters, key=lambda r: r[1] - r[0])
+            split_x = (widest[0] + widest[1]) / 2.0
+            col1 = [s for s in body_segments if s["bbox"][2] <= split_x]
+            col2 = [s for s in body_segments if s["bbox"][0] >= split_x]
+            if col1 and col2:
+                return [col1, col2]
+
+    # Single column layout: All body segments belong to a single continuous column
+    return [body_segments]
+
+
+def _extract_atomic_segments(
+    page: fitz.Page,
+    width: float,
+    height: float,
+    page_number: int,
+) -> tuple[list[dict], float, float]:
+    """
+    Extract atomic text segments from PyMuPDF dict by inspecting text spans.
+    Unlike line-level or block-level extraction, this cleanly untangles composite
+    lines where OCR engines merged margin citations (e.g., 'Luke i. 35') and adjacent
+    body lines ('portion of the whole...') into the exact same line baseline.
     """
     page_dict = page.get_text("dict") or {}
-    raw_lines: list[dict] = []
+    all_spans = []
 
     for b in page_dict.get("blocks", []):
         if b.get("type") != 0:
             continue
         for l in b.get("lines", []):
-            txt = "".join(s.get("text", "") for s in l.get("spans", [])).strip()
-            if not txt:
+            for s in l.get("spans", []):
+                txt = s.get("text", "").strip()
+                if txt:
+                    all_spans.append(s)
+
+    if not all_spans:
+        return [], 0.15 * width, 0.85 * width
+
+    # 1. Determine typographical scale (median body font size)
+    mid_spans = [s for s in all_spans if 0.10 <= s["bbox"][1] / height <= 0.88]
+    sizes = sorted(s["size"] for s in mid_spans) if mid_spans else [s["size"] for s in all_spans]
+    body_size = sizes[len(sizes) // 2] if sizes else 10.0
+
+    # 2. Determine dominant body column boundaries [col_x0, col_x1]
+    # Filter out outer margin notes matching MARGINALIA_PATTERN so they don't skew the body column
+    body_spans = [
+        s for s in mid_spans
+        if s["size"] >= 0.88 * body_size
+        and not (
+            (s["bbox"][2] / width <= 0.32 or s["bbox"][0] / width >= 0.68)
+            and bool(MARGINALIA_PATTERN.match(s["text"].strip()))
+        )
+    ]
+    if len(body_spans) >= 4:
+        bx0s = sorted(s["bbox"][0] for s in body_spans)
+        bx1s = sorted(s["bbox"][2] for s in body_spans)
+        col_x0 = bx0s[int(len(bx0s) * 0.15)]
+        col_x1 = bx1s[int(len(bx1s) * 0.85)]
+    else:
+        col_x0 = 0.15 * width
+        col_x1 = 0.85 * width
+
+    # 3. Extract atomic segments by splitting composite lines
+    atomic_segments = []
+    for b in page_dict.get("blocks", []):
+        if b.get("type") != 0:
+            continue
+        for l in b.get("lines", []):
+            spans = [s for s in l.get("spans", []) if s.get("text", "").strip()]
+            if not spans:
                 continue
-            l_bbox = l.get("bbox")
-            if l_bbox and len(l_bbox) == 4:
-                raw_lines.append({
-                    "bbox": l_bbox,
+
+            l_y0_norm = l["bbox"][1] / height
+            l_y1_norm = l["bbox"][3] / height
+
+            # Extreme top band: Running header
+            if l_y1_norm <= 0.10 or (l_y0_norm <= 0.08 and l_y1_norm <= 0.12):
+                atomic_segments.append({
+                    "bbox": list(l["bbox"]),
+                    "text": " ".join(s["text"].strip() for s in spans),
+                    "size": sum(s["size"] for s in spans) / len(spans),
+                    "type": "header_top",
+                })
+                continue
+
+            # Extreme bottom band: Folio / page number
+            if l_y0_norm >= 0.93:
+                atomic_segments.append({
+                    "bbox": list(l["bbox"]),
+                    "text": " ".join(s["text"].strip() for s in spans),
+                    "size": sum(s["size"] for s in spans) / len(spans),
+                    "type": "header_bottom",
+                })
+                continue
+
+            # Check if this line crosses left or right margin gutters
+            has_left_margin = any(s["bbox"][2] <= col_x0 + 1.0 for s in spans) and (col_x0 > 0.10 * width)
+            has_body_span = any(s["bbox"][0] >= col_x0 - 4.0 and s["bbox"][2] <= col_x1 + 4.0 for s in spans)
+            has_right_margin = any(s["bbox"][0] >= col_x1 - 1.0 for s in spans) and (col_x1 < 0.90 * width)
+
+            if has_left_margin and has_body_span:
+                # Split composite line: left margin note vs body text
+                m_spans = [s for s in spans if s["bbox"][2] <= col_x0 + 2.0]
+                b_spans = [s for s in spans if s["bbox"][0] >= col_x0 - 3.0]
+                if m_spans:
+                    atomic_segments.append({
+                        "bbox": [
+                            min(s["bbox"][0] for s in m_spans),
+                            min(s["bbox"][1] for s in m_spans),
+                            max(s["bbox"][2] for s in m_spans),
+                            max(s["bbox"][3] for s in m_spans),
+                        ],
+                        "text": " ".join(s["text"].strip() for s in m_spans),
+                        "size": sum(s["size"] for s in m_spans) / len(m_spans),
+                        "type": "marginalia_left",
+                    })
+                if b_spans:
+                    atomic_segments.append({
+                        "bbox": [
+                            min(s["bbox"][0] for s in b_spans),
+                            min(s["bbox"][1] for s in b_spans),
+                            max(s["bbox"][2] for s in b_spans),
+                            max(s["bbox"][3] for s in b_spans),
+                        ],
+                        "text": " ".join(s["text"].strip() for s in b_spans),
+                        "size": sum(s["size"] for s in b_spans) / len(b_spans),
+                        "type": "candidate_body",
+                    })
+            elif has_right_margin and has_body_span:
+                # Split composite line: body text vs right margin note
+                b_spans = [s for s in spans if s["bbox"][2] <= col_x1 + 3.0]
+                m_spans = [s for s in spans if s["bbox"][0] >= col_x1 - 2.0]
+                if b_spans:
+                    atomic_segments.append({
+                        "bbox": [
+                            min(s["bbox"][0] for s in b_spans),
+                            min(s["bbox"][1] for s in b_spans),
+                            max(s["bbox"][2] for s in b_spans),
+                            max(s["bbox"][3] for s in b_spans),
+                        ],
+                        "text": " ".join(s["text"].strip() for s in b_spans),
+                        "size": sum(s["size"] for s in b_spans) / len(b_spans),
+                        "type": "candidate_body",
+                    })
+                if m_spans:
+                    atomic_segments.append({
+                        "bbox": [
+                            min(s["bbox"][0] for s in m_spans),
+                            min(s["bbox"][1] for s in m_spans),
+                            max(s["bbox"][2] for s in m_spans),
+                            max(s["bbox"][3] for s in m_spans),
+                        ],
+                        "text": " ".join(s["text"].strip() for s in m_spans),
+                        "size": sum(s["size"] for s in m_spans) / len(m_spans),
+                        "type": "marginalia_right",
+                    })
+            else:
+                # Standalone line
+                avg_sz = sum(s["size"] for s in spans) / len(spans)
+                txt = " ".join(s["text"].strip() for s in spans)
+                txt_matches_marginalia = bool(MARGINALIA_PATTERN.match(txt))
+                is_outer_left = l["bbox"][2] / width <= 0.32
+                is_outer_right = l["bbox"][0] / width >= 0.68
+
+                if (col_x0 > 0.10 * width and l["bbox"][2] <= col_x0 + 3.0) or (is_outer_left and txt_matches_marginalia):
+                    t = "marginalia_left"
+                elif (col_x1 < 0.90 * width and l["bbox"][0] >= col_x1 - 3.0) or (is_outer_right and txt_matches_marginalia):
+                    t = "marginalia_right"
+                else:
+                    t = "candidate_body"
+                atomic_segments.append({
+                    "bbox": list(l["bbox"]),
                     "text": txt,
+                    "size": avg_sz,
+                    "type": t,
                 })
 
-    if not raw_lines:
-        return []
+    # 4. Footnote apparatus detection in lower region
+    cand_body = [s for s in atomic_segments if s["type"] == "candidate_body"]
+    cand_body.sort(key=lambda s: s["bbox"][1])
+    footnote_start_y = 999999.0
+    for s in cand_body:
+        y0_norm = s["bbox"][1] / height
+        is_fn_font = s["size"] <= 0.88 * body_size
+        is_fn_text = bool(FOOTNOTE_PATTERN.match(s["text"]))
+        # Must be in lower region (>= 0.65) and match marker
+        if y0_norm >= 0.65 and is_fn_text and (is_fn_font or y0_norm >= 0.72):
+            footnote_start_y = s["bbox"][1] - 2.0
+            break
 
-    # Sort lines primarily top-to-bottom, secondarily left-to-right
-    raw_lines.sort(key=lambda l: (l["bbox"][1], l["bbox"][0]))
-
-    # Cluster lines into blocks:
-    # Lines belong to the same block if they are vertically close and horizontally aligned.
-    clusters: list[list[dict]] = []
-    for line in raw_lines:
-        bx0, by0, bx1, by1 = line["bbox"]
-        line_h = max(8.0, by1 - by0)
-        matched_cluster = None
-
-        for cl in reversed(clusters):
-            last_line = cl[-1]
-            lx0, ly0, lx1, ly1 = last_line["bbox"]
-            v_gap = by0 - ly1
-
-            # Check if this line is directly below the last line in this cluster
-            # (within 2.2 line heights) and shares significant horizontal column overlap
-            h_overlap = min(bx1, lx1) - max(bx0, lx0)
-            h_dist_left = abs(bx0 - lx0)
-
-            if 0 <= v_gap <= (2.2 * line_h) and (h_overlap > 0 or h_dist_left < 20.0):
-                matched_cluster = cl
-                break
-
-        if matched_cluster is not None:
-            matched_cluster.append(line)
+    final_segments = []
+    for s in atomic_segments:
+        if s["type"] in ("header_top", "header_bottom", "marginalia_left", "marginalia_right"):
+            final_segments.append(s)
+        elif s["bbox"][1] >= footnote_start_y:
+            final_segments.append({**s, "type": "footnote"})
         else:
-            clusters.append([line])
+            final_segments.append({**s, "type": "body"})
 
-    # Convert clusters into blocks with combined bbox and text
-    blocks: list[dict] = []
-    for cl in clusters:
-        cb_x0 = min(l["bbox"][0] for l in cl)
-        cb_y0 = min(l["bbox"][1] for l in cl)
-        cb_x1 = max(l["bbox"][2] for l in cl)
-        cb_y1 = max(l["bbox"][3] for l in cl)
-        combined_text = "\n".join(l["text"] for l in cl).strip()
-        if not combined_text:
-            continue
-
-        n_box = normalize_bbox([cb_x0, cb_y0, cb_x1, cb_y1], width, height)
-        blocks.append({
-            "id": f"blk_{page_number}_{uuid.uuid4().hex[:6]}",
-            "bbox": n_box,
-            "text": combined_text,
-        })
-
-    return blocks
+    return final_segments, col_x0, col_x1
 
 
 def analyze_page_layout(page: fitz.Page, page_number: int) -> PageLayout:
     """
-    Perform deep spatial classification on a PDF page:
-    1. Extract vector callout containers and images.
-    2. Classify raw text blocks into semantic types (body, marginalia, footnote,
-       callout, figure_caption, header_footer).
-    3. Sort body blocks via Recursive XY-Cut multi-column ordering.
-    4. Bind marginalia/footnotes to nearest vertical body paragraph.
-    5. Assign sequential narration order and audio muting flags.
+    Perform deep spatial classification and macrozone aggregation on a PDF page:
+    1. Untangles composite lines at the span level (separating margin notes from body lines).
+    2. Identifies header, footer, left/right marginalia, body, and footnote apparatus.
+    3. Consolidates peripheral zones into unified macrozones.
+    4. Sorts body reading columns via XY-Cut and binds marginalia/apparatus.
     """
     rect = page.rect
     width = float(rect.width)
@@ -112,54 +275,166 @@ def analyze_page_layout(page: fitz.Page, page_number: int) -> PageLayout:
     if width <= 0 or height <= 0:
         return PageLayout(page_number=page_number, width=612.0, height=792.0, blocks=[])
 
-    # 1. Extract true spatial blocks via line clustering
-    initial_blocks = _extract_spatial_blocks(page, width, height, page_number)
-
-    if not initial_blocks:
+    # 1. Extract atomic segments
+    segments, col_x0, col_x1 = _extract_atomic_segments(page, width, height, page_number)
+    if not segments:
         return PageLayout(page_number=page_number, width=width, height=height, blocks=[])
 
     # 2. Detect vector containers (callouts) and image captions
     vector_containers = detect_vector_callouts(page, width, height)
-    _, caption_indices = detect_images_and_captions(page, initial_blocks, width, height)
 
-    # 3. Determine body column limits for Verso/Recto margins
-    body_xmin, body_xmax = compute_body_column_bounds(initial_blocks)
-
-    # 4. Classify each block
-    classified: list[dict] = []
-    for idx, b in enumerate(initial_blocks):
-        n_box = b["bbox"]
-        txt = b["text"]
-        b_type: BlockType = "body"
+    classified_segments: list[dict] = []
+    for s in segments:
+        n_box = normalize_bbox(s["bbox"], width, height)
+        s_type = s["type"]
 
         # Check vector callout container containment
-        is_in_container = any(
-            bbox_centroid_inside(c_box, n_box) for c_box in vector_containers
-        )
+        if s_type == "body":
+            if any(bbox_centroid_inside(c_box, n_box) for c_box in vector_containers):
+                s_type = "callout"
 
-        if idx in caption_indices:
-            b_type = "figure_caption"
-        elif is_header_footer(n_box, txt):
-            b_type = "header_footer"
-        elif is_in_container:
-            b_type = "callout"
-        elif is_footnote(n_box, txt):
-            b_type = "footnote"
-        elif is_marginalia(n_box, txt, page_number, body_xmin, body_xmax):
-            b_type = "marginalia"
-        else:
-            b_type = "body"
+        classified_segments.append({**s, "type": s_type})
 
-        classified.append({**b, "type": b_type})
+    # 3. Macrozone Groups
+    groups = {
+        "header_top": [],
+        "header_bottom": [],
+        "marginalia_left": [],
+        "marginalia_right": [],
+        "footnote": [],
+        "callout": [],
+        "body": [],
+    }
 
-    # 5. Separate body & callouts from peripheral blocks
-    body_and_callout = [b for b in classified if b["type"] in {"body", "callout"}]
-    peripheral = [b for b in classified if b["type"] not in {"body", "callout"}]
+    for s in classified_segments:
+        groups[s["type"]].append(s)
 
-    # 6. Apply Recursive XY-Cut on body and callout blocks for natural column flow
-    sorted_body = recursive_xy_cut(body_and_callout, bbox_key="bbox")
+    consolidated_peripheral: list[dict] = []
 
-    # 7. Assign sequential order numbers to body/callout blocks
+    # Running Header
+    if groups["header_top"]:
+        h_list = groups["header_top"]
+        h_list.sort(key=lambda s: (s["bbox"][1], s["bbox"][0]))
+        hx0 = min(s["bbox"][0] for s in h_list)
+        hy0 = min(s["bbox"][1] for s in h_list)
+        hx1 = max(s["bbox"][2] for s in h_list)
+        hy1 = max(s["bbox"][3] for s in h_list)
+        htxt = " ".join(s["text"].strip() for s in h_list if s["text"].strip())
+        consolidated_peripheral.append({
+            "id": f"blk_{page_number}_{uuid.uuid4().hex[:6]}",
+            "type": "header_footer",
+            "bbox": normalize_bbox([hx0, hy0, hx1, hy1], width, height),
+            "text": htxt,
+            "audio_muted": True,
+            "order": None,
+        })
+
+    # Bottom Folio / Footer
+    if groups["header_bottom"]:
+        f_list = groups["header_bottom"]
+        f_list.sort(key=lambda s: (s["bbox"][1], s["bbox"][0]))
+        fx0 = min(s["bbox"][0] for s in f_list)
+        fy0 = min(s["bbox"][1] for s in f_list)
+        fx1 = max(s["bbox"][2] for s in f_list)
+        fy1 = max(s["bbox"][3] for s in f_list)
+        ftxt = " ".join(s["text"].strip() for s in f_list if s["text"].strip())
+        consolidated_peripheral.append({
+            "id": f"blk_{page_number}_{uuid.uuid4().hex[:6]}",
+            "type": "header_footer",
+            "bbox": normalize_bbox([fx0, fy0, fx1, fy1], width, height),
+            "text": ftxt,
+            "audio_muted": True,
+            "order": None,
+        })
+
+    # Left Marginalia Macrozone
+    if groups["marginalia_left"]:
+        ml_list = groups["marginalia_left"]
+        ml_list.sort(key=lambda s: (s["bbox"][1], s["bbox"][0]))
+        lx0 = min(s["bbox"][0] for s in ml_list)
+        ly0 = min(s["bbox"][1] for s in ml_list)
+        lx1 = max(s["bbox"][2] for s in ml_list)
+        ly1 = max(s["bbox"][3] for s in ml_list)
+        ltxt = "\n".join(s["text"].strip() for s in ml_list if s["text"].strip())
+        consolidated_peripheral.append({
+            "id": f"blk_{page_number}_{uuid.uuid4().hex[:6]}",
+            "type": "marginalia",
+            "bbox": normalize_bbox([lx0, ly0, lx1, ly1], width, height),
+            "text": ltxt,
+            "audio_muted": True,
+            "order": None,
+        })
+
+    # Right Marginalia Macrozone
+    if groups["marginalia_right"]:
+        mr_list = groups["marginalia_right"]
+        mr_list.sort(key=lambda s: (s["bbox"][1], s["bbox"][0]))
+        rx0 = min(s["bbox"][0] for s in mr_list)
+        ry0 = min(s["bbox"][1] for s in mr_list)
+        rx1 = max(s["bbox"][2] for s in mr_list)
+        ry1 = max(s["bbox"][3] for s in mr_list)
+        rtxt = "\n".join(s["text"].strip() for s in mr_list if s["text"].strip())
+        consolidated_peripheral.append({
+            "id": f"blk_{page_number}_{uuid.uuid4().hex[:6]}",
+            "type": "marginalia",
+            "bbox": normalize_bbox([rx0, ry0, rx1, ry1], width, height),
+            "text": rtxt,
+            "audio_muted": True,
+            "order": None,
+        })
+
+    # Footnote Apparatus Macrozone
+    if groups["footnote"]:
+        fn_list = groups["footnote"]
+        fn_list.sort(key=lambda s: (s["bbox"][1], s["bbox"][0]))
+        fx0 = min(s["bbox"][0] for s in fn_list)
+        fy0 = min(s["bbox"][1] for s in fn_list)
+        fx1 = max(s["bbox"][2] for s in fn_list)
+        fy1 = max(s["bbox"][3] for s in fn_list)
+        fntxt = "\n".join(s["text"].strip() for s in fn_list if s["text"].strip())
+        consolidated_peripheral.append({
+            "id": f"blk_{page_number}_{uuid.uuid4().hex[:6]}",
+            "type": "footnote",
+            "bbox": normalize_bbox([fx0, fy0, fx1, fy1], width, height),
+            "text": fntxt,
+            "audio_muted": True,
+            "order": None,
+        })
+
+    # Callouts
+    for c in groups["callout"]:
+        consolidated_peripheral.append({
+            "id": f"blk_{page_number}_{uuid.uuid4().hex[:6]}",
+            "type": "callout",
+            "bbox": normalize_bbox(c["bbox"], width, height),
+            "text": c["text"],
+            "order": None,
+            "audio_muted": False,
+        })
+
+    # 4. Body Reading Blocks
+    consolidated_body_blocks: list[dict] = []
+    if groups["body"]:
+        b_list = groups["body"]
+        b_list.sort(key=lambda s: (s["bbox"][1], s["bbox"][0]))
+
+        # Cluster body lines into unified columns (single column merges all into 1 macrozone)
+        cols = _cluster_body_columns(b_list, width, height)
+        for c_list in cols:
+            cb_x0 = min(s["bbox"][0] for s in c_list)
+            cb_y0 = min(s["bbox"][1] for s in c_list)
+            cb_x1 = max(s["bbox"][2] for s in c_list)
+            cb_y1 = max(s["bbox"][3] for s in c_list)
+            cb_text = "\n".join(s["text"].strip() for s in c_list if s["text"].strip())
+            consolidated_body_blocks.append({
+                "id": f"blk_{page_number}_{uuid.uuid4().hex[:6]}",
+                "type": "body",
+                "bbox": normalize_bbox([cb_x0, cb_y0, cb_x1, cb_y1], width, height),
+                "text": cb_text,
+            })
+
+    # Sort body blocks via recursive_xy_cut for natural reading order
+    sorted_body = recursive_xy_cut(consolidated_body_blocks, bbox_key="bbox") if consolidated_body_blocks else []
     final_body_blocks: list[dict] = []
     current_order = 1
     for b in sorted_body:
@@ -169,26 +444,21 @@ def analyze_page_layout(page: fitz.Page, page_number: int) -> PageLayout:
         current_order += 1
         final_body_blocks.append(b_copy)
 
-    # 8. Peripheral blocks: marginalia, footnote, header_footer, figure_caption
+    # 5. Bind peripheral blocks to nearest vertical body paragraph
     final_peripheral_blocks: list[dict] = []
-    for p in peripheral:
+    for p in consolidated_peripheral:
         p_copy = dict(p)
-        p_copy["order"] = None
-        p_copy["audio_muted"] = True  # Peripheral notes default to muted in audio
-
-        # Bind marginalia and footnotes to nearest body paragraph by vertical centroid
         if p["type"] in {"marginalia", "footnote"} and final_body_blocks:
             nearest = min(
                 final_body_blocks,
-                key=lambda body_b: bbox_vertical_distance(p["bbox"], body_b["bbox"])
+                key=lambda body_b: bbox_vertical_distance(p["bbox"], body_b["bbox"]),
             )
             p_copy["associated_para_id"] = nearest["id"]
         else:
             p_copy["associated_para_id"] = None
-
         final_peripheral_blocks.append(p_copy)
 
-    # 9. Combine all blocks
+    # 6. Combine all blocks
     all_blocks = final_body_blocks + final_peripheral_blocks
 
     layout_blocks = [

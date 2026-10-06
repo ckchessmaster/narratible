@@ -167,21 +167,27 @@ def _extract_via_toc(doc: fitz.Document, toc: list, progress_callback=None) -> D
         if progress_callback:
             progress_callback(f"Reading section {i+1} of {total}…", (i + 1) / total)
 
+        from .services.layout.engine import analyze_page_layout
+
         chapter_text = []
         chapter_blocks = []
         for page_num in range(start_page, end_page):
-            p_text = doc[page_num].get_text() or ""
-            chapter_text.append(p_text)
-            for para in p_text.split("\n\n"):
-                para_clean = para.strip()
-                if para_clean:
-                    chapter_blocks.append({
-                        "id": f"blk_{uuid.uuid4().hex[:8]}",
-                        "source_page": page_num + 1,
-                        "text": para_clean,
-                        "audio_muted": False,
-                        "warning": None,
-                    })
+            layout = analyze_page_layout(doc[page_num], page_num + 1)
+            usable = [b for b in layout.blocks if b.type != "header_footer" and (b.text or "").strip()]
+            for b in usable:
+                is_muted = bool(b.audio_muted or b.type in {"marginalia", "footnote", "figure_caption"})
+                chapter_blocks.append({
+                    "id": b.id,
+                    "type": b.type,
+                    "source_page": page_num + 1,
+                    "text": b.text.strip(),
+                    "audio_muted": is_muted,
+                    "warning": None,
+                    "associated_para_id": b.associated_para_id,
+                })
+            page_body = "\n\n".join(b.text.strip() for b in usable if b.type in {"body", "callout"})
+            if page_body:
+                chapter_text.append(page_body)
 
         raw_text = "\n\n".join(chapter_text).strip()
         if raw_text:
@@ -199,18 +205,22 @@ def _extract_via_toc(doc: fitz.Document, toc: list, progress_callback=None) -> D
         frontmatter_text = []
         frontmatter_blocks = []
         for page_num in range(0, bookmarks[0][2] - 1):
-            p_text = doc[page_num].get_text() or ""
-            frontmatter_text.append(p_text)
-            for para in p_text.split("\n\n"):
-                para_clean = para.strip()
-                if para_clean:
-                    frontmatter_blocks.append({
-                        "id": f"blk_{uuid.uuid4().hex[:8]}",
-                        "source_page": page_num + 1,
-                        "text": para_clean,
-                        "audio_muted": False,
-                        "warning": None,
-                    })
+            layout = analyze_page_layout(doc[page_num], page_num + 1)
+            usable = [b for b in layout.blocks if b.type != "header_footer" and (b.text or "").strip()]
+            for b in usable:
+                is_muted = bool(b.audio_muted or b.type in {"marginalia", "footnote", "figure_caption"})
+                frontmatter_blocks.append({
+                    "id": b.id,
+                    "type": b.type,
+                    "source_page": page_num + 1,
+                    "text": b.text.strip(),
+                    "audio_muted": is_muted,
+                    "warning": None,
+                    "associated_para_id": b.associated_para_id,
+                })
+            page_body = "\n\n".join(b.text.strip() for b in usable if b.type in {"body", "callout"})
+            if page_body:
+                frontmatter_text.append(page_body)
         front_raw = "\n\n".join(frontmatter_text).strip()
         if front_raw:
             chapters.insert(0, {
@@ -384,55 +394,113 @@ def _should_keep_small_text_block(text: str) -> bool:
 
 
 def _extract_via_layout(doc: fitz.Document, progress_callback=None) -> Dict[str, Any]:
-    font_sizes = []
+    from .services.layout.engine import analyze_page_layout
 
-    # Pass 1: Gather all blocks and find median font size, filter out tiny fonts (footnotes)
-    page_blocks = []
     total_pages = len(doc) or 1
+    cleaned_full_text = []
+    current_chapter_title = "Frontmatter"
+    current_chapter_text = []
+    current_chapter_blocks = []
+    chapters = []
+    title_open = False
+    title_is_placeholder = True
+
+    def finalize_current():
+        ch_text = "\n\n".join(current_chapter_text).strip()
+        if ch_text:
+            chapters.append({
+                "title": _despace_title(current_chapter_title),
+                "raw_text": ch_text,
+                "blocks": list(current_chapter_blocks),
+                "confidence": 0.8,
+                "warnings": ["Detected via visual layout heuristic. Please verify boundaries."],
+            })
+            cleaned_full_text.append(ch_text)
+
     for page_num in range(len(doc)):
         page = doc[page_num]
-        blocks = page.get_text("dict").get("blocks", [])
-        text_blocks = []
-        for b in blocks:
-            if "lines" in b:
-                block_text = ""
-                block_lines = []
-                block_fonts = []
-                for line in b["lines"]:
-                    line_parts = []
-                    for span in line["spans"]:
-                        raw_text = span["text"]
-                        if raw_text.strip():
-                            line_parts.append(raw_text)
-                            block_fonts.append(span["size"])
-                            font_sizes.append(span["size"])
-                    line_text = "".join(line_parts).strip()
-                    if line_text:
-                        block_lines.append(line_text)
-                if block_lines:
-                    if any(looks_like_small_text_content_line(line) for line in block_lines):
-                        block_text = "\n".join(block_lines)
-                    else:
-                        block_text = " ".join(block_lines)
-                if block_text.strip():
-                    avg_size = sum(block_fonts) / len(block_fonts) if block_fonts else 0
-                    text_blocks.append({"text": block_text.strip(), "size": avg_size, "page": page_num + 1})
-        page_blocks.append(text_blocks)
+        layout = analyze_page_layout(page, page_num + 1)
+
+        usable = [b for b in layout.blocks if b.type != "header_footer" and (b.text or "").strip()]
+
+        for b in usable:
+            is_muted = bool(b.audio_muted or b.type in {"marginalia", "footnote", "figure_caption"})
+            b_dict = {
+                "id": b.id,
+                "type": b.type,
+                "source_page": page_num + 1,
+                "text": b.text.strip(),
+                "audio_muted": is_muted,
+                "warning": None,
+                "associated_para_id": b.associated_para_id,
+            }
+
+            if b.type in {"marginalia", "footnote", "figure_caption"}:
+                current_chapter_blocks.append(b_dict)
+                continue
+
+            text = b.text.strip()
+            lines = text.split("\n")
+            first_line = lines[0].strip() if lines else text
+
+            is_heading = False
+            if re.match(r'^(Chapter|Part|Section|Book)\s+[IVXLCDM0-9]+', first_line, re.IGNORECASE) and len(first_line) < 60:
+                is_heading = True
+            elif first_line.isupper() and 3 < len(first_line) < 40 and first_line in {"PREFACE", "INTRODUCTION", "CONTENTS", "EPILOGUE", "PROLOGUE", "CONCLUSION"}:
+                is_heading = True
+
+            if is_heading:
+                if title_open:
+                    current_chapter_title = f"{current_chapter_title} {first_line}"
+                elif title_is_placeholder and not current_chapter_text:
+                    current_chapter_title = first_line
+                    title_is_placeholder = False
+                else:
+                    finalize_current()
+                    current_chapter_title = first_line
+                    current_chapter_text = []
+                    current_chapter_blocks = []
+                    title_is_placeholder = False
+                title_open = True
+
+                remainder = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+                if remainder:
+                    current_chapter_text.append(remainder)
+                    current_chapter_blocks.append({
+                        **b_dict,
+                        "text": remainder,
+                    })
+                    title_open = False
+                else:
+                    current_chapter_blocks.append(b_dict)
+            else:
+                current_chapter_text.append(text)
+                current_chapter_blocks.append(b_dict)
+                title_open = False
+
         if progress_callback:
-            # Reserve the last slice of the bar for boundary detection below.
-            progress_callback(
-                f"Analyzing page {page_num+1} of {total_pages}…",
-                ((page_num + 1) / total_pages) * 0.9,
-            )
+            progress_callback(f"Analyzing page {page_num + 1} of {total_pages}…", (page_num + 1) / total_pages)
 
-    font_sizes.sort()
-    median_size = font_sizes[len(font_sizes)//2] if font_sizes else 12.0
+    finalize_current()
 
-    if progress_callback:
-        progress_callback("Detecting chapter boundaries…", 0.95)
+    if len(chapters) <= 1:
+        raw = "\n\n".join(cleaned_full_text).strip()
+        fallback_blocks = []
+        for ch in chapters:
+            fallback_blocks.extend(ch.get("blocks", []))
+        chapters = [{
+            "title": "Document",
+            "raw_text": raw,
+            "blocks": fallback_blocks,
+            "confidence": 0.5,
+            "warnings": ["No chapters detected. Document was not split."],
+        }]
 
-    # Pass 2: Assemble chapters from blocks (testable pure helper).
-    return _assemble_chapters_from_blocks(page_blocks, median_size)
+    return {
+        "raw_text": "\n\n".join(cleaned_full_text),
+        "chapters": chapters,
+        "method": "layout",
+    }
 
 def extract_text_from_pdf(pdf_path: Path) -> str:
     """

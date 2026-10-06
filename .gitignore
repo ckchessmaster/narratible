@@ -35,5 +35,6 @@ packaging/build/
 packaging/dist/
 frontend_dist/
 
-# vscode
-#.vscode/mcp.json
+# mcp
+.vscode/mcp.json
+.agents/**/mcp_config.json
