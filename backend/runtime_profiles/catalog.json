@@ -68,11 +68,15 @@
     },
     {
       "id": "embedded-llm",
-      "label": "Embedded LLM",
+      "label": "Local LLM Runtime (CUDA)",
       "kind": "llm",
-      "availability": "planned",
-      "default_install": false,
+      "version": "1.0.0",
+      "verify_module": "transformers",
+      "default_install": true,
       "requires_cuda": true,
+      "project_file": "embedded-llm/pyproject.toml",
+      "lock_file": "embedded-llm/uv.lock",
+      "lock_sha256": "50ac62cbc211d7b43dd3d5e0c5a25cbfa7978c8afa5bea8e32dd02507549a788",
       "model_download": "on_demand",
       "estimated_download_mb": 3100,
       "estimated_disk_mb": 6200

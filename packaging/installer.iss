@@ -21,6 +21,7 @@ SetupMutex=narratibleSetupMutex
 
 [Tasks]
 Name: "localai"; Description: "Set up NVIDIA CUDA local AI and Kokoro now (downloads about 3 GB)"; GroupDescription: "Optional local AI (can be installed later from Settings > Local AI without reinstalling):"
+Name: "embeddedllm"; Description: "Set up Local LLM Runtime (CUDA) for text enhancement and modernization"; GroupDescription: "Optional local AI (can be installed later from Settings > Local AI without reinstalling):"
 
 [InstallDelete]
 ; PyInstaller package layouts change between dependency versions. Remove the
@@ -205,6 +206,34 @@ begin
 					mbInformation,
 					MB_OK
 				);
+		end;
+
+		if WizardIsTaskSelected('embeddedllm') then
+		begin
+			SetRuntimeProgress('Checking NVIDIA GPU and driver support...');
+			if Exec(
+				VerifyExecutable,
+				'--runtime-preflight',
+				ExpandConstant('{app}'),
+				SW_HIDE,
+				ewWaitUntilTerminated,
+				ResultCode
+			) and (ResultCode = 0) then
+			begin
+				if (not RunRuntimeOperation(
+					VerifyExecutable,
+					'--runtime-bootstrap embedded-llm',
+					'Preparing CUDA local AI and Local LLM Runtime...',
+					ResultCode
+				)) or (ResultCode <> 0) then
+					MsgBox(
+						'narratible was installed, but Local LLM Runtime (CUDA) setup did not finish. ' +
+						'Open Settings > Local AI and use Repair to retry. ' +
+						'(Exit code ' + IntToStr(ResultCode) + ')',
+						mbInformation,
+						MB_OK
+					);
+			end;
 		end;
 		RestoreInstallerProgress();
 	end;

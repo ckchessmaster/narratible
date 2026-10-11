@@ -27,6 +27,11 @@ export const TIPS = [
     body: 'Closing this browser tab leaves narratible running. Use Diagnostics or the Windows tray icon to reopen the app, view logs, or quit.',
   },
   {
+    id: 'w1-voice-library', context: 'wizard', step: 1, anchor: 'voice-library-button', placement: 'bottom',
+    title: 'Voice Library',
+    body: 'Create and customize reusable narrator voices with Edge-TTS, Kokoro, Chatterbox, or F5-TTS anytime from the header.',
+  },
+  {
     id: 'w1-resume-projects', context: 'wizard', step: 1, anchor: 'resume-projects', placement: 'bottom',
     title: 'Resume saved work',
     body: 'Saved projects appear here so you can continue without re-running completed parsing, cleanup, or audio steps.',
@@ -69,24 +74,99 @@ export const TIPS = [
   {
     id: 'w1-parse', context: 'wizard', step: 1, anchor: 'parse-button', placement: 'top',
     title: 'Parse your PDF',
-    body: 'Drop a PDF above, then click Parse to extract and clean the text.',
+    body: 'Drop a PDF above, then click Parse to extract chapters into Chapter Studio.',
   },
 
-  // ── Wizard · Step 2 (Review) ─────────────────────────────────────────
+  // ── Wizard · Step 2 (Chapter Studio) ──────────────────────────────────
+  {
+    id: 'w2-meta', context: 'wizard', step: 2, anchor: 'metadata-sidebar', placement: 'bottom',
+    title: 'Book details & cover',
+    body: 'Open Book Details to set title, author, cover art, and EPUB metadata without cluttering your workspace.',
+  },
   {
     id: 'w2-chapters', context: 'wizard', step: 2, anchor: 'chapter-list', placement: 'right',
-    title: 'Review chapters',
-    body: 'Select, reorder (▲▼), or delete (✕) chapters here. ⚠️ flags possible boundary issues to double-check.',
+    title: 'Chapter outline',
+    body: 'Drag handles (⠿) reorder chapters. Checkboxes let you merge or delete in bulk, and ⚠️ flags OCR or boundary checks.',
   },
   {
-    id: 'w2-split', context: 'wizard', step: 2, anchor: 'split-button', placement: 'bottom',
+    id: 'w2-chapter-mute', context: 'wizard', step: 2, anchor: 'chapter-audio-toggle', placement: 'right',
+    title: 'Mute chapters in audio',
+    body: 'Click 🔊 / 🔇 to exclude frontmatter, table of contents, or index chapters from the audiobook while preserving them in your EPUB.',
+  },
+  {
+    id: 'w2-editor-mode', context: 'wizard', step: 2, anchor: 'editor-mode-toggle', placement: 'bottom',
+    title: 'Blocks flow vs raw text',
+    body: 'Edit fluid paragraph blocks with inline controls, or switch to Raw Text for traditional full-chapter markdown editing.',
+  },
+  {
+    id: 'w2-paragraph-gutter', context: 'wizard', step: 2, anchor: 'paragraph-gutter', placement: 'right',
+    title: 'Paragraph controls',
+    body: 'Mute individual paragraphs (🔊/🔇) to skip tables or callouts in audio, toggle verse formatting (🪶) for poetry, or click P. to jump to that page in the scan.',
+  },
+  {
+    id: 'w2-split', context: 'wizard', step: 2, anchor: 'split-button', placement: 'right',
     title: 'Split a chapter',
-    body: 'Place your cursor in the text where a new chapter should start, then click Split Here.',
+    body: 'Click ✂ in any paragraph gutter to split the chapter into a new chapter starting at that passage.',
   },
   {
-    id: 'w2-meta', context: 'wizard', step: 2, anchor: 'metadata-sidebar', placement: 'left',
-    title: 'Metadata & cover',
-    body: 'Set the title/author and upload a cover image. Your edits auto-save when you click Continue.',
+    id: 'w2-inspect-scan', context: 'wizard', step: 2, anchor: 'studio-inspect-scan', placement: 'bottom',
+    title: 'Inspect scan ground truth',
+    body: 'Open the dockable Source Inspector to view the original PDF scan alongside your text, zoom/pan, or inspect semantic zones.',
+  },
+  {
+    id: 'w2-ai-tools', context: 'wizard', step: 2, anchor: 'studio-ai-tools', placement: 'bottom',
+    title: 'AI & Text Tools studio',
+    body: 'Open the tools studio for unified AI text enhancement, fast prose line reflow, and cross-page paragraph stitching.',
+  },
+  {
+    id: 'w2-cleaning-review', context: 'wizard', step: 2, anchor: 'cleaning-review', placement: 'bottom',
+    title: 'Review cleanup warnings',
+    body: 'Flagged passages show side-by-side diffs comparing original scan text to AI-cleaned text. Accept cleaned or revert to OCR with one click.',
+  },
+  {
+    id: 'w2-proposals-review', context: 'wizard', step: 2, anchor: 'proposals-review', placement: 'bottom',
+    title: 'Track changes review',
+    body: 'AI text enhancement displays inline word diffs. Accept or revert changes passage-by-passage, or accept all across the chapter.',
+  },
+  {
+    id: 'w2-scan-zones', context: 'wizard', step: 2, anchor: 'inspector-zones-toggle', placement: 'left',
+    title: 'Semantic layout zones',
+    body: 'Switch to Zones to visualize and isolate body prose, marginalia, footnotes, and callout boxes directly over the scanned page.',
+  },
+  {
+    id: 'w2-zone-tools', context: 'wizard', step: 2, anchor: 'inspector-draw-tool', placement: 'left',
+    title: 'Draw & retag zones',
+    body: 'Draw custom bounding boxes and tag them as Body, Marginalia, Footnote, Callout, or Skip. Muted zones stay out of narration.',
+  },
+  {
+    id: 'w2-zone-extract', context: 'wizard', step: 2, anchor: 'inspector-extract-btn', placement: 'left',
+    title: 'Extract from zones',
+    body: 'Re-extract text strictly bounded by your zones into the chapter, or use Apply All to synchronize spatial layout across every page.',
+  },
+  {
+    id: 'w2-zone-templates', context: 'wizard', step: 2, anchor: 'inspector-templates-menu', placement: 'left',
+    title: 'Propagate layout templates',
+    body: 'Copy zones from previous pages, or propagate alternating Even/Odd (verso/recto) layout templates across whole page ranges.',
+  },
+  {
+    id: 'w2-tools-enhancement', context: 'wizard', step: 2, anchor: 'tools-ai-enhancement', placement: 'left',
+    title: 'Unified AI text enhancement',
+    body: 'Combine OCR repair and archaic modernization in one pass. Choose Clean Only or Clean + Modernize with Cloud LLM, Local GPU, or fast rule-based mode.',
+  },
+  {
+    id: 'w2-modernization-review', context: 'wizard', step: 2, anchor: 'modernization-review', placement: 'left',
+    title: 'Modernization rigor',
+    body: 'Tune modernization strength (Light, Standard, Deep) to update archaic vocabulary while generating reviewable track changes.',
+  },
+  {
+    id: 'w2-tools-reflow', context: 'wizard', step: 2, anchor: 'tools-prose-reflow', placement: 'left',
+    title: 'Reflow wrapped lines & hyphens',
+    body: '1-click fix for broken PDF line wraps and split hyphens (e.g. fortifica- tion -> fortification) while leaving poetry/verse untouched.',
+  },
+  {
+    id: 'w2-tools-stitch', context: 'wizard', step: 2, anchor: 'tools-stitch-paragraphs', placement: 'left',
+    title: 'Stitch split paragraphs',
+    body: 'Automatically rejoins paragraphs and sentences cut across page boundaries before running AI enhancement.',
   },
   {
     id: 'w2-meta-language', context: 'wizard', step: 2, anchor: 'metadata-language', placement: 'left',
@@ -107,16 +187,6 @@ export const TIPS = [
     id: 'w2-meta-isbn', context: 'wizard', step: 2, anchor: 'metadata-isbn', placement: 'left',
     title: 'ISBN and series',
     body: 'If available, include ISBN and series info to improve metadata matching in libraries.',
-  },
-  {
-    id: 'w2-cleaning-review', context: 'wizard', step: 2, anchor: 'cleaning-review', placement: 'left',
-    title: 'Review cleanup warnings',
-    body: 'Warnings show the chapter and nearby text to check. Advanced cleanup tools keep retry and comparison details nearby.',
-  },
-  {
-    id: 'w2-modernization-review', context: 'wizard', step: 2, anchor: 'modernization-review', placement: 'left',
-    title: 'Review modernized text',
-    body: 'Modernization creates candidates first. Select passages during review, then commit selected changes to the chapter when ready.',
   },
 
   // ── Wizard · Step 3 (Voice) ───────────────────────────────────────────
@@ -161,9 +231,19 @@ export const TIPS = [
     body: 'When on, each chapter’s title is spoken before its content. Turn it off if your text already includes the headings.',
   },
   {
+    id: 'w3-expand-bible', context: 'wizard', step: 3, anchor: 'expand-bible-citations', placement: 'top',
+    title: 'Expand scripture citations',
+    body: 'Expands Bible citations like "Ps 1:4" to "Psalms 1, verse 4" so speech engines pronounce them naturally.',
+  },
+  {
     id: 'w3-preview', context: 'wizard', step: 3, anchor: 'preview-section', placement: 'top',
     title: 'Preview before you commit',
     body: 'Generate a quick sample to hear the selected voice before using it for every chapter.',
+  },
+  {
+    id: 'w3-debug-text', context: 'wizard', step: 3, anchor: 'tts-debug-text', placement: 'top',
+    title: 'Inspect TTS converted text',
+    body: 'View the exact text sent to the TTS engine to verify pronunciation expansions, heading reading, and audio filtering.',
   },
 
   // ── Voice Library ─────────────────────────────────────────────────────
@@ -171,6 +251,16 @@ export const TIPS = [
     id: 'vl-create', context: 'voice-library', anchor: 'voice-library-create', placement: 'right',
     title: 'Create once',
     body: 'Compare online, local, and voice-cloning engines here. Each choice explains its speed, quality, and hardware tradeoffs.',
+  },
+  {
+    id: 'vl-samples', context: 'voice-library', anchor: 'voice-samples-manager', placement: 'right',
+    title: 'Manage reference audio',
+    body: 'Upload multiple WAV, MP3, or FLAC reference samples. Switch the active sample or remove old ones while keeping your files.',
+  },
+  {
+    id: 'vl-enhance', context: 'voice-library', anchor: 'voice-sample-enhance', placement: 'right',
+    title: 'AI reference audio cleanup',
+    body: 'Optional AI enhancement (Resemble Enhance) creates a denoised and bandwidth-restored reference copy while preserving your original recording.',
   },
   {
     id: 'vl-test', context: 'voice-library', anchor: 'voice-library-test', placement: 'left',
@@ -236,7 +326,7 @@ export const TIPS = [
   {
     id: 's-models', context: 'settings', tab: 'local', anchor: 'settings-models', placement: 'top',
     title: 'Pick a local model',
-    body: 'Choose an embedded LLM — Gemma 4 is recommended. Enable 4-bit quantization to fit larger models on smaller GPUs.',
+    body: 'Choose a local model — Gemma 4 is recommended. Enable 4-bit quantization to fit larger models on smaller GPUs.',
   },
   {
     id: 's-local-engines', context: 'settings', tab: 'local', anchor: 'settings-local-engines', placement: 'bottom',
@@ -247,6 +337,23 @@ export const TIPS = [
     id: 's-chunk', context: 'settings', tab: 'local', anchor: 'settings-chunk', placement: 'top',
     title: 'Chunk size',
     body: 'Larger chunks give the model more context but use more VRAM.',
+  },
+
+  // ── Settings · MCP Server ─────────────────────────────────────────────
+  {
+    id: 's-mcp-toggle', context: 'settings', tab: 'mcp', anchor: 'settings-mcp-toggle', placement: 'bottom',
+    title: 'Model Context Protocol (MCP)',
+    body: 'Enable Narratible’s built-in MCP server to let external AI tools (Claude Desktop, Cursor, VS Code) inspect projects, edit chapters, and generate audio.',
+  },
+  {
+    id: 's-mcp-tokens', context: 'settings', tab: 'mcp', anchor: 'settings-mcp-tokens', placement: 'bottom',
+    title: 'Personal access tokens',
+    body: 'Create secure Personal Access Tokens (PATs) to authenticate HTTP / SSE connections from your external AI clients.',
+  },
+  {
+    id: 's-mcp-config', context: 'settings', tab: 'mcp', anchor: 'settings-mcp-config', placement: 'top',
+    title: 'One-click client setup',
+    body: 'Select your AI assistant to copy ready-to-paste JSON configurations directly into your client settings.',
   },
 
   // ── Settings · Integrations ───────────────────────────────────────────

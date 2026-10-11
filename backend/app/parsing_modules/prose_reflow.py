@@ -74,21 +74,27 @@ def _prepare_reflow_block(block: str) -> _ReflowBlock:
         return _ReflowBlock(nonempty[0].strip())
 
     joined = " ".join(line.strip() for line in nonempty)
+    # Repair hyphenated line wraps (e.g. distinc- tion -> distinction)
+    joined = re.sub(r"\b([a-zA-Z]{2,})-\s+([a-zA-Z]{2,})\b", r"\1\2", joined)
     return _ReflowBlock(re.sub(r"[ \t]{2,}", " ", joined).strip())
 
 
 def _should_preserve_lineated_block(lines: list[str]) -> bool:
-    if any(line[:1].isspace() for line in lines):
+    stripped = [line.strip() for line in lines if line.strip()]
+    if not stripped:
+        return False
+    # Structured lists (>= 60% of lines start with bullet/number)
+    list_count = sum(1 for line in stripped if _is_list_like_line(line))
+    if len(stripped) >= 2 and (list_count / len(stripped) >= 0.6):
         return True
-    if any(_is_source_title_line(line) for line in lines):
+    # Standalone short attributions or source titles (e.g. "PSALM 63:1", "C. S. LEWIS")
+    if len(stripped) <= 2 and all(_is_attribution_line(line) or _is_source_title_line(line) for line in stripped):
         return True
-    if any(_is_list_like_line(line) for line in lines):
+    # Structured citation lists where majority of lines start with citation markers
+    cit_count = sum(1 for line in stripped if _is_citation_or_note_line(line))
+    if len(stripped) >= 2 and (cit_count / len(stripped) >= 0.6):
         return True
-    if any(_is_citation_or_note_line(line) for line in lines):
-        return True
-    if any(_is_attribution_line(line) for line in lines):
-        return True
-    if len(lines) >= 3 and _looks_like_verse_lines(lines):
+    if _looks_like_verse_lines(stripped):
         return True
     return False
 
@@ -140,22 +146,27 @@ def _mark_lineated_sequences(blocks: list[_ReflowBlock]) -> None:
 def _looks_like_lineated_sequence(lines: list[str]) -> bool:
     if len(lines) < 3:
         return False
-    if any(_is_attribution_line(line) for line in lines):
-        return True
-    short_lines = [line for line in lines if len(line.strip()) <= 55]
+    short_lines = [line for line in lines if len(line.strip()) <= 45]
     avg_words = sum(len(line.split()) for line in lines) / len(lines)
-    return len(short_lines) >= 3 and avg_words <= 8
+    return len(short_lines) >= 2 and avg_words <= 7
 
 
 def _looks_like_verse_lines(lines: list[str]) -> bool:
     stripped = [line.strip() for line in lines if line.strip()]
     if len(stripped) < 4:
         return False
-    if any(_is_attribution_line(line) for line in stripped):
-        return True
+    cap_count = sum(1 for line in stripped if line[:1].isupper())
     avg_len = sum(len(line) for line in stripped) / len(stripped)
     avg_words = sum(len(line.split()) for line in stripped) / len(stripped)
-    return avg_len <= 45 and avg_words <= 7
+    cap_ratio = cap_count / len(stripped)
+
+    # 1. Very short lines with high initial-line capitalization (typical verse / poetry)
+    if avg_len <= 45 and avg_words <= 7 and cap_ratio >= 0.75:
+        return True
+    # 2. Extremely short lineated stanzas (narrow liturgical verse, psalms)
+    if avg_len <= 35 and avg_words <= 6:
+        return True
+    return False
 
 
 def _is_lineated_candidate(line: str) -> bool:
@@ -174,9 +185,11 @@ def _is_list_like_line(line: str) -> bool:
 
 def _is_citation_or_note_line(line: str) -> bool:
     stripped = line.strip()
-    if re.match(r"^(?:\[?\d+\]?|\^\d+)\s+", stripped):
-        return True
-    return bool(re.search(r"\b(?:cf|ibid|see|pp?\.|vol\.|chap\.)\b", stripped, re.IGNORECASE))
+    return bool(re.match(
+        r"^(?:\[?\d+\]?|\^\d+|(?:cf|ibid|see|pp?\.|vol\.|chap\.)\b)",
+        stripped,
+        re.IGNORECASE,
+    ))
 
 
 def _is_attribution_line(line: str) -> bool:
@@ -224,3 +237,140 @@ def _should_join_reflow_blocks(previous: str, current: str) -> bool:
 
 def _should_join_reflow_blocks_without_space(previous: str, current: str) -> bool:
     return bool(re.fullmatch(r"[A-Z]", previous.strip()) and current[:1].islower())
+
+
+def _is_terminal_sentence_punctuation(text: str) -> bool:
+    t = text.rstrip()
+    t = re.sub(r'[\'"”’\)\]]+$', '', t).rstrip()
+    return t.endswith((".", "!", "?"))
+
+
+def should_stitch_paragraph_blocks(block_a: dict, block_b: dict) -> bool:
+    if block_a.get("type", "body") != "body" or block_b.get("type", "body") != "body":
+        return False
+    if block_a.get("format", "prose") == "verse" or block_b.get("format", "prose") == "verse":
+        return False
+    if block_a.get("audio_muted") or block_b.get("audio_muted"):
+        return False
+
+    text_a = (block_a.get("text") or "").strip()
+    text_b = (block_b.get("text") or "").strip()
+    if not text_a or not text_b:
+        return False
+
+    # Block B cannot be a list, footnote/citation, or verse
+    if _is_list_like_line(text_b) or _is_citation_or_note_line(text_b):
+        return False
+    if _looks_like_verse_lines(text_b.split("\n")):
+        return False
+
+    # Trailing hyphen on A always means continuation
+    if text_a.endswith("-") or text_a.endswith("\u00ad"):
+        return True
+
+    # If A already ends with sentence-terminating punctuation, it's not a broken sentence
+    if _is_terminal_sentence_punctuation(text_a):
+        return False
+
+    # Leading conditions on B:
+    if text_b[:1].islower():
+        return True
+
+    # Connective/continuation words
+    if re.match(
+        r"^(?:that|who|whom|whose|which|where|when|and|or|but|for|because|"
+        r"if|while|as|to|of|in|is|are|was|were|the|a|an)\b",
+        text_b,
+        re.IGNORECASE,
+    ):
+        return True
+
+    # Bible reference or verse continuation in theological texts
+    if re.match(r"^\d?\s*[A-Z][A-Za-z]+\s+\d{1,3}:\d{1,3}", text_b):
+        return True
+
+    # Across page boundary (sp_b > sp_a):
+    sp_a = block_a.get("source_page")
+    sp_b = block_b.get("source_page")
+    if sp_a is not None and sp_b is not None and sp_b > sp_a:
+        if not _is_source_title_line(text_b):
+            return True
+
+    # Same page (or missing source_page) dangling endings:
+    last_word = text_a.split()[-1].lower() if text_a.split() else ""
+    last_word_clean = re.sub(r"[^a-zA-Z]", "", last_word)
+    dangling_words = {
+        "the", "a", "an", "of", "in", "to", "and", "or", "but", "with", "for",
+        "by", "on", "at", "from", "as", "that", "their", "his", "her", "its",
+        "our", "your", "which", "into", "onto", "under", "over", "vil"
+    }
+    if text_a.endswith((",", ";", ":")) or last_word_clean in dangling_words:
+        return True
+
+    return False
+
+
+def stitch_split_paragraph_blocks(blocks: list[dict]) -> tuple[list[dict], int]:
+    """Stitch split prose paragraphs across pages while preserving intervening notes."""
+    if not blocks:
+        return [], 0
+
+    merged: list[dict] = []
+    stitched_count = 0
+    i = 0
+
+    while i < len(blocks):
+        current = dict(blocks[i])
+        if current.get("type", "body") != "body" or current.get("format", "prose") == "verse":
+            merged.append(current)
+            i += 1
+            continue
+
+        intervening: list[dict] = []
+        j = i + 1
+        found_next_body = None
+
+        while j < len(blocks):
+            cand = blocks[j]
+            cand_type = cand.get("type", "body")
+            if cand_type in {"footnote", "marginalia", "figure_caption"}:
+                intervening.append(cand)
+                j += 1
+                continue
+            if cand_type == "body" and cand.get("format", "prose") != "verse":
+                found_next_body = (j, cand)
+                break
+            break
+
+        if found_next_body and should_stitch_paragraph_blocks(current, found_next_body[1]):
+            next_idx, next_block = found_next_body
+            text_a = (current.get("text") or "").strip()
+            text_b = (next_block.get("text") or "").strip()
+
+            if text_a.endswith("-") or text_a.endswith("\u00ad"):
+                clean_a = re.sub(r"[-\u00ad]\s*$", "", text_a)
+                match_a = re.search(r"([a-zA-Z]+)$", clean_a)
+                match_b = re.match(r"^([a-zA-Z]+)", text_b)
+                if match_a and match_b:
+                    joined_text = clean_a + text_b
+                else:
+                    joined_text = f"{clean_a} {text_b}"
+            else:
+                joined_text = f"{text_a} {text_b}"
+
+            current["text"] = reflow_wrapped_prose(joined_text).strip()
+            stitched_count += 1
+
+            # Keep intervening footnotes/marginalia right after the stitched block
+            merged.append(current)
+            for inv in intervening:
+                merged.append(inv)
+            i = next_idx + 1
+            continue
+
+        merged.append(current)
+        for inv in intervening:
+            merged.append(inv)
+        i = j if intervening and not found_next_body else i + 1
+
+    return merged, stitched_count

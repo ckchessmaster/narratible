@@ -47,12 +47,15 @@ def prepare_text_for_tts(
     if not text:
         return ""
 
-    if engine not in LOCAL_TTS_ENGINES:
-        return normalize_pacing_text(text)
-
     text = normalize_tts_unicode(text)
     text, protected = _protect_non_prose(text)
-    text = apply_tts_modules(text, enabled_modules, engine)
+    if enabled_modules:
+        text = apply_tts_modules(text, enabled_modules, engine)
+
+    if engine not in LOCAL_TTS_ENGINES:
+        text = normalize_pacing_text(text)
+        return _restore_non_prose(text, protected)
+
     text = expand_common_abbreviations(text)
     text = expand_units(text)
     if engine == "f5-tts":

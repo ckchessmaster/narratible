@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 from .page_artifacts import looks_like_small_text_content_line
+from .parsing_modules.prose_reflow import stitch_split_paragraph_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +285,7 @@ def _extract_via_toc(doc: fitz.Document, toc: list, progress_callback=None) -> D
                 chapter_blocks.append({
                     "id": b.id,
                     "type": b.type,
+                    "format": getattr(b, "format", "prose"),
                     "source_page": page_num + 1,
                     "text": b.text.strip(),
                     "audio_muted": is_muted,
@@ -294,7 +296,9 @@ def _extract_via_toc(doc: fitz.Document, toc: list, progress_callback=None) -> D
             if page_body:
                 chapter_text.append(page_body)
 
-        raw_text = "\n\n".join(chapter_text).strip()
+        chapter_blocks, _ = stitch_split_paragraph_blocks(chapter_blocks)
+        body_paras = [b["text"] for b in chapter_blocks if b.get("type", "body") in {"body", "callout"} and (b.get("text") or "").strip()]
+        raw_text = "\n\n".join(body_paras).strip() if body_paras else "\n\n".join(chapter_text).strip()
         if raw_text:
             chapters.append({
                 "title": title.strip(),
@@ -325,6 +329,7 @@ def _extract_via_toc(doc: fitz.Document, toc: list, progress_callback=None) -> D
                 frontmatter_blocks.append({
                     "id": b.id,
                     "type": b.type,
+                    "format": getattr(b, "format", "prose"),
                     "source_page": page_num + 1,
                     "text": b.text.strip(),
                     "audio_muted": is_muted,
@@ -334,7 +339,9 @@ def _extract_via_toc(doc: fitz.Document, toc: list, progress_callback=None) -> D
             page_body = "\n\n".join(b.text.strip() for b in usable if b.type in {"body", "callout"})
             if page_body:
                 frontmatter_text.append(page_body)
-        front_raw = "\n\n".join(frontmatter_text).strip()
+        frontmatter_blocks, _ = stitch_split_paragraph_blocks(frontmatter_blocks)
+        front_body_paras = [b["text"] for b in frontmatter_blocks if b.get("type", "body") in {"body", "callout"} and (b.get("text") or "").strip()]
+        front_raw = "\n\n".join(front_body_paras).strip() if front_body_paras else "\n\n".join(frontmatter_text).strip()
         if front_raw:
             chapters.insert(0, {
                 "title": "Frontmatter",
@@ -419,12 +426,14 @@ def _assemble_chapters_from_blocks(page_blocks: list, median_size: float) -> Dic
     title_is_placeholder = True  # current title is the untouched "Frontmatter" default
 
     def finalize_current():
-        ch_text = "\n\n".join(current_chapter_text).strip()
+        stitched_blocks, _ = stitch_split_paragraph_blocks(current_chapter_blocks)
+        body_paras = [b["text"] for b in stitched_blocks if b.get("type", "body") in {"body", "callout"} and (b.get("text") or "").strip()]
+        ch_text = "\n\n".join(body_paras).strip() if body_paras else "\n\n".join(current_chapter_text).strip()
         if ch_text:
             chapters.append({
                 "title": _despace_title(current_chapter_title),
                 "raw_text": ch_text,
-                "blocks": list(current_chapter_blocks),
+                "blocks": stitched_blocks,
                 "confidence": 0.8,
                 "warnings": ["Detected via visual layout heuristic. Please verify boundaries."],
             })
@@ -519,12 +528,14 @@ def _extract_via_layout(doc: fitz.Document, progress_callback=None) -> Dict[str,
     title_is_placeholder = True
 
     def finalize_current():
-        ch_text = "\n\n".join(current_chapter_text).strip()
+        stitched_blocks, _ = stitch_split_paragraph_blocks(current_chapter_blocks)
+        body_paras = [b["text"] for b in stitched_blocks if b.get("type", "body") in {"body", "callout"} and (b.get("text") or "").strip()]
+        ch_text = "\n\n".join(body_paras).strip() if body_paras else "\n\n".join(current_chapter_text).strip()
         if ch_text:
             chapters.append({
                 "title": _despace_title(current_chapter_title),
                 "raw_text": ch_text,
-                "blocks": list(current_chapter_blocks),
+                "blocks": stitched_blocks,
                 "confidence": 0.8,
                 "warnings": ["Detected via visual layout heuristic. Please verify boundaries."],
             })
@@ -541,6 +552,7 @@ def _extract_via_layout(doc: fitz.Document, progress_callback=None) -> Dict[str,
             b_dict = {
                 "id": b.id,
                 "type": b.type,
+                "format": getattr(b, "format", "prose"),
                 "source_page": page_num + 1,
                 "text": b.text.strip(),
                 "audio_muted": is_muted,

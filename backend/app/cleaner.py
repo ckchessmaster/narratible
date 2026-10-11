@@ -749,6 +749,11 @@ _cached_pipe_kwargs = None
 def unload_llm():
     """Explicitly unload LLM to free up VRAM."""
     global _cached_pipe, _cached_pipe_kwargs
+    try:
+        from .runtime_workers import unload_embedded_llm_worker
+        unload_embedded_llm_worker()
+    except Exception:
+        pass
     if _cached_pipe is not None:
         if hasattr(_cached_pipe, 'model'):
             del _cached_pipe.model
@@ -766,6 +771,171 @@ def unload_llm():
                 gc.collect()
         except ImportError:
             pass
+
+
+def call_embedded_llm(
+    messages: list[dict[str, str]],
+    *,
+    cfg: Any | None = None,
+    max_new_tokens: int = 4096,
+    temperature: float = 0.1,
+    repetition_penalty: float = 1.15,
+    do_sample: bool = True,
+    token_callback: Callable[[str], None] | None = None,
+    progress_callback: Callable[[str, int], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> str:
+    """Execute text generation with the embedded LLM via the managed runtime worker or in-process fallback."""
+    from .config import load_config, get_device_string
+    from .runtime_engines import installed_profile_state
+    from .tts import unload_tts
+
+    if cfg is None:
+        cfg = load_config()
+
+    unload_tts()
+
+    model_name = cfg.embedded_llm_model
+    if not model_name:
+        raise ValueError("No embedded LLM model configured. Select a model in Settings -> Active Local Model.")
+
+    hf_token = cfg.huggingface_token.strip() if getattr(cfg, "huggingface_token", None) else None
+    device = get_device_string()
+    use_4bit = bool(getattr(cfg, "use_4bit_quantization", False))
+
+    def report(msg: str, pct: int):
+        logger.info(msg)
+        if progress_callback:
+            progress_callback(msg, pct)
+
+    # 1. Managed isolated runtime worker (production / packaged desktop app)
+    state = installed_profile_state("embedded-llm")
+    if state is not None:
+        from .runtime_workers import generate_embedded_llm
+        return generate_embedded_llm(
+            messages=messages,
+            model_name=model_name,
+            device=device,
+            use_4bit_quantization=use_4bit,
+            hf_token=hf_token,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            do_sample=do_sample,
+            progress_cb=report,
+            token_cb=token_callback,
+            cancel_check=cancel_check,
+        )
+
+    # 2. In-process fallback (source checkout / dev virtualenv with torch installed)
+    try:
+        import os
+        import torch
+        from transformers import pipeline
+    except ImportError as e:
+        raise RuntimeError(
+            "Local GPU text processing requires the 'Local LLM Runtime (CUDA)' profile. "
+            "Install it in Settings -> Local AI, or add a Gemini / OpenAI API key to use Cloud LLM."
+        ) from e
+
+    if device == "cpu" or not torch.cuda.is_available():
+        raise RuntimeError("The embedded LLM requires a CUDA-capable GPU. No GPU was detected on this system.")
+
+    if hf_token:
+        os.environ["HF_TOKEN"] = hf_token
+        os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+
+    pipe_kwargs: dict[str, Any] = {
+        "task": "text-generation",
+        "model": model_name,
+        "dtype": torch.float16,
+        "token": hf_token,
+    }
+    if use_4bit:
+        from transformers import BitsAndBytesConfig
+        pipe_kwargs["model_kwargs"] = {
+            "quantization_config": BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                llm_int8_enable_fp32_cpu_offload=True,
+            ),
+            "offload_buffers": True,
+        }
+        pipe_kwargs["device_map"] = "auto"
+    else:
+        pipe_kwargs["device"] = device
+
+    global _cached_pipe, _cached_pipe_kwargs
+    if _cached_pipe is None or str(_cached_pipe_kwargs) != str(pipe_kwargs):
+        unload_llm()
+        report(f"Loading model '{model_name.split('/')[-1]}' into GPU VRAM...", 25)
+        try:
+            _cached_pipe = pipeline(**pipe_kwargs)
+        except Exception as exc:
+            exc_str = str(exc)
+            if "model_type" in exc_str:
+                raise RuntimeError(
+                    f"Failed to load configuration for model '{model_name}'. "
+                    "This usually occurs if the Hugging Face download was interrupted, rate-limited, "
+                    "or required authentication. Set a Hugging Face token in Settings -> Local AI "
+                    f"or check your internet connection. (Details: {exc_str})"
+                ) from exc
+            raise RuntimeError(f"Failed to load model '{model_name}': {exc_str}") from exc
+        _cached_pipe_kwargs = pipe_kwargs
+    pipe = _cached_pipe
+
+    from transformers.generation.streamers import BaseStreamer
+
+    class _InProcessStreamer(BaseStreamer):
+        def __init__(self, tokenizer):
+            self.tokenizer = tokenizer
+            self.is_first = True
+
+        def put(self, value):
+            if self.is_first:
+                self.is_first = False
+                return
+            text = self.tokenizer.decode(value, skip_special_tokens=False)
+            if token_callback and text:
+                token_callback(text)
+
+        def end(self):
+            pass
+
+    streamer = _InProcessStreamer(pipe.tokenizer) if token_callback else None
+
+    sampling_kwargs = {}
+    if temperature > 0.0 and do_sample:
+        sampling_kwargs = {"do_sample": True, "temperature": temperature}
+    else:
+        sampling_kwargs = {"do_sample": False}
+
+    result = pipe(
+        messages,
+        max_new_tokens=max_new_tokens,
+        repetition_penalty=repetition_penalty,
+        streamer=streamer,
+        stopping_criteria=_build_cancel_stopping_criteria(cancel_check),
+        **sampling_kwargs,
+    )
+
+    if cancel_check and cancel_check():
+        raise InterruptedError("User cancelled LLM operation.")
+
+    out = result[0]["generated_text"]
+    raw_out = out[-1]["content"].strip() if isinstance(out, list) else str(out).strip()
+
+    del streamer
+    del result
+    try:
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+    return raw_out
 
 def fix_soft_hyphenation(text: str) -> str:
     """Join words split by PDF line/page-break hyphenation.
@@ -982,52 +1152,6 @@ def llm_review_chapters(
                 raise ValueError("OpenAI returned an empty chapter review response.")
 
         elif provider == "embedded":
-            import os
-            import torch
-            from transformers import pipeline
-            from .tts import unload_tts
-
-            model_name = cfg.embedded_llm_model
-            if not model_name:
-                raise ValueError("No embedded LLM model configured. Select a model in Settings → Local AI.")
-
-            hf_token = cfg.huggingface_token.strip() if cfg.huggingface_token else None
-            if hf_token:
-                os.environ["HF_TOKEN"] = hf_token
-                os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
-
-            device = get_device_string()
-            if device == "cpu" or not torch.cuda.is_available():
-                raise RuntimeError("The embedded LLM requires a CUDA-capable GPU.")
-
-            pipe_kwargs = {
-                "task": "text-generation",
-                "model": model_name,
-                "torch_dtype": torch.float16,
-                "token": hf_token,
-            }
-            if getattr(cfg, "use_4bit_quantization", False):
-                from transformers import BitsAndBytesConfig
-                pipe_kwargs["model_kwargs"] = {
-                    "quantization_config": BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_compute_dtype=torch.float16,
-                    )
-                }
-                pipe_kwargs["device_map"] = "auto"
-            else:
-                pipe_kwargs["device"] = device
-
-            global _cached_pipe, _cached_pipe_kwargs
-            if _cached_pipe is None or str(_cached_pipe_kwargs) != str(pipe_kwargs):
-                unload_tts()
-                unload_llm()
-                report(f"Loading model '{model_name.split('/')[-1]}' for chapter review…", 20)
-                _cached_pipe = pipeline(**pipe_kwargs)
-                _cached_pipe_kwargs = pipe_kwargs
-            else:
-                report("Using cached model weights for chapter review…", 20)
-
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": USER_PROMPT},
@@ -1036,53 +1160,17 @@ def llm_review_chapters(
                 f"Reviewing {len(chapters)} chapter(s) with the local model…",
                 24,
             )
-
-            # Stream generated tokens so the status bar advances during the
-            # (otherwise opaque) single inference call. Ramp progress 24→26 as
-            # tokens arrive, leaving 27 for the post-merge "complete" report.
-            from transformers.generation.streamers import BaseStreamer
-
-            MAX_REVIEW_TOKENS = 1024
-
-            class _ReviewProgressStreamer(BaseStreamer):
-                def __init__(self):
-                    self.is_first = True
-                    self.count = 0
-
-                def put(self, value):
-                    if self.is_first:
-                        # First call carries the prompt tokens, not generation.
-                        self.is_first = False
-                        return
-                    try:
-                        n = value.numel() if hasattr(value, "numel") else len(value)
-                    except TypeError:
-                        n = 1
-                    self.count += n
-                    frac = min(1.0, self.count / MAX_REVIEW_TOKENS)
-                    report(
-                        f"Reviewing chapters with the local model… ({self.count} tokens)",
-                        24 + int(frac * 2),
-                    )
-
-                def end(self):
-                    pass
-
-            review_streamer = _ReviewProgressStreamer()
-            result = _cached_pipe(
+            raw_out = call_embedded_llm(
                 messages,
-                max_new_tokens=MAX_REVIEW_TOKENS,
+                cfg=cfg,
+                max_new_tokens=1024,
                 temperature=0.1,
                 do_sample=True,
-                streamer=review_streamer,
-                stopping_criteria=_build_cancel_stopping_criteria(cancel_check),
+                progress_callback=lambda msg, pct: report(msg, 24),
+                cancel_check=cancel_check,
             )
-
-            # If the user aborted mid-generation, bail out with the original
-            # boundaries rather than parsing a truncated response.
             if cancel_check and cancel_check():
                 return chapters
-            raw_out = result[0]["generated_text"][-1]["content"].strip()
 
             json_match = re.search(r'\{.*\}', raw_out, re.DOTALL)
             if not json_match:
@@ -1332,175 +1420,41 @@ def llm_clean_text(
 
     if provider == "embedded":
         try:
-            import torch
-            import gc
-            import os
-            from transformers import pipeline
-            from .tts import unload_tts
-        except ImportError as e:
-            raise ImportError(
-                f"Embedded LLM dependencies failed to load ({e}). "
-                "Ensure transformers and torch are installed."
-            )
-
-        # Ensure TTS models are out of VRAM before we allocate LLM
-        unload_tts()
-
-        hf_token = cfg.huggingface_token.strip() if cfg.huggingface_token else None
-        if hf_token:
-            os.environ["HF_TOKEN"] = hf_token
-            os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
-
-        device = get_device_string()
-        if device == "cpu" or not __import__('torch').cuda.is_available():
-            raise RuntimeError(
-                "The embedded LLM requires a CUDA-capable GPU. "
-                "No GPU was detected on this system."
-            )
-        model_name = cfg.embedded_llm_model
-        if not model_name:
-            raise ValueError("No embedded LLM model configured. Select a model in Settings → Local AI.")
-
-        # Detect first-run download
-        try:
-            import os as _os
-            from pathlib import Path as _Path
-            hf_cache = _Path(_os.environ.get("HF_HOME", _Path.home() / ".cache" / "huggingface"))
-            safe_name = model_name.replace("/", "--")
-            model_cache = hf_cache / "hub" / f"models--{safe_name}"
-            is_first_run = not model_cache.exists()
-        except Exception:
-            is_first_run = False
-
-        load_msg = (
-            f"Downloading model '{model_name.split('/')[-1]}' from HuggingFace (first run)…"
-            if is_first_run
-            else f"Loading model '{model_name.split('/')[-1]}' into GPU VRAM…"
-        )
-        report(load_msg, 25)
-        
-        pipe_kwargs = {
-            "task": "text-generation",
-            "model": model_name,
-            "torch_dtype": torch.float16,
-            "token": hf_token
-        }
-
-        if getattr(cfg, "use_4bit_quantization", False):
-            report("Initializing 4-bit quantization configs…", 26)
-            from transformers import BitsAndBytesConfig
-            pipe_kwargs["model_kwargs"] = {
-                "quantization_config": BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16,
-                    llm_int8_enable_fp32_cpu_offload=True,
-                ),
-                "offload_buffers": True
-            }
-            pipe_kwargs["device_map"] = "auto"
-        else:
-            pipe_kwargs["device"] = device
-
-        global _cached_pipe, _cached_pipe_kwargs
-        
-        try:
-            from transformers.generation.streamers import BaseStreamer
-            
-            class CallbackStreamer(BaseStreamer):
-                def __init__(self, tokenizer, callback):
-                    self.tokenizer = tokenizer
-                    self.callback = callback
-                    self.is_first = True
-                    
-                def put(self, value):
-                    if self.is_first:
-                        self.is_first = False
-                        return # Skip the prompt part
-                    # decode without skip_special_tokens to preserve <think>
-                    text = self.tokenizer.decode(value, skip_special_tokens=False)
-                    # We might get some garbage tokens, but let's just forward it
-                    if self.callback and text:
-                        self.callback(text)
-                
-                def end(self):
-                    pass
-
-            if _cached_pipe is None or str(_cached_pipe_kwargs) != str(pipe_kwargs):
-                unload_llm()
-                report("Moving weights to GPU… (may take a moment)", 28)
-                _cached_pipe = pipeline(**pipe_kwargs)
-                _cached_pipe_kwargs = pipe_kwargs
-            else:
-                report("Using cached LLM weights…", 28)
-
-            pipe = _cached_pipe
-            
             for i, chunk in enumerate(chunks):
-                # Pre-emptively clear any residual fragmentation before starting the next heavy generation
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                except ImportError:
-                    pass
-
                 if cancel_check and cancel_check():
                     report("Processing cancelled.", 0)
                     raise InterruptedError("User cancelled LLM clean text operation.")
 
                 base_prog = 30 + int((i / len(chunks)) * 60)
                 report(f"Processing chunk {i+1}/{len(chunks)}…", base_prog)
-                
+
                 messages = [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": build_prompt(chunk)},
                 ]
-                
-                streamer = CallbackStreamer(pipe.tokenizer, output_callback)
 
-                result = pipe(
-                    messages, 
-                    max_new_tokens=4096, 
-                    repetition_penalty=1.2, 
-                    streamer=streamer,
-                    stopping_criteria=_build_cancel_stopping_criteria(cancel_check),
-                    **_embedded_generation_sampling_kwargs(profile.temperature),
+                raw_out = call_embedded_llm(
+                    messages,
+                    cfg=cfg,
+                    max_new_tokens=4096,
+                    temperature=profile.temperature,
+                    repetition_penalty=1.2,
+                    do_sample=profile.temperature > 0.0,
+                    token_callback=output_callback,
+                    progress_callback=report,
+                    cancel_check=cancel_check,
                 )
 
-                # Generation may have been halted mid-way by an abort — stop now
-                # instead of processing the truncated chunk output.
                 if cancel_check and cancel_check():
                     report("Processing cancelled.", 0)
                     raise InterruptedError("User cancelled LLM clean text operation.")
 
-                out = result[0]['generated_text']
-                raw_out = out[-1]['content'].strip() if isinstance(out, list) else out.strip()
-                
                 main_text, notes_text = parse_output(raw_out)
                 process_chunk_result(i, chunk, main_text, notes_text)
-                
-                # Free activation memory between chunks
-                del streamer
-                del messages
-                del result
-                if 'out' in locals():
-                    del out
-                if 'raw_out' in locals():
-                    del raw_out
-                
-                try:
-                    import torch
-                    import gc
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                except ImportError:
-                    pass
-
         except Exception as e:
             err_msg = str(e)
             if "403" in err_msg or "401" in err_msg or "gated" in err_msg.lower():
-                raise RuntimeError(f"Gated Model Access Denied: Ensure your HF token is correct") from e
+                raise RuntimeError("Gated Model Access Denied: Ensure your HF token is correct") from e
             raise
 
     elif provider == "gemini" and cfg.gemini_api_key:

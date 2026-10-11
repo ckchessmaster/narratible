@@ -15,6 +15,7 @@ BlockType = Literal[
 class LayoutBlock(BaseModel):
     id: str
     type: BlockType = "body"
+    format: Literal["prose", "verse"] = "prose"
     order: Optional[int] = None
     audio_muted: bool = False
     bbox: list[float]  # Normalized coordinates [x0, y0, x1, y1] where 0.0 <= val <= 1.0

@@ -19,6 +19,7 @@ from ..cleaner import (
     _normalize_words,
     _parse_llm_clean_output,
     _split_text_for_llm,
+    call_embedded_llm,
     unload_llm,
 )
 from ..config import get_device_string, load_config
@@ -492,58 +493,6 @@ def llm_modernize_text(
             report("Modernized candidate needs review.", 85)
 
     if provider == "embedded":
-        try:
-            import gc
-            import os
-            import torch
-            from transformers import pipeline
-            from .. import cleaner as cleaner_module
-            from ..tts import unload_tts
-        except ImportError as e:
-            raise ImportError(
-                f"Embedded LLM dependencies failed to load ({e}). Ensure transformers and torch are installed."
-            ) from e
-
-        unload_tts()
-        hf_token = cfg.huggingface_token.strip() if cfg.huggingface_token else None
-        if hf_token:
-            os.environ["HF_TOKEN"] = hf_token
-            os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
-
-        device = get_device_string()
-        if device == "cpu" or not torch.cuda.is_available():
-            raise RuntimeError("The embedded LLM requires a CUDA-capable GPU. No GPU was detected on this system.")
-        model_name = cfg.embedded_llm_model
-        if not model_name:
-            raise ValueError("No embedded LLM model configured. Select a model in Settings -> Local AI.")
-
-        pipe_kwargs: dict[str, Any] = {
-            "task": "text-generation",
-            "model": model_name,
-            "torch_dtype": torch.float16,
-            "token": hf_token,
-        }
-        if getattr(cfg, "use_4bit_quantization", False):
-            from transformers import BitsAndBytesConfig
-            pipe_kwargs["model_kwargs"] = {
-                "quantization_config": BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_compute_dtype=torch.float16,
-                    llm_int8_enable_fp32_cpu_offload=True,
-                ),
-                "offload_buffers": True,
-            }
-            pipe_kwargs["device_map"] = "auto"
-        else:
-            pipe_kwargs["device"] = device
-
-        if cleaner_module._cached_pipe is None or str(cleaner_module._cached_pipe_kwargs) != str(pipe_kwargs):
-            unload_llm()
-            report("Loading local LLM for modernization...", 15)
-            cleaner_module._cached_pipe = pipeline(**pipe_kwargs)
-            cleaner_module._cached_pipe_kwargs = pipe_kwargs
-        pipe = cleaner_module._cached_pipe
-
         for i, chunk in enumerate(chunks):
             if cancel_check and cancel_check():
                 raise InterruptedError("User cancelled.")
@@ -553,23 +502,18 @@ def llm_modernize_text(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": _build_user_prompt(chunk, profile, redo_context)},
             ]
-            result = pipe(
+            raw_out = call_embedded_llm(
                 messages,
+                cfg=cfg,
                 max_new_tokens=4096,
+                temperature=generation_temperature,
                 repetition_penalty=1.15,
-                stopping_criteria=_build_cancel_stopping_criteria(cancel_check),
-                **_embedded_generation_sampling_kwargs(generation_temperature),
+                do_sample=generation_temperature > 0.0,
+                token_callback=output_callback,
+                progress_callback=report,
+                cancel_check=cancel_check,
             )
-            if cancel_check and cancel_check():
-                raise InterruptedError("User cancelled.")
-            out = result[0]["generated_text"]
-            raw_out = out[-1]["content"].strip() if isinstance(out, list) else str(out).strip()
             process_chunk_result(i, chunk, _parse_modernization_output(raw_out))
-            del messages
-            del result
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
     elif provider == "gemini" and cfg.gemini_api_key:
         from google import genai

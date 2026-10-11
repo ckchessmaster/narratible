@@ -253,6 +253,86 @@ _MIN_F5_REFERENCE_CHARS_PER_SECOND = 2.0
 _MAX_F5_REFERENCE_CHARS_PER_SECOND = 18.0
 
 
+def _build_atempo_filter(speed: float) -> str:
+    """Build a chained atempo filter string for speeds outside [0.5, 2.0]."""
+    speed = float(speed)
+    if speed <= 0:
+        return "atempo=1.0"
+    filters = []
+    remaining = speed
+    while remaining > 2.0:
+        filters.append("atempo=2.0")
+        remaining /= 2.0
+    while remaining < 0.5:
+        filters.append("atempo=0.5")
+        remaining /= 0.5
+    filters.append(f"atempo={remaining:.4f}")
+    return ",".join(filters)
+
+
+def _apply_speech_time_stretch(audio, sample_rate: int, speed: float):
+    """Time-stretch speech audio using FFmpeg's speech-optimized atempo filter,
+
+    falling back gracefully to Librosa if FFmpeg is unavailable.
+    """
+    import numpy as np
+    import shutil
+
+    speed = float(speed)
+    if abs(speed - 1.0) <= 0.001:
+        return audio
+
+    ffmpeg_exe = shutil.which("ffmpeg")
+    if ffmpeg_exe is not None:
+        try:
+            import subprocess
+            import tempfile
+            import soundfile as sf
+            from .subprocess_utils import hidden_process_kwargs
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_path = Path(tmp_dir)
+                in_wav = tmp_path / "in.wav"
+                out_wav = tmp_path / "out.wav"
+                sf.write(str(in_wav), audio, sample_rate)
+
+                filter_chain = _build_atempo_filter(speed)
+                cmd = [
+                    ffmpeg_exe,
+                    "-hide_banner",
+                    "-loglevel", "error",
+                    "-y",
+                    "-i", str(in_wav),
+                    "-filter:a", filter_chain,
+                    str(out_wav),
+                ]
+                proc = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    **hidden_process_kwargs(),
+                )
+                if proc.returncode == 0 and out_wav.is_file():
+                    stretched, _ = sf.read(str(out_wav), dtype="float32")
+                    return np.asarray(stretched, dtype=np.float32).squeeze()
+                logger.warning(
+                    "FFmpeg atempo failed (code %d: %s), falling back to librosa",
+                    proc.returncode,
+                    proc.stderr.strip(),
+                )
+        except Exception as exc:
+            logger.warning("FFmpeg atempo exception (%s), falling back to librosa", exc)
+
+    try:
+        import librosa
+
+        return librosa.effects.time_stretch(audio, rate=speed)
+    except Exception as exc:
+        logger.warning("Librosa time_stretch fallback failed: %s", exc)
+        return audio
+
+
 def _normalize_f5_reference_text(text: Optional[str]) -> str:
     cleaned = re.sub(r"\s+", " ", (text or "").strip())
     if cleaned and cleaned[-1] not in ".!?。！？":
@@ -751,10 +831,7 @@ async def _synthesize_qwen3_tts(
         if not generated or sample_rate is None:
             raise ValueError("Qwen3-TTS produced no audio output.")
         combined = np.concatenate(generated).astype(np.float32, copy=False)
-        if abs(speed - 1.0) > 0.001:
-            import librosa
-
-            combined = librosa.effects.time_stretch(combined, rate=float(speed))
+        combined = _apply_speech_time_stretch(combined, sample_rate, speed)
         peak = float(np.max(np.abs(combined)))
         if peak > 0.98:
             combined *= 0.98 / peak
@@ -924,10 +1001,7 @@ async def _synthesize_chatterbox(
         if not generated:
             raise ValueError("Chatterbox produced no audio output.")
         combined = np.concatenate(generated).astype(np.float32, copy=False)
-        if abs(speed - 1.0) > 0.001:
-            import librosa
-
-            combined = librosa.effects.time_stretch(combined, rate=float(speed))
+        combined = _apply_speech_time_stretch(combined, _chatterbox_model.sr, speed)
         peak = float(np.max(np.abs(combined)))
         if peak > 0.98:
             combined *= 0.98 / peak

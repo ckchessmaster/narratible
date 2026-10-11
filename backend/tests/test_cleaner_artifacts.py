@@ -305,6 +305,48 @@ def test_prose_reflow_module_is_exposed_to_ui_metadata():
     assert "transform" not in prose
 
 
+def test_prose_with_in_sentence_citations_is_reflowed():
+    text = (
+        "that it was He who suffered, died, and was cf. various\n"
+        "buried according to the Scriptures, and was raised again\n"
+        "by the Father, and being taken back xv. 3, 4 into heaven\n"
+        "is seated at the right hand of the cf. various Father."
+    )
+    expected = (
+        "that it was He who suffered, died, and was cf. various "
+        "buried according to the Scriptures, and was raised again "
+        "by the Father, and being taken back xv. 3, 4 into heaven "
+        "is seated at the right hand of the cf. various Father."
+    )
+    assert reflow_wrapped_prose(text) == expected
+
+
+def test_prose_with_indented_lines_is_reflowed():
+    text = (
+        "    In the beginning of this paragraph, there is indentation\n"
+        "which wraps across multiple lines in the printed book\n"
+        "and should be reflowed into a smooth sentence."
+    )
+    expected = (
+        "In the beginning of this paragraph, there is indentation "
+        "which wraps across multiple lines in the printed book "
+        "and should be reflowed into a smooth sentence."
+    )
+    assert reflow_wrapped_prose(text) == expected
+
+
+def test_prose_with_soft_hyphens_is_reflowed():
+    text = (
+        "The very nature of Joy makes nonsense of our common distinc-\n"
+        "tion between having and wanting."
+    )
+    expected = (
+        "The very nature of Joy makes nonsense of our common distinction "
+        "between having and wanting."
+    )
+    assert reflow_wrapped_prose(text) == expected
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

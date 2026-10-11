@@ -193,3 +193,78 @@ def test_chatterbox_reloads_after_device_selection_changes(tmp_path, monkeypatch
         )
 
     assert loaded_devices == ["cpu", "mps"]
+
+
+def test_build_atempo_filter():
+    assert tts._build_atempo_filter(1.0) == "atempo=1.0000"
+    assert tts._build_atempo_filter(1.25) == "atempo=1.2500"
+    assert tts._build_atempo_filter(2.5) == "atempo=2.0,atempo=1.2500"
+    assert tts._build_atempo_filter(0.4) == "atempo=0.5,atempo=0.8000"
+    assert tts._build_atempo_filter(0) == "atempo=1.0"
+
+
+def test_apply_speech_time_stretch_noop_at_unity_speed():
+    audio = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+    result = tts._apply_speech_time_stretch(audio, sample_rate=24000, speed=1.0)
+    assert np.array_equal(result, audio)
+
+
+def test_apply_speech_time_stretch_with_ffmpeg(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+    import soundfile as sf
+
+    fake_ffmpeg = "fake_ffmpeg"
+    monkeypatch.setattr(shutil, "which", lambda cmd: fake_ffmpeg if cmd == "ffmpeg" else None)
+
+    cmd_executed = []
+
+    def fake_run(cmd, **kwargs):
+        cmd_executed.append(cmd)
+        out_path = cmd[-1]
+        dummy_audio = np.ones(500, dtype=np.float32) * 0.1
+        sf.write(out_path, dummy_audio, 24000)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    in_audio = np.ones(1000, dtype=np.float32) * 0.2
+    result = tts._apply_speech_time_stretch(in_audio, sample_rate=24000, speed=1.5)
+
+    assert len(cmd_executed) == 1
+    assert "-filter:a" in cmd_executed[0]
+    filter_idx = cmd_executed[0].index("-filter:a")
+    assert cmd_executed[0][filter_idx + 1] == "atempo=1.5000"
+    assert len(result) == 500
+
+
+def test_apply_speech_time_stretch_fallback_to_librosa(monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda _cmd: None)
+
+    librosa_called = []
+    fake_librosa = ModuleType("librosa")
+    fake_effects = ModuleType("librosa.effects")
+    fake_effects.time_stretch = lambda audio, rate: librosa_called.append(rate) or audio[: len(audio) // 2]
+    fake_librosa.effects = fake_effects
+    monkeypatch.setitem(sys.modules, "librosa", fake_librosa)
+    monkeypatch.setitem(sys.modules, "librosa.effects", fake_effects)
+
+    in_audio = np.ones(1000, dtype=np.float32)
+    result = tts._apply_speech_time_stretch(in_audio, sample_rate=24000, speed=1.25)
+
+    assert librosa_called == [1.25]
+    assert len(result) == 500
+
+
+def test_chatterbox_worker_atempo_filter_and_stretch():
+    from app.runtime_worker_scripts import chatterbox_worker
+
+    assert chatterbox_worker._build_atempo_filter(1.5) == "atempo=1.5000"
+    assert chatterbox_worker._build_atempo_filter(2.5) == "atempo=2.0,atempo=1.2500"
+
+    audio = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+    res = chatterbox_worker._apply_time_stretch(audio, 24000, 1.0)
+    assert np.array_equal(res, audio)
+

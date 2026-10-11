@@ -292,6 +292,7 @@ def normalize_chapters(chapters: list[dict], previous: list[dict] | None = None)
                     prior_b = prior_blocks[p_idx] if p_idx < len(prior_blocks) else {}
                     normalized_blocks.append({
                         "id": f"{chapter_id}_b{p_idx + 1}",
+                        "format": prior_b.get("format", "prose"),
                         "source_page": prior_b.get("source_page"),
                         "text": para,
                         "audio_muted": bool(prior_b.get("audio_muted", False)),
@@ -301,15 +302,19 @@ def normalize_chapters(chapters: list[dict], previous: list[dict] | None = None)
                 for b_idx, blk in enumerate(incoming_blocks):
                     b_id = blk.get("id") or f"{chapter_id}_b{b_idx + 1}"
                     prior_b = prior_blocks_by_id.get(b_id, {})
-                    normalized_blocks.append({
+                    b_dict = {
                         "id": b_id,
                         "type": blk.get("type", prior_b.get("type", "body")),
+                        "format": blk.get("format", prior_b.get("format", "prose")),
                         "source_page": blk.get("source_page", prior_b.get("source_page")),
                         "text": blk.get("text", ""),
                         "audio_muted": bool(blk.get("audio_muted", False)),
                         "warning": blk.get("warning") if "warning" in blk else prior_b.get("warning"),
                         "associated_para_id": blk.get("associated_para_id", prior_b.get("associated_para_id")),
-                    })
+                    }
+                    if blk.get("pending_proposal"):
+                        b_dict["pending_proposal"] = blk["pending_proposal"]
+                    normalized_blocks.append(b_dict)
                 # For readable text flow, primary chapter text reflects body and callout prose
                 body_paras = [
                     b["text"] for b in normalized_blocks
@@ -326,6 +331,7 @@ def normalize_chapters(chapters: list[dict], previous: list[dict] | None = None)
                 normalized_blocks.append({
                     "id": f"{chapter_id}_b{p_idx + 1}",
                     "type": prior_b.get("type", "body"),
+                    "format": prior_b.get("format", "prose"),
                     "source_page": prior_b.get("source_page"),
                     "text": para,
                     "audio_muted": bool(prior_b.get("audio_muted", False)),
@@ -551,6 +557,7 @@ def sync_page_layout_to_chapters(
         new_chapter_blocks.append({
             "id": b.get("id") or f"blk_{page_number}_{uuid.uuid4().hex[:6]}",
             "type": b_type,
+            "format": b.get("format", "prose"),
             "source_page": page_number,
             "text": b.get("text", "").strip(),
             "audio_muted": is_muted,

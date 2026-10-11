@@ -20,6 +20,8 @@ from .margins import (
     MARGINALIA_PATTERN,
 )
 from .extractor import extract_block_text
+from ...cleaner import fix_soft_hyphenation
+from ...parsing_modules.prose_reflow import reflow_wrapped_prose, _looks_like_verse_lines
 
 
 def _cluster_body_columns(body_segments: list[dict], width: float, height: float) -> list[list[dict]]:
@@ -608,10 +610,64 @@ def analyze_page_layout(page: fitz.Page, page_number: int) -> PageLayout:
             cb_y0 = min(s["bbox"][1] for s in c_list)
             cb_x1 = max(s["bbox"][2] for s in c_list)
             cb_y1 = max(s["bbox"][3] for s in c_list)
-            cb_text = "\n".join(s["text"].strip() for s in c_list if s["text"].strip())
+            col_width = max(1.0, cb_x1 - cb_x0)
+
+            nonempty_spans = [s for s in c_list if s.get("text", "").strip()]
+            raw_lines = [s["text"].strip() for s in nonempty_spans]
+
+            # Geometry & text check for verse/poetry (strict thresholds to avoid false positives on prose)
+            avg_line_width = (sum(s["bbox"][2] - s["bbox"][0] for s in nonempty_spans) / len(nonempty_spans)) if nonempty_spans else col_width
+            is_geo_verse = len(nonempty_spans) >= 4 and (avg_line_width / col_width) < 0.55
+            is_text_verse = _looks_like_verse_lines(raw_lines)
+
+            if is_geo_verse or is_text_verse:
+                block_format = "verse"
+                cb_text = "\n".join(raw_lines)
+            else:
+                block_format = "prose"
+                paras: list[list[str]] = []
+                cur_para: list[str] = []
+
+                # Estimate normal line spacing (median vertical gap between adjacent lines)
+                gaps = []
+                for i in range(len(nonempty_spans) - 1):
+                    v_gap = nonempty_spans[i + 1]["bbox"][1] - nonempty_spans[i]["bbox"][3]
+                    if v_gap > 0:
+                        gaps.append(v_gap)
+                median_gap = sorted(gaps)[len(gaps) // 2] if gaps else 2.0
+
+                for i, s in enumerate(nonempty_spans):
+                    line_txt = s["text"].strip()
+                    if not cur_para:
+                        cur_para.append(line_txt)
+                        continue
+
+                    prev_s = nonempty_spans[i - 1]
+                    v_gap = s["bbox"][1] - prev_s["bbox"][3]
+                    is_indented = s["bbox"][0] > (cb_x0 + 8.0)
+                    prev_ends_sentence = prev_s["text"].rstrip().endswith((".", "!", "?", "”", '"', "’", "'", "—"))
+
+                    if (v_gap > max(4.0, 1.6 * median_gap)) or (is_indented and prev_ends_sentence):
+                        paras.append(cur_para)
+                        cur_para = [line_txt]
+                    else:
+                        cur_para.append(line_txt)
+
+                if cur_para:
+                    paras.append(cur_para)
+
+                reflowed_paras = []
+                for p_lines in paras:
+                    raw_para = "\n".join(p_lines)
+                    cleaned_para = reflow_wrapped_prose(fix_soft_hyphenation(raw_para))
+                    if cleaned_para.strip():
+                        reflowed_paras.append(cleaned_para.strip())
+                cb_text = "\n\n".join(reflowed_paras) if reflowed_paras else "\n".join(raw_lines)
+
             consolidated_body_blocks.append({
                 "id": f"blk_{page_number}_{uuid.uuid4().hex[:6]}",
                 "type": "body",
+                "format": block_format,
                 "bbox": normalize_bbox([cb_x0, cb_y0, cb_x1, cb_y1], width, height),
                 "text": cb_text,
             })
@@ -648,6 +704,7 @@ def analyze_page_layout(page: fitz.Page, page_number: int) -> PageLayout:
         LayoutBlock(
             id=b["id"],
             type=b["type"],
+            format=b.get("format", "prose"),
             order=b.get("order"),
             audio_muted=b.get("audio_muted", False),
             bbox=b["bbox"],

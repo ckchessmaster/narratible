@@ -588,7 +588,7 @@ export default function SettingsModal({ onClose, toast }) {
 
                   <div className="field" data-tip-anchor="settings-models">
                     <div className="flex justify-between items-start mb-2">
-                      <div className="section-title" style={{ margin: 0 }}>Embedded LLM Model</div>
+                      <div className="section-title" style={{ margin: 0 }}>Active Local Model</div>
                       <label className="flex items-center gap-2 cursor-pointer">
                         <div className="toggle-switch">
                           <input type="checkbox" checked={cfg.use_4bit_quantization || false}

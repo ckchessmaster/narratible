@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+## v1.8.0 - 2026-10-10
+
+### Features
+- Added an intelligent spatial layout engine and document object model (`analyze_page_layout`) that classifies PDF pages into semantic blocks (`body`, `heading`, `marginalia`, `footnote`, `callout`, `figure_caption`, and `header_footer`) using PyMuPDF vector path analysis, image bounding box detection, and recursive XY-cut gutter analysis.
+- Added dynamic verso/recto margin classification to automatically isolate alternating outer margins (left on even pages, right on odd pages), separating margin notes, scripture citations, and dates from the main reading flow while preserving them for EPUB exports.
+- Added vector callout box detection via `page.get_drawings()` for shaded cards and text containers, plus illustration and caption binding that suppresses captions and apparatus notes from audio narration.
+- Added automatic printed Table of Contents scanning and folio offset calibration across the first 25 pages of a document to synthesize chapter structures and bookmarks when native PDF outlines are missing.
+- Redesigned Step 2 into Chapter Studio: a unified, continuous document editor replacing the rigid 3-sub-step workflow ("1. Cleanup/Metadata", "2. Chapter Setup", "3. Final Review") and modal locks with fluid paragraphs, auto-growing textareas, seamless split/merge, hover split dividers, and raw text fallback.
+- Added granular audio narration muting with paragraph-level muting toggles (`🔊 / 🔇`) and chapter-level audio exclusion (`include_in_audio`), ensuring frontmatter, footnotes, indexes, and callouts can be excluded from speech synthesis without removing content from EPUB builds.
+- Added a dockable, resizable visual PDF Source Inspector with C-accelerated PyMuPDF JPEG streaming (~15ms) and disk caching, featuring interactive SVG/Canvas zoning overlays to view, draw, resize, re-tag, and re-order layout bounding boxes against original scans.
+- Added single-click layout template propagation across page ranges, supporting single templates or alternating even/odd (verso/recto) spreads with instant text re-extraction and chapter block synchronization.
+- Added Chapter Studio Tools with Unified AI Text Enhancement, combining OCR cleanup and archaic modernization into a single pass (Safe/Balanced/Aggressive and Light/Standard/Deep profiles across Cloud LLM, Local GPU, or fast rule-based modes).
+- Added inline visual track changes diffing directly inside editor paragraph blocks for reviewing AI cleanup and modernization proposals, complete with single-passage Accept/Revert and batch Accept All / Revert All controls.
+- Added 1-click tools for cross-page paragraph stitching (rejoining broken sentences cut across page boundaries while respecting intervening marginalia/footnotes and repairing split hyphens) and wrapped prose reflow.
+- Added on-demand scripture reference expansion (e.g. "Ps 1:4" → "Psalms 1, verse 4") at both the chapter and book level for natural pronunciation across all TTS engines.
+- Added a built-in Model Context Protocol (FastMCP) server with tools for project management, chapter editing, text cleaning, task cancellation, log streaming, and EPUB export, supporting both stdio transport (`desktop_app.py --mcp-stdio`) and authenticated HTTP/SSE connections.
+- Added MCP Personal Access Token (PAT) authentication with SHA-256 hashed storage, token prefix tracking, last-used timestamps, revocation, and a dedicated frontend MCP Settings tab with one-click client configuration snippets.
+- Added an isolated `embedded-llm` profile to the local AI runtime catalog powered by private Python and `uv`, featuring persistent streaming inference with 4-bit BitsAndBytes quantization, Hugging Face token support, and automatic GPU VRAM lifecycle management.
+- Replaced the persistent 33% screen-width metadata sidebar with an accessible header flyout sheet for live auto-saving edits to Title, Author, Cover Art, ISBN, Language, Subject, Series, and Description.
+
+### Improvements
+- Upgraded speech time-stretching across local TTS engines (Chatterbox, Qwen3-TTS) to use FFmpeg's speech-optimized `atempo` filter (with chained filter stages for extreme playback speeds outside 0.5–2.0x) and graceful fallback to Librosa.
+- Enabled scripture citation expansions uniformly across Edge-TTS, Kokoro, F5-TTS, and Chatterbox to prevent awkward pronunciations.
+- Added a TTS Converted Text Debugger in Step 3 to inspect speech-normalized text before synthesis, verifying pronunciation expansions, heading reading, and audio filtering.
+- Streamlined Step 1 into a fast, dedicated PDF dropzone, relocating secondary metadata and cleaning options to Chapter Studio on-demand tools.
+- Enhanced chapter outline management with real-time title search filtering, multi-selection (`Shift + Click`), drag-and-drop reordering, bulk delete, and bulk merge with instant toast undo.
+- Added a collapsible Apparatus Notes drawer and popover system for inspecting and navigating peripheral footnotes, marginalia, and callout blocks bound to specific paragraphs.
+- Expanded interactive tips for MCP server configuration, Personal Access Tokens, layout zoning overlays, template propagation, inline proposal review, and audio muting.
+
+### Packaging & Runtime
+- Added an optional `embeddedllm` task to the Windows Inno Setup installer to bootstrap the Local LLM Runtime (CUDA) alongside Kokoro during setup.
+- Hardened Hugging Face cache access on Windows by materializing reparse points and symlinks to prevent `WinError 448` untrusted mount point traversal errors in windowed desktop environments.
+- Implemented atomic file writing with exponential retry backoff for task snapshots and engine manifests to prevent Windows file-locking race conditions during concurrent worker access.
+- Added support for the `NARRATIBLE_APP_DATA_DIR` environment variable to allow custom runtime and data directory overrides.
+
+### Bugfixes
+- Fixed AI enhancement proposal reversions being overwritten or resurrected on subsequent chapter saves.
+- Prevented paragraph stitching operations when pending AI review proposals exist to avoid state divergence.
+- Fixed layout block order desynchronization when saving chapters or re-extracting text from modified bounding zones.
+- Fixed missing verse preservation in prose reflow by protecting lineated poetic passages, lists, and attribution headers.
+- Fixed Chatterbox and Qwen3-TTS pitch and speed distortion when adjusting synthesis pacing.
+
 ## v1.7.1 - 2026-08-27
 
 ### Packaging

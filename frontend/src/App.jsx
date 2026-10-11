@@ -38,6 +38,7 @@ export default function App() {
   const [voiceLibraryRevision, setVoiceLibraryRevision] = useState(0)
   const [toasts, setToasts] = useState([])
   const [cudaEnabled, setCudaEnabled] = useState(true)
+  const [localLlmAvailable, setLocalLlmAvailable] = useState(false)
   const [runtimeProfiles, setRuntimeProfiles] = useState({})
   const [hasCloudKey, setHasCloudKey] = useState(false)
   const [hasModernizationLlm, setHasModernizationLlm] = useState(false)
@@ -60,8 +61,10 @@ export default function App() {
       const cloudConfigured = !!(cfg?.gemini_api_key || cfg?.openai_api_key)
       const profiles = Object.fromEntries((runtime?.profiles ?? []).map(profile => [profile.id, profile]))
       const hardwareReady = preflight?.supported ?? selectedGpu?.cuda ?? false
-      const localConfigured = cfg?.llm_provider === 'local' && !!cfg?.embedded_llm_model && profiles['embedded-llm']?.status === 'verified'
+      const localLlmReady = hardwareReady && (!!runtime?.embedded_llm_available || profiles['embedded-llm']?.status === 'verified')
+      const localConfigured = cfg?.llm_provider === 'local' && !!cfg?.embedded_llm_model && localLlmReady
       setCudaEnabled(hardwareReady)
+      setLocalLlmAvailable(localLlmReady)
       setRuntimeProfiles(profiles)
       setHasCloudKey(cloudConfigured)
       setHasModernizationLlm(cloudConfigured || localConfigured)
@@ -298,6 +301,9 @@ export default function App() {
                 onBack={back}
                 toast={toast}
                 debugMode={debugMode}
+                cudaEnabled={cudaEnabled}
+                hasCloudKey={hasCloudKey}
+                localLlmAvailable={localLlmAvailable}
               />
             </div>
             <div style={{ display: step === 3 ? 'block' : 'none' }}>
@@ -327,7 +333,7 @@ export default function App() {
 
       {/* First-time-user coach-mark tips (hidden while Settings modal is open) */}
       {!showSettings && !showDiagnostics && (
-        <Coachmark tips={activeTips} onDismiss={dismiss} onDisableAll={disableAll} zIndex={150} />
+        <Coachmark tips={activeTips} onDismiss={dismiss} onDisableAll={disableAll} zIndex={250} />
       )}
 
       {/* Settings modal */}

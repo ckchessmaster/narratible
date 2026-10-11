@@ -157,6 +157,7 @@ export default function McpSettings({ toast }) {
       <div
         className="glass p-4 flex items-center justify-between gap-4"
         style={{ borderRadius: 'var(--radius-sm)' }}
+        data-tip-anchor="settings-mcp-toggle"
       >
         <div style={{ flex: 1 }}>
           <div className="flex items-center gap-2 mb-1">
@@ -289,7 +290,7 @@ export default function McpSettings({ toast }) {
       )}
 
       {/* ── Personal Access Tokens Management ─────────────────────────── */}
-      <div>
+      <div data-tip-anchor="settings-mcp-tokens">
         <div className="section-title mb-2">Personal Access Tokens (PAT)</div>
         <div className="text-xs text-muted mb-3">
           Required for HTTP / SSE connections to the MCP endpoint. Local stdio commands run under local OS user permissions.
@@ -360,7 +361,7 @@ export default function McpSettings({ toast }) {
       </div>
 
       {/* ── One-Click Client Configuration ────────────────────────────── */}
-      <div className="mt-2">
+      <div className="mt-2" data-tip-anchor="settings-mcp-config">
         <div className="section-title mb-2">Connect Your AI Assistant</div>
         <div className="text-xs text-muted mb-3">
           Select your tool below and copy the pre-configured JSON snippet directly into your client config.

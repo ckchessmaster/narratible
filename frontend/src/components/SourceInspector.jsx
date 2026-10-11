@@ -433,18 +433,20 @@ export default function SourceInspector({
   const selectedBlock = layout?.blocks?.find(b => b.id === selectedBlockId)
 
   return (
-    <div className={`source-inspector ${isPinned ? 'is-pinned' : 'is-peek'}`}>
+    <div className="source-inspector is-pinned">
       {/* Top Inspector Bar */}
       <div className="inspector-toolbar">
-        <div className="inspector-toolbar-group">
-          <FileSearch size={16} className="text-accent" />
-          <span className="inspector-title">Ground Truth &amp; Zones</span>
+        {/* Left: Title & Mode Switcher */}
+        <div className="inspector-toolbar-left flex items-center gap-2">
+          <div className="flex items-center gap-1.5 text-accent font-semibold text-xs">
+            <FileSearch size={15} />
+            <span className="hidden sm:inline">Scan</span>
+          </div>
 
-          {/* Mode Switcher: Scan vs Semantic Zones */}
-          <div className="mode-segmented" style={{ display: 'inline-flex', background: '#1c202d', borderRadius: '6px', padding: '2px', border: '1px solid #2e3446' }}>
+          <div className="mode-segmented" data-tip-anchor="inspector-zones-toggle" style={{ display: 'inline-flex', background: '#1c202d', borderRadius: '6px', padding: '2px', border: '1px solid #2e3446' }}>
             <button
               type="button"
-              className={`btn-tag btn-sm ${viewMode === 'scan' ? 'active' : ''}`}
+              className={`btn-tag btn-xs ${viewMode === 'scan' ? 'active' : ''}`}
               onClick={() => setViewMode('scan')}
               style={{ border: 'none', borderRadius: '4px', fontSize: '11px', padding: '3px 8px' }}
             >
@@ -452,7 +454,7 @@ export default function SourceInspector({
             </button>
             <button
               type="button"
-              className={`btn-tag btn-sm ${viewMode === 'zones' ? 'active' : ''}`}
+              className={`btn-tag btn-xs ${viewMode === 'zones' ? 'active' : ''}`}
               onClick={() => setViewMode('zones')}
               style={{ border: 'none', borderRadius: '4px', fontSize: '11px', padding: '3px 8px' }}
             >
@@ -461,7 +463,7 @@ export default function SourceInspector({
           </div>
         </div>
 
-        {/* Page navigation */}
+        {/* Center: Page navigation */}
         <div className="inspector-pagination">
           <button
             type="button"
@@ -471,10 +473,10 @@ export default function SourceInspector({
             title="Previous Page"
             aria-label="Previous Page"
           >
-            <ChevronLeft size={16} />
+            <ChevronLeft size={15} />
           </button>
           <div className="page-indicator">
-            <span>P.</span>
+            <span className="text-muted text-xs">P.</span>
             <input
               type="text"
               className="page-input"
@@ -488,7 +490,7 @@ export default function SourceInspector({
               }}
               aria-label="Page number input"
             />
-            <span className="text-muted">/ {totalPages}</span>
+            <span className="text-muted text-xs">/ {totalPages}</span>
           </div>
           <button
             type="button"
@@ -498,39 +500,30 @@ export default function SourceInspector({
             title="Next Page"
             aria-label="Next Page"
           >
-            <ChevronRight size={16} />
+            <ChevronRight size={15} />
           </button>
         </div>
 
-        {/* Zoom controls */}
-        <div className="inspector-zoom-controls">
-          <button type="button" className="btn-icon btn-sm" onClick={handleZoomOut} title="Zoom Out">
-            <ZoomOut size={15} />
-          </button>
-          <span className="zoom-label">{Math.round(zoom * 100)}%</span>
-          <button type="button" className="btn-icon btn-sm" onClick={handleZoomIn} title="Zoom In">
-            <ZoomIn size={15} />
-          </button>
-          <button
-            type="button"
-            className={`btn-tag btn-sm ${fitMode === 'fit' ? 'active' : ''}`}
-            onClick={handleFit}
-          >
-            Fit
-          </button>
-        </div>
+        {/* Right: Zoom controls and Close */}
+        <div className="inspector-toolbar-right flex items-center gap-1.5">
+          <div className="inspector-zoom-controls">
+            <button type="button" className="btn-icon btn-sm" onClick={handleZoomOut} title="Zoom Out">
+              <ZoomOut size={14} />
+            </button>
+            <span className="zoom-label">{Math.round(zoom * 100)}%</span>
+            <button type="button" className="btn-icon btn-sm" onClick={handleZoomIn} title="Zoom In">
+              <ZoomIn size={14} />
+            </button>
+            <button
+              type="button"
+              className={`btn-tag btn-sm ${fitMode === 'fit' ? 'active' : ''}`}
+              onClick={handleFit}
+            >
+              Fit
+            </button>
+          </div>
 
-        {/* Action icons: Pin & Close */}
-        <div className="inspector-actions">
-          <button
-            type="button"
-            className={`btn-icon btn-sm ${isPinned ? 'is-active text-accent' : ''}`}
-            onClick={onTogglePin}
-            title={isPinned ? 'Unpin to Peek' : 'Pin Side-by-Side'}
-          >
-            <Sidebar size={16} />
-          </button>
-          <button type="button" className="btn-icon btn-sm" onClick={onClose} title="Close Inspector">
+          <button type="button" className="btn-icon btn-sm text-muted hover:text-white ml-1" onClick={onClose} title="Close Inspector">
             <X size={16} />
           </button>
         </div>
@@ -538,23 +531,9 @@ export default function SourceInspector({
 
       {/* Sub-toolbar when in Semantic Zones mode */}
       {viewMode === 'zones' && (
-        <div
-          className="zoning-sub-toolbar"
-          style={{
-            background: '#151822',
-            borderBottom: '1px solid #282e40',
-            padding: '6px 12px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            fontSize: '11px',
-            flexWrap: 'nowrap',
-            overflowX: 'auto',
-            gap: '8px',
-          }}
-        >
-          {/* Tools */}
-          <div className="flex items-center gap-1.5 shrink-0">
+        <div className="zoning-sub-toolbar">
+          {/* Tools & Tag selector */}
+          <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
             <button
               type="button"
               className={`btn-tag btn-xs flex items-center gap-1 ${activeTool === 'select' ? 'active' : ''}`}
@@ -567,6 +546,7 @@ export default function SourceInspector({
               type="button"
               className={`btn-tag btn-xs flex items-center gap-1 ${activeTool === 'draw' ? 'active' : ''}`}
               onClick={() => setActiveTool('draw')}
+              data-tip-anchor="inspector-draw-tool"
             >
               <SquareDashed size={12} />
               <span>Draw Box</span>
@@ -577,10 +557,10 @@ export default function SourceInspector({
               <div className="flex items-center gap-1.5 pl-2 ml-1 border-l border-border/50">
                 <span className="text-muted text-[10.5px]">Tag:</span>
                 <select
-                  className="input-text text-xs py-0.5 px-1"
+                  className="input-text text-xs py-0.5 px-1.5 rounded"
                   value={selectedBlock.type}
                   onChange={(e) => handleChangeBlockType(selectedBlock.id, e.target.value)}
-                  style={{ background: '#1e2230', borderColor: '#3b4258' }}
+                  style={{ background: '#1e2230', borderColor: '#3b4258', color: '#e2e8f0', fontSize: '11px' }}
                 >
                   <option value="body">Body (Flowing)</option>
                   <option value="marginalia">Marginalia (Muted)</option>
@@ -603,41 +583,42 @@ export default function SourceInspector({
           </div>
 
           {/* Action buttons */}
-          <div className="flex items-center gap-1.5 shrink-0 flex-nowrap">
-            {/* Re-extract text */}
-            <button
-              type="button"
-              className="btn-secondary btn-xs flex items-center gap-1"
-              onClick={handleReextractText}
-              disabled={isExtracting || isExtractingAll}
-              title="Extract text strictly bounded by these zones and update chapters"
-            >
-              {isExtracting ? (
-                <Loader2 size={12} className="spin text-accent" />
-              ) : extractSuccess ? (
-                <Check size={12} className="text-emerald-400" />
-              ) : (
-                <RefreshCw size={12} />
-              )}
-              <span>{extractSuccess ? 'Updated!' : 'Extract'}</span>
-            </button>
-
+          <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
             {/* Re-detect Layout */}
             <button
               type="button"
-              className="btn-secondary btn-xs flex items-center gap-1"
+              className="btn-zone-action"
               onClick={() => fetchLayout(currentPage, true)}
               disabled={layoutLoading || isExtractingAll}
               title="Re-run spatial layout analysis on this page to reset zones"
             >
-              <RefreshCw size={12} className={layoutLoading ? 'spin' : ''} />
+              <RefreshCw size={11} className={layoutLoading ? 'spin' : ''} />
               <span>Detect</span>
+            </button>
+
+            {/* Re-extract text */}
+            <button
+              type="button"
+              className="btn-zone-action"
+              onClick={handleReextractText}
+              disabled={isExtracting || isExtractingAll}
+              data-tip-anchor="inspector-extract-btn"
+              title="Extract text strictly bounded by these zones and update chapters"
+            >
+              {isExtracting ? (
+                <Loader2 size={11} className="spin text-accent" />
+              ) : extractSuccess ? (
+                <Check size={11} className="text-emerald-400" />
+              ) : (
+                <RefreshCw size={11} />
+              )}
+              <span>{extractSuccess ? 'Updated!' : 'Extract'}</span>
             </button>
 
             {/* Apply to All Pages */}
             <button
               type="button"
-              className="btn-secondary btn-xs flex items-center gap-1"
+              className="btn-zone-action"
               onClick={handleReextractAll}
               disabled={isExtractingAll}
               title="Run layout analysis and update chapters across all pages in this document"
@@ -647,24 +628,24 @@ export default function SourceInspector({
               }}
             >
               {isExtractingAll ? (
-                <Loader2 size={12} className="spin text-accent" />
+                <Loader2 size={11} className="spin text-accent" />
               ) : extractAllSuccess ? (
-                <Check size={12} className="text-emerald-400" />
+                <Check size={11} className="text-emerald-400" />
               ) : (
-                <Sparkles size={12} className="text-accent" />
+                <Sparkles size={11} className="text-accent" />
               )}
               <span>{extractAllSuccess ? 'Synced All!' : isExtractingAll ? 'Syncing…' : 'Apply All'}</span>
             </button>
 
             {/* Layout Templates Dropdown */}
-            <div style={{ position: 'relative' }}>
+            <div style={{ position: 'relative' }} data-tip-anchor="inspector-templates-menu">
               <button
                 type="button"
-                className="btn-secondary btn-xs flex items-center gap-1"
+                className="btn-zone-action"
                 onClick={() => setTemplateMenuOpen(!templateMenuOpen)}
                 title="Layout presets and propagation options"
               >
-                <Layers size={12} />
+                <Layers size={11} />
                 <span>Templates ▾</span>
               </button>
 

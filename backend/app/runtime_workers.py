@@ -42,6 +42,8 @@ class RuntimeWorker:
             raise RuntimeSetupError(f"Runtime worker source is missing: {worker_path}")
         command_env = os.environ.copy()
         command_env["PYTHONUTF8"] = "1"
+        command_env["HF_HUB_DISABLE_SYMLINKS"] = "1"
+        command_env["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
         process = subprocess.Popen(
             [state["python_executable"], "-u", str(worker_path)],
             stdin=subprocess.PIPE,
@@ -74,6 +76,8 @@ class RuntimeWorker:
         action: str,
         payload: dict[str, Any],
         progress_cb: Callable[[str, int], None] | None = None,
+        token_cb: Callable[[str], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             process = self._running_process()
@@ -89,6 +93,9 @@ class RuntimeWorker:
                 raise RuntimeSetupError(f"Runtime worker {self.profile_id} stopped unexpectedly.") from exc
 
             while True:
+                if cancel_check and cancel_check():
+                    self.stop()
+                    raise InterruptedError(f"Runtime worker {self.profile_id} cancelled by user.")
                 line = process.stdout.readline()
                 if not line:
                     return_code = process.poll()
@@ -106,6 +113,10 @@ class RuntimeWorker:
                 if event.get("type") == "progress":
                     if progress_cb is not None:
                         progress_cb(event.get("message", ""), int(event.get("progress", 0)))
+                    continue
+                if event.get("type") == "token":
+                    if token_cb is not None:
+                        token_cb(event.get("text", ""))
                     continue
                 if event.get("type") == "error":
                     raise RuntimeSetupError(event.get("message") or f"{self.profile_id} worker failed.")
@@ -197,6 +208,47 @@ async def synthesize_clone_engine(
         },
         progress_cb,
     )
+
+
+def generate_embedded_llm(
+    *,
+    messages: list[dict[str, str]],
+    model_name: str,
+    device: str,
+    use_4bit_quantization: bool = False,
+    hf_token: str | None = None,
+    max_new_tokens: int = 4096,
+    temperature: float = 0.1,
+    repetition_penalty: float = 1.15,
+    do_sample: bool = True,
+    progress_cb: Callable[[str, int], None] | None = None,
+    token_cb: Callable[[str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> str:
+    res = _runtime_worker("embedded-llm").request(
+        "generate",
+        {
+            "messages": messages,
+            "model_name": model_name,
+            "device": device,
+            "use_4bit_quantization": use_4bit_quantization,
+            "hf_token": hf_token,
+            "max_new_tokens": max_new_tokens,
+            "temperature": temperature,
+            "repetition_penalty": repetition_penalty,
+            "do_sample": do_sample,
+        },
+        progress_cb=progress_cb,
+        token_cb=token_cb,
+        cancel_check=cancel_check,
+    )
+    return res.get("generated_text", "")
+
+
+def unload_embedded_llm_worker() -> None:
+    worker = _workers.get("embedded-llm")
+    if worker is not None:
+        worker.stop()
 
 
 def shutdown_runtime_workers() -> None:

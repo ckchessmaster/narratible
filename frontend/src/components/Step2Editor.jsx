@@ -14,6 +14,7 @@ import {
   ArrowLeft,
   AlertTriangle,
   AlignLeft,
+  Feather,
   Layers,
   Undo2,
   ChevronDown,
@@ -33,7 +34,8 @@ import {
 } from '../api'
 import BookDetailsModal from './BookDetailsModal'
 import SourceInspector from './SourceInspector'
-import ModernizationDrawer from './ModernizationDrawer'
+import ChapterStudioToolsPane from './ChapterStudioToolsPane'
+import { computeWordDiff } from '../utils/diff'
 
 export default function Step2Editor({
   projectId,
@@ -41,6 +43,9 @@ export default function Step2Editor({
   onNext,
   onBack,
   toast,
+  cudaEnabled = true,
+  hasCloudKey = false,
+  localLlmAvailable = false,
 }) {
   const [meta, setMeta] = useState({
     title: '',
@@ -63,17 +68,15 @@ export default function Step2Editor({
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState('saved') // 'saved' | 'saving' | 'unsaved'
 
-  // Modals / Drawers state
+  // Modals / Drawers / Utility Panes state
   const [showBookDetails, setShowBookDetails] = useState(false)
-  const [showModernize, setShowModernize] = useState(false)
+  const [rightPaneTab, setRightPaneTab] = useState('scan') // 'scan' | 'tools'
   const [inspectorOpen, setInspectorOpen] = useState(false)
-  const [inspectorPinned, setInspectorPinned] = useState(false)
   const [inspectorPage, setInspectorPage] = useState(1)
   const [inspectorHighlightBlockId, setInspectorHighlightBlockId] = useState(null)
   const [apparatusTab, setApparatusTab] = useState('footnotes') // 'footnotes' | 'marginalia' | 'callouts'
   const [apparatusCollapsed, setApparatusCollapsed] = useState(false)
   const [activeNotesPopoverBlockId, setActiveNotesPopoverBlockId] = useState(null)
-  const [splitConfirmIdx, setSplitConfirmIdx] = useState(null)
 
   // Layout & Resizer state
   const [outlineCollapsed, setOutlineCollapsed] = useState(false)
@@ -89,12 +92,12 @@ export default function Step2Editor({
   const resizeStartXRef = useRef(0)
   const resizeStartWidthRef = useRef(620)
 
-  // Auto-collapse outline when inspector is pinned to give maximum reading & inspection space
+  // Auto-collapse outline when inspector is open to give maximum reading & inspection space
   useEffect(() => {
-    if (inspectorOpen && inspectorPinned) {
+    if (inspectorOpen) {
       setOutlineCollapsed(true)
     }
-  }, [inspectorPinned, inspectorOpen])
+  }, [inspectorOpen])
 
   const handleResizerMouseDown = useCallback((e) => {
     e.preventDefault()
@@ -133,7 +136,6 @@ export default function Step2Editor({
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
         setActiveNotesPopoverBlockId(null)
-        setSplitConfirmIdx(null)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
@@ -408,6 +410,7 @@ export default function Step2Editor({
     if (blockId) {
       setInspectorHighlightBlockId(blockId)
     }
+    setRightPaneTab('scan')
     setInspectorOpen(true)
   }, [])
 
@@ -654,6 +657,55 @@ export default function Step2Editor({
     scheduleAutoSave(updatedChapters)
   }
 
+  const isVerseTextCandidate = useCallback((text) => {
+    if (!text) return false
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+    if (lines.length < 4) return false
+    const capCount = lines.filter(l => /^[A-Z]/.test(l)).length
+    const avgLen = lines.reduce((acc, l) => acc + l.length, 0) / lines.length
+    const avgWords = lines.reduce((acc, l) => acc + l.split(/\s+/).length, 0) / lines.length
+    const capRatio = capCount / lines.length
+
+    // Strict poetry heuristics: short lines, high capitalization, or very short lines (psalms)
+    if (avgLen <= 45 && avgWords <= 7 && capRatio >= 0.75) return true
+    if (avgLen <= 35 && avgWords <= 6) return true
+    return false
+  }, [])
+
+  const handleToggleBlockFormat = (bIdx) => {
+    if (!currentChapter) return
+    const updatedBlocks = [...(currentChapter.blocks || [])]
+    const target = updatedBlocks[bIdx]
+    const curFmt = target.format || 'prose'
+    const nextFmt = curFmt === 'verse' ? 'prose' : 'verse'
+    let nextText = target.text || ''
+    if (nextFmt === 'prose' && nextText.includes('\n')) {
+      // Rejoin wrapped prose lines and repair split hyphens
+      nextText = nextText
+        .replace(/\b([a-zA-Z]{2,})-\s+([a-zA-Z]{2,})\b/g, '$1$2')
+        .replace(/(?<!\n)\n(?!\n)/g, ' ')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim()
+    }
+    updatedBlocks[bIdx] = {
+      ...target,
+      format: nextFmt,
+      text: nextText,
+    }
+    const updatedChapters = [...chapters]
+    updatedChapters[selectedIdx] = {
+      ...currentChapter,
+      blocks: updatedBlocks,
+      text: updatedBlocks
+        .filter(b => (b.type || 'body') === 'body' || b.type === 'callout')
+        .map(b => b.text)
+        .join('\n\n') || updatedBlocks.map(b => b.text).join('\n\n'),
+    }
+    setChapters(updatedChapters)
+    scheduleAutoSave(updatedChapters)
+    toast?.(`Switched block to ${nextFmt === 'verse' ? 'Verse (preserving line breaks)' : 'Prose (reflowed)'}.`, 'info')
+  }
+
   // Keyboard ergonomics: Enter to split, Backspace to merge
   const handleBlockKeyDown = (bIdx, e) => {
     const el = e.currentTarget
@@ -743,9 +795,50 @@ export default function Step2Editor({
     }
   }
 
+  // Smart title detection helper for chapter splitting
+  const detectNewChapterTitle = (currentTitle, firstBlock) => {
+    if (!firstBlock || !firstBlock.text) {
+      return `${currentTitle} (Part 2)`
+    }
+    const rawText = firstBlock.text.trim()
+    const firstLine = rawText.split(/\r?\n/)[0].trim()
+
+    // 1. Explicit heading block type
+    if (firstBlock.type === 'heading' && firstLine.length > 0 && firstLine.length <= 80) {
+      return firstLine
+    }
+
+    // 2. Standard chapter/part/book prefix
+    const chapterPattern = /^(?:chapter|part|book|section)\s+(?:[0-9]+|[ivxlcdm]+|[a-z]+)(?:[:.\-–—\s].*)?$/i
+    if (chapterPattern.test(firstLine) && firstLine.length <= 80) {
+      return firstLine
+    }
+
+    // 3. Roman numeral heading on its own line: e.g. "II.", "IV. The Return"
+    const romanPattern = /^[IVXLCDM]+\.(?:\s+.*)?$/
+    if (romanPattern.test(firstLine) && firstLine.length <= 80) {
+      return firstLine
+    }
+
+    // 4. Numbered heading: e.g. "2. The Serpent", "Chapter 2"
+    const numChapterMatch = firstLine.match(/^(?:chapter\s+)?(\d+)[.:\-–—]\s*([^\n.!?]{3,60})/i)
+    if (numChapterMatch) {
+      return numChapterMatch[0].trim()
+    }
+
+    // Default: Title (Part 2) or sequential (Part N+1)
+    const partMatch = (currentTitle || '').match(/^(.*?)\s*\(Part\s+(\d+)\)$/i)
+    if (partMatch) {
+      const base = partMatch[1]
+      const nextNum = parseInt(partMatch[2], 10) + 1
+      return `${base} (Part ${nextNum})`
+    }
+    return `${currentTitle || 'Chapter'} (Part 2)`
+  }
+
   // Inter-paragraph split: splits chapter at this paragraph boundary
   const handleSplitChapterAt = (splitAfterBIdx) => {
-    if (!currentChapter) return
+    if (!currentChapter || !currentChapter.blocks) return
     const blocks1 = currentChapter.blocks.slice(0, splitAfterBIdx + 1)
     const blocks2 = currentChapter.blocks.slice(splitAfterBIdx + 1)
 
@@ -760,11 +853,13 @@ export default function Step2Editor({
     }
 
     const newId = `ch_${Date.now()}`
+    const detectedTitle = detectNewChapterTitle(currentChapter.title || 'Chapter', blocks2[0])
+
     const ch2 = {
       id: newId,
       order: currentChapter.order + 1,
-      title: `${currentChapter.title} (Part 2)`,
-      include_in_audio: currentChapter.include_in_audio,
+      title: detectedTitle,
+      include_in_audio: currentChapter.include_in_audio !== false,
       blocks: blocks2,
       text: blocks2.map(b => b.text).join('\n\n'),
     }
@@ -777,7 +872,9 @@ export default function Step2Editor({
     setSelectedIdx(selectedIdx + 1)
     saveNow(reordered)
 
-    if (toast) toast(`Chapter split into two chapters. Undo available.`, 'success')
+    if (toast) {
+      toast(`Split into "${ch2.title}". Click Undo to revert.`, 'success')
+    }
   }
 
   // Resolve / Revert Warning
@@ -827,6 +924,127 @@ export default function Step2Editor({
 
     if (toast) toast('Reverted to original OCR raw text.', 'info')
   }
+
+  // ─── AI Proposal Handlers (In-Text Track Changes) ──────────────────────────
+  const handleAcceptBlockProposal = useCallback((bIdx) => {
+    if (!currentChapter) return
+    setUndoSnapshot(JSON.parse(JSON.stringify(chapters)))
+    const updatedBlocks = [...(currentChapter.blocks || [])]
+    const block = updatedBlocks[bIdx]
+    if (!block?.pending_proposal) return
+
+    updatedBlocks[bIdx] = {
+      ...block,
+      text: block.pending_proposal.proposed_text || block.text,
+    }
+    delete updatedBlocks[bIdx].pending_proposal
+
+    const updatedChapters = [...chapters]
+    updatedChapters[selectedIdx] = {
+      ...currentChapter,
+      blocks: updatedBlocks,
+      text: updatedBlocks.map(b => b.text).join('\n\n'),
+      word_count: updatedBlocks.map(b => b.text).join(' ').split(/\s+/).filter(Boolean).length,
+    }
+    setChapters(updatedChapters)
+    saveNow(updatedChapters)
+    if (toast) toast('Passage proposal accepted.', 'success')
+  }, [chapters, selectedIdx, currentChapter, saveNow, toast])
+
+  const handleRevertBlockProposal = useCallback((bIdx) => {
+    if (!currentChapter) return
+    setUndoSnapshot(JSON.parse(JSON.stringify(chapters)))
+    const updatedBlocks = [...(currentChapter.blocks || [])]
+    const block = updatedBlocks[bIdx]
+    if (!block?.pending_proposal) return
+
+    updatedBlocks[bIdx] = {
+      ...block,
+      text: block.pending_proposal.original_text || block.text,
+    }
+    delete updatedBlocks[bIdx].pending_proposal
+
+    const updatedChapters = [...chapters]
+    updatedChapters[selectedIdx] = {
+      ...currentChapter,
+      blocks: updatedBlocks,
+      text: updatedBlocks.map(b => b.text).join('\n\n'),
+      word_count: updatedBlocks.map(b => b.text).join(' ').split(/\s+/).filter(Boolean).length,
+    }
+    setChapters(updatedChapters)
+    saveNow(updatedChapters)
+    if (toast) toast('Passage reverted to original.', 'info')
+  }, [chapters, selectedIdx, currentChapter, saveNow, toast])
+
+  const handleAcceptAllProposals = useCallback(() => {
+    if (!currentChapter) return
+    setUndoSnapshot(JSON.parse(JSON.stringify(chapters)))
+    let count = 0
+    const updatedBlocks = (currentChapter.blocks || []).map(b => {
+      if (b.pending_proposal) {
+        count++
+        const accepted = { ...b, text: b.pending_proposal.proposed_text || b.text }
+        delete accepted.pending_proposal
+        return accepted
+      }
+      return b
+    })
+
+    const updatedChapters = [...chapters]
+    const updatedCh = {
+      ...currentChapter,
+      blocks: updatedBlocks,
+      text: updatedBlocks.map(b => b.text).join('\n\n'),
+      word_count: updatedBlocks.map(b => b.text).join(' ').split(/\s+/).filter(Boolean).length,
+    }
+    if (updatedCh.pending_proposal) {
+      count++
+      updatedCh.text = updatedCh.pending_proposal.proposed_text || updatedCh.text
+      delete updatedCh.pending_proposal
+    }
+    updatedChapters[selectedIdx] = updatedCh
+    setChapters(updatedChapters)
+    saveNow(updatedChapters)
+    if (toast) toast(`Accepted all ${count} proposals in this chapter.`, 'success')
+  }, [chapters, selectedIdx, currentChapter, saveNow, toast])
+
+  const handleRevertAllProposals = useCallback(() => {
+    if (!currentChapter) return
+    setUndoSnapshot(JSON.parse(JSON.stringify(chapters)))
+    let count = 0
+    const updatedBlocks = (currentChapter.blocks || []).map(b => {
+      if (b.pending_proposal) {
+        count++
+        const reverted = { ...b, text: b.pending_proposal.original_text || b.text }
+        delete reverted.pending_proposal
+        return reverted
+      }
+      return b
+    })
+
+    const updatedChapters = [...chapters]
+    const updatedCh = {
+      ...currentChapter,
+      blocks: updatedBlocks,
+      text: updatedBlocks.map(b => b.text).join('\n\n'),
+      word_count: updatedBlocks.map(b => b.text).join(' ').split(/\s+/).filter(Boolean).length,
+    }
+    if (updatedCh.pending_proposal) {
+      count++
+      updatedCh.text = updatedCh.pending_proposal.original_text || updatedCh.text
+      delete updatedCh.pending_proposal
+    }
+    updatedChapters[selectedIdx] = updatedCh
+    setChapters(updatedChapters)
+    saveNow(updatedChapters)
+    if (toast) toast(`Reverted all ${count} proposals in this chapter.`, 'info')
+  }, [chapters, selectedIdx, currentChapter, saveNow, toast])
+
+  const pendingProposalsCount = useMemo(() => {
+    if (!currentChapter) return 0
+    const blockCount = currentChapter.blocks?.filter(b => b.pending_proposal)?.length || 0
+    return blockCount + (currentChapter.pending_proposal ? 1 : 0)
+  }, [currentChapter])
 
   // Raw text change
   const handleRawTextChange = (newText) => {
@@ -893,6 +1111,7 @@ export default function Step2Editor({
             type="button"
             className="btn btn-secondary btn-sm"
             onClick={() => setShowBookDetails(true)}
+            data-tip-anchor="metadata-sidebar"
             title="Edit book title, author, cover image, and metadata"
           >
             <BookOpen size={14} className="mr-1 text-accent" />
@@ -901,22 +1120,38 @@ export default function Step2Editor({
 
           <button
             type="button"
-            className={`btn btn-secondary btn-sm ${inspectorOpen ? 'btn-primary' : ''}`}
-            onClick={() => setInspectorOpen(v => !v)}
+            className={`btn btn-secondary btn-sm ${inspectorOpen && rightPaneTab === 'scan' ? 'btn-primary' : ''}`}
+            data-tip-anchor="studio-inspect-scan"
+            onClick={() => {
+              if (inspectorOpen && rightPaneTab === 'scan') {
+                setInspectorOpen(false)
+              } else {
+                setInspectorOpen(true)
+                setRightPaneTab('scan')
+              }
+            }}
             title="Toggle PDF Scan Ground Truth Inspector"
           >
             <FileSearch size={14} className="mr-1" />
-            {inspectorOpen ? 'Hide Scan' : 'Inspect Scan'}
+            Inspect Scan
           </button>
 
           <button
             type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={() => setShowModernize(true)}
-            title="Open Text Modernization Studio"
+            className={`btn btn-secondary btn-sm ${inspectorOpen && rightPaneTab === 'tools' ? 'btn-primary' : ''}`}
+            data-tip-anchor="studio-ai-tools"
+            onClick={() => {
+              if (inspectorOpen && rightPaneTab === 'tools') {
+                setInspectorOpen(false)
+              } else {
+                setInspectorOpen(true)
+                setRightPaneTab('tools')
+              }
+            }}
+            title="Toggle AI & Text Tools Studio (LLM Cleanup & Modernization)"
           >
-            <Sparkles size={14} className="mr-1" />
-            Modernize Text
+            <Sparkles size={14} className="mr-1 text-accent" />
+            AI &amp; Text Tools
           </button>
 
           <div className="flex items-center gap-2 ml-2 pl-2 border-l border-glass">
@@ -957,9 +1192,9 @@ export default function Step2Editor({
 
       {/* ── Main Workspace Grid ──────────────────────────────────────────── */}
       <div
-        className={`studio-workspace-grid ${inspectorOpen && inspectorPinned ? 'with-pinned-inspector' : ''}`}
+        className={`studio-workspace-grid ${inspectorOpen ? 'with-pinned-inspector' : ''}`}
         style={{
-          gridTemplateColumns: inspectorOpen && inspectorPinned
+          gridTemplateColumns: inspectorOpen
             ? `${outlineCollapsed ? '52px' : '280px'} 1fr 6px ${inspectorWidth}px`
             : `${outlineCollapsed ? '52px' : '320px'} 1fr`,
           userSelect: isResizing ? 'none' : 'auto',
@@ -1020,7 +1255,7 @@ export default function Step2Editor({
                 </div>
               </div>
 
-              <div className="outline-header">
+              <div className="outline-header" data-tip-anchor="chapter-list">
                 <span className="text-xs font-semibold uppercase tracking-wider text-muted">
                   Chapter Outline ({chapters.length})
                 </span>
@@ -1122,6 +1357,7 @@ export default function Step2Editor({
                           onClick={e => handleToggleChapterAudio(actualIdx, e)}
                           title={isMuted ? 'Muted: Excluded from audio. Click to include.' : 'Included in audiobook narration. Click to mute.'}
                           aria-label="Toggle Chapter Audio"
+                          data-tip-anchor="chapter-audio-toggle"
                         >
                           {isMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
                         </button>
@@ -1238,7 +1474,7 @@ export default function Step2Editor({
                       Inspect Scan ↗
                     </button>
 
-                    <div className="flex items-center gap-1 bg-subtle p-1 rounded">
+                    <div className="flex items-center gap-1 bg-subtle p-1 rounded" data-tip-anchor="editor-mode-toggle">
                       <button
                         type="button"
                         className={`btn-tag btn-sm ${editorMode === 'blocks' ? 'active' : ''}`}
@@ -1299,9 +1535,44 @@ export default function Step2Editor({
                     </div>
                   ) : (
                     <>
+                      {/* Top Sticky AI Proposal Review Banner */}
+                      {pendingProposalsCount > 0 && (
+                        <div className="sticky-review-banner" data-tip-anchor="proposals-review">
+                          <div className="sticky-review-info">
+                            <Sparkles size={16} className="text-accent animate-pulse" />
+                            <div>
+                              <span className="sticky-review-title">AI Enhancement Review</span>
+                              <span className="sticky-review-subtitle">
+                                {pendingProposalsCount} passage{pendingProposalsCount > 1 ? 's' : ''} with pending track changes
+                              </span>
+                            </div>
+                          </div>
+                          <div className="sticky-review-actions">
+                            <button
+                              type="button"
+                              className="btn-review-accept-all"
+                              onClick={handleAcceptAllProposals}
+                              title="Accept all AI enhancements in this chapter"
+                            >
+                              <Check size={13} /> Accept All in Chapter
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-review-revert-all"
+                              onClick={handleRevertAllProposals}
+                              title="Revert all passages to original text"
+                            >
+                              <RotateCcw size={13} /> Revert All
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       {displayedBodyBlocks.map((block) => {
                         const realIdx = blockIndexMap.get(block.id) ?? allBlocks.findIndex(b => b.id === block.id)
                         const isMuted = !!block.audio_muted
+                        const isVerse = block.format === 'verse'
+                        const isVerseCandidate = !isVerse && isVerseTextCandidate(block.text)
                         const hasWarning = block.warning && block.warning.status !== 'resolved'
                         const isDiffOpen = !diffClosedBlockIds.has(block.id)
                         const associatedNotes = associatedNotesMap.get(block.id) || []
@@ -1314,7 +1585,7 @@ export default function Step2Editor({
                           >
                                 {/* Inline Diff Accordion for AI Cleaning Warnings */}
                                 {hasWarning && (
-                                  <div className="warning-accordion">
+                                  <div className="warning-accordion" data-tip-anchor="cleaning-review">
                                     <div className="warning-accordion-header">
                                       <div className="flex items-center gap-2">
                                         <AlertTriangle size={15} className="text-warning flex-shrink-0" />
@@ -1394,7 +1665,7 @@ export default function Step2Editor({
 
                                 <div className="continuous-paragraph-row">
                                   {/* Gutter Controls */}
-                                  <div className="continuous-gutter">
+                                  <div className="continuous-gutter" data-tip-anchor="paragraph-gutter">
                                     <button
                                       type="button"
                                       className={`gutter-btn ${isMuted ? 'is-muted-active' : ''}`}
@@ -1404,6 +1675,52 @@ export default function Step2Editor({
                                     >
                                       {isMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
                                     </button>
+
+                                    <button
+                                      type="button"
+                                      className={`gutter-btn ${isVerse ? 'is-verse-active' : ''}`}
+                                      onClick={() => handleToggleBlockFormat(realIdx)}
+                                      title={
+                                        isVerse
+                                          ? 'Verse format (preserves line breaks). Click to switch to Prose.'
+                                          : isVerseCandidate
+                                          ? 'Detected potential verse candidate. Click to switch to Verse (preserve line breaks).'
+                                          : 'Prose format. Click to treat as Verse/Poetry.'
+                                      }
+                                      aria-label="Toggle Prose or Verse"
+                                    >
+                                      {isVerse ? (
+                                        <Feather size={14} className="text-accent" />
+                                      ) : isVerseCandidate ? (
+                                        <div style={{ position: 'relative', display: 'inline-flex' }}>
+                                          <Feather size={14} style={{ opacity: 0.75, color: '#f59e0b' }} />
+                                          <span style={{
+                                            position: 'absolute',
+                                            top: -2,
+                                            right: -2,
+                                            width: 5,
+                                            height: 5,
+                                            borderRadius: '50%',
+                                            backgroundColor: '#f59e0b',
+                                          }} />
+                                        </div>
+                                      ) : (
+                                        <AlignLeft size={14} style={{ opacity: 0.55 }} />
+                                      )}
+                                    </button>
+
+                                    {realIdx < allBlocks.length - 1 && (
+                                      <button
+                                        type="button"
+                                        className="gutter-btn gutter-split-btn"
+                                        onClick={() => handleSplitChapterAt(realIdx)}
+                                        title="Split into new chapter after this paragraph"
+                                        aria-label="Split into new chapter after this paragraph"
+                                        data-tip-anchor="split-button"
+                                      >
+                                        <Scissors size={14} />
+                                      </button>
+                                    )}
 
                                     <button
                                       type="button"
@@ -1535,71 +1852,104 @@ export default function Step2Editor({
                                         <VolumeX size={11} className="mr-1" /> Excluded from TTS Audio
                                       </div>
                                     )}
-                                    <textarea
-                                      ref={el => {
-                                        blockRefs.current[block.id] = el
-                                      }}
-                                      className="continuous-textarea"
-                                      value={block.text}
-                                      onChange={e => handleBlockTextChange(realIdx, e.target.value)}
-                                      onInput={e => {
-                                        e.target.style.height = 'auto'
-                                        e.target.style.height = `${Math.max(e.target.scrollHeight, 28)}px`
-                                      }}
-                                      onKeyDown={e => handleBlockKeyDown(realIdx, e)}
-                                      placeholder="Type paragraph text here... (Enter to split, Backspace to merge)"
-                                      rows={1}
-                                    />
+                                    {isVerse && (
+                                      <div className="verse-paragraph-badge">
+                                        <Feather size={11} className="mr-1 inline text-accent" /> Verse / Lineated Block
+                                      </div>
+                                    )}
+
+                                    {block.pending_proposal ? (
+                                      <div className="track-changes-block">
+                                        <div className="track-changes-header">
+                                          <span className="track-changes-badge">
+                                            <Sparkles size={11} className="mr-1 inline text-accent" /> AI Proposal
+                                          </span>
+                                          <div className="track-changes-actions">
+                                            <button
+                                              type="button"
+                                              className="btn-track-accept"
+                                              onClick={() => handleAcceptBlockProposal(realIdx)}
+                                              title="Accept AI enhancements for this passage"
+                                            >
+                                              <Check size={12} /> Accept
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="btn-track-revert"
+                                              onClick={() => handleRevertBlockProposal(realIdx)}
+                                              title="Revert passage to original text"
+                                            >
+                                              <RotateCcw size={12} /> Revert
+                                            </button>
+                                          </div>
+                                        </div>
+                                        <div className="track-changes-diff-body">
+                                          {computeWordDiff(block.pending_proposal.original_text, block.pending_proposal.proposed_text).map((seg, sIdx) => {
+                                            if (seg.type === 'delete') {
+                                              return (
+                                                <del
+                                                  key={sIdx}
+                                                  className="diff-del"
+                                                  title="Original text removed by AI"
+                                                >
+                                                  {seg.text}
+                                                </del>
+                                              )
+                                            }
+                                            if (seg.type === 'insert') {
+                                              return (
+                                                <ins
+                                                  key={sIdx}
+                                                  className="diff-add"
+                                                  title="Proposed text added by AI"
+                                                >
+                                                  {seg.text}
+                                                </ins>
+                                              )
+                                            }
+                                            return <span key={sIdx}>{seg.text}</span>
+                                          })}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <textarea
+                                        ref={el => {
+                                          blockRefs.current[block.id] = el
+                                        }}
+                                        className={`continuous-textarea ${isVerse ? 'is-verse-block' : ''}`}
+                                        value={block.text}
+                                        onChange={e => handleBlockTextChange(realIdx, e.target.value)}
+                                        onInput={e => {
+                                          e.target.style.height = 'auto'
+                                          e.target.style.height = `${Math.max(e.target.scrollHeight, 28)}px`
+                                        }}
+                                        onKeyDown={e => handleBlockKeyDown(realIdx, e)}
+                                        placeholder="Type paragraph text here... (Enter to split, Backspace to merge)"
+                                        rows={1}
+                                      />
+                                    )}
                                   </div>
                                 </div>
 
                                 {/* Hover Split Divider */}
                                 {realIdx < allBlocks.length - 1 && (
-                                  <div className={`inter-block-split-divider ${splitConfirmIdx === realIdx ? 'is-active' : ''}`}>
+                                  <div
+                                    className="inter-block-split-divider"
+                                    onClick={() => handleSplitChapterAt(realIdx)}
+                                    title="Split chapter after this paragraph (new chapter starts next)"
+                                  >
                                     <div className="split-line" />
                                     <button
                                       type="button"
                                       className="split-badge flex items-center gap-1"
                                       onClick={(e) => {
                                         e.stopPropagation()
-                                        setSplitConfirmIdx(splitConfirmIdx === realIdx ? null : realIdx)
+                                        handleSplitChapterAt(realIdx)
                                       }}
-                                      title="Split chapter into two at this paragraph boundary"
+                                      title="Split chapter after this paragraph"
                                     >
-                                      <Scissors size={11} /> Split Chapter
+                                      <Scissors size={11} /> Split Chapter Here
                                     </button>
-
-                                    {splitConfirmIdx === realIdx && (
-                                      <div className="split-confirm-popover" onClick={(e) => e.stopPropagation()}>
-                                        <div className="flex items-center gap-1.5 mb-1.5 font-semibold text-xs text-gray-200">
-                                          <Scissors size={13} className="text-accent" />
-                                          <span>Split Chapter Here?</span>
-                                        </div>
-                                        <p className="text-[11.5px] text-muted mb-3 leading-relaxed">
-                                          This will divide <strong>&ldquo;{currentChapter.title}&rdquo;</strong> into two separate chapters right after this paragraph.
-                                        </p>
-                                        <div className="flex items-center justify-end gap-2">
-                                          <button
-                                            type="button"
-                                            className="btn-secondary btn-xs"
-                                            onClick={() => setSplitConfirmIdx(null)}
-                                          >
-                                            Cancel
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="btn-primary btn-xs flex items-center gap-1"
-                                            onClick={() => {
-                                              handleSplitChapterAt(realIdx)
-                                              setSplitConfirmIdx(null)
-                                            }}
-                                          >
-                                            <Check size={12} />
-                                            <span>Split Chapter</span>
-                                          </button>
-                                        </div>
-                                      </div>
-                                    )}
                                   </div>
                                 )}
                               </div>
@@ -1822,8 +2172,8 @@ export default function Step2Editor({
           )}
         </main>
 
-        {/* Resizer Handle between Editor and Pinned Inspector */}
-        {inspectorOpen && inspectorPinned && (
+        {/* Resizer Handle between Editor and Docked Inspector */}
+        {inspectorOpen && (
           <div
             className={`workspace-resizer-handle ${isResizing ? 'is-resizing' : ''}`}
             onMouseDown={handleResizerMouseDown}
@@ -1831,40 +2181,81 @@ export default function Step2Editor({
           />
         )}
 
-        {/* Pinned Inspector (Side-by-Side) */}
-        {inspectorOpen && inspectorPinned && (
+        {/* Docked Utility Pane (Scan Ground Truth & AI Tools) */}
+        {inspectorOpen && (
           <aside className="inspector-pane" style={{ width: `${inspectorWidth}px`, minWidth: '360px' }}>
-            <SourceInspector
-              projectId={projectId}
-              initialPage={inspectorPage}
-              highlightBlockId={inspectorHighlightBlockId}
-              isOpen={inspectorOpen}
-              isPinned={true}
-              onClose={() => setInspectorOpen(false)}
-              onTogglePin={() => setInspectorPinned(false)}
-              onChapterUpdated={() => {
-                getChapters(projectId).then(chs => setChapters(chs || []))
-              }}
-            />
+            <div className="inspector-utility-header">
+              <div className="inspector-utility-tabs">
+                <button
+                  type="button"
+                  className={`inspector-utility-tab ${rightPaneTab === 'scan' ? 'active' : ''}`}
+                  onClick={() => setRightPaneTab('scan')}
+                >
+                  <FileSearch size={13} />
+                  <span>Scan Ground Truth</span>
+                </button>
+                <button
+                  type="button"
+                  className={`inspector-utility-tab ${rightPaneTab === 'tools' ? 'active' : ''}`}
+                  onClick={() => setRightPaneTab('tools')}
+                >
+                  <Sparkles size={13} />
+                  <span>AI &amp; Text Tools</span>
+                </button>
+              </div>
+              <button
+                type="button"
+                className="btn-icon btn-sm text-muted hover:text-white"
+                onClick={() => setInspectorOpen(false)}
+                title="Close utility pane"
+                aria-label="Close pane"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="inspector-utility-body">
+              {rightPaneTab === 'scan' ? (
+                <SourceInspector
+                  projectId={projectId}
+                  initialPage={inspectorPage}
+                  highlightBlockId={inspectorHighlightBlockId}
+                  isOpen={inspectorOpen}
+                  onClose={() => setInspectorOpen(false)}
+                  onChapterUpdated={() => {
+                    getChapters(projectId).then(chs => setChapters(chs || []))
+                  }}
+                />
+              ) : (
+                <ChapterStudioToolsPane
+                  projectId={projectId}
+                  currentChapterIndex={selectedIdx}
+                  currentChapterTitle={currentChapter?.title || 'Current Chapter'}
+                  currentChapter={currentChapter}
+                  onChaptersUpdated={(newChs) => {
+                    if (newChs) {
+                      setChapters(newChs)
+                      saveNow(newChs)
+                    } else {
+                      getChapters(projectId).then(chs => setChapters(chs || []))
+                    }
+                  }}
+                  onSnapshotForUndo={() => setUndoSnapshot(JSON.parse(JSON.stringify(chapters)))}
+                  onUndoSnapshot={handleUndo}
+                  canUndoSnapshot={!!undoSnapshot}
+                  onAcceptAllProposals={handleAcceptAllProposals}
+                  onRevertAllProposals={handleRevertAllProposals}
+                  modernizationProfiles={modernizationProfiles}
+                  toast={toast}
+                  hasCloudKey={hasCloudKey}
+                  cudaEnabled={cudaEnabled}
+                  localLlmAvailable={localLlmAvailable}
+                />
+              )}
+            </div>
           </aside>
         )}
       </div>
-
-      {/* Floating Peek Inspector (when not pinned) */}
-      {inspectorOpen && !inspectorPinned && (
-        <SourceInspector
-          projectId={projectId}
-          initialPage={inspectorPage}
-          highlightBlockId={inspectorHighlightBlockId}
-          isOpen={inspectorOpen}
-          isPinned={false}
-          onClose={() => setInspectorOpen(false)}
-          onTogglePin={() => setInspectorPinned(true)}
-          onChapterUpdated={() => {
-            getChapters(projectId).then(chs => setChapters(chs || []))
-          }}
-        />
-      )}
 
       {/* Book Details Modal */}
       <BookDetailsModal
@@ -1874,22 +2265,6 @@ export default function Step2Editor({
         onClose={() => setShowBookDetails(false)}
         onUpdateMeta={(newMeta) => setMeta(prev => ({ ...prev, ...newMeta }))}
         toast={toast}
-      />
-
-      {/* Modernization Drawer */}
-      <ModernizationDrawer
-        projectId={projectId}
-        isOpen={showModernize}
-        onClose={() => setShowModernize(false)}
-        currentChapterIndex={selectedIdx}
-        currentChapterTitle={currentChapter?.title || 'Current Chapter'}
-        modernizationEval={modernizationEval}
-        setModernizationEval={setModernizationEval}
-        modernizationProfiles={modernizationProfiles}
-        toast={toast}
-        onChaptersUpdated={() => {
-          getChapters(projectId).then(chs => setChapters(chs || []))
-        }}
       />
     </div>
   )

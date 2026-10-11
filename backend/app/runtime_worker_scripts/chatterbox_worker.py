@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 
 _model = None
@@ -44,8 +46,82 @@ def _load_model(request_id: str, device: str):
     return _model
 
 
+def _build_atempo_filter(speed: float) -> str:
+    """Chain atempo filters so any speed multiplier (even <0.5 or >2.0) works cleanly."""
+    speed = float(speed)
+    if speed <= 0:
+        return "atempo=1.0"
+    filters = []
+    remaining = speed
+    while remaining > 2.0:
+        filters.append("atempo=2.0")
+        remaining /= 2.0
+    while remaining < 0.5:
+        filters.append("atempo=0.5")
+        remaining /= 0.5
+    filters.append(f"atempo={remaining:.4f}")
+    return ",".join(filters)
+
+
+def _apply_time_stretch(audio, sample_rate: int, speed: float):
+    import numpy as np
+
+    speed = float(speed)
+    if abs(speed - 1.0) <= 0.001:
+        return audio
+
+    ffmpeg_exe = shutil.which("ffmpeg")
+    if ffmpeg_exe is not None:
+        try:
+            import tempfile
+            import soundfile as sf
+
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_path = Path(tmp_dir)
+                in_wav = tmp_path / "in.wav"
+                out_wav = tmp_path / "out.wav"
+                sf.write(str(in_wav), audio, sample_rate)
+
+                filter_chain = _build_atempo_filter(speed)
+                kwargs = {}
+                if sys.platform == "win32":
+                    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+                cmd = [
+                    ffmpeg_exe,
+                    "-hide_banner",
+                    "-loglevel", "error",
+                    "-y",
+                    "-i", str(in_wav),
+                    "-filter:a", filter_chain,
+                    str(out_wav),
+                ]
+                proc = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    **kwargs,
+                )
+                if proc.returncode == 0 and out_wav.is_file():
+                    stretched, _ = sf.read(str(out_wav), dtype="float32")
+                    return np.asarray(stretched, dtype=np.float32).squeeze()
+                sys.stderr.write(
+                    f"FFmpeg atempo warning: code={proc.returncode}, stderr={proc.stderr}\n"
+                )
+        except Exception as exc:
+            sys.stderr.write(f"FFmpeg atempo failed, falling back to librosa: {exc}\n")
+
+    try:
+        import librosa
+
+        return librosa.effects.time_stretch(audio, rate=speed)
+    except Exception as exc:
+        sys.stderr.write(f"Librosa time_stretch fallback failed: {exc}\n")
+        return audio
+
+
 def _synthesize(request: dict) -> None:
-    import librosa
     import numpy as np
     import soundfile as sf
 
@@ -76,8 +152,7 @@ def _synthesize(request: dict) -> None:
     if not generated:
         raise ValueError("Chatterbox produced no audio output.")
     combined = np.concatenate(generated).astype(np.float32, copy=False)
-    if abs(speed - 1.0) > 0.001:
-        combined = librosa.effects.time_stretch(combined, rate=speed)
+    combined = _apply_time_stretch(combined, model.sr, speed)
     peak = float(np.max(np.abs(combined)))
     if peak > 0.98:
         combined *= 0.98 / peak

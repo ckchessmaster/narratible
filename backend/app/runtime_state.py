@@ -9,6 +9,11 @@ from typing import Any
 
 
 def _app_data_dir() -> Path:
+    configured = os.environ.get("NARRATIBLE_APP_DATA_DIR", "").strip()
+    if configured:
+        app_data = Path(configured)
+        app_data.mkdir(parents=True, exist_ok=True)
+        return app_data
     if getattr(sys, "frozen", False):
         app_data = Path(os.environ.get("APPDATA", Path.home())) / "narratible"
         app_data.mkdir(parents=True, exist_ok=True)
@@ -107,13 +112,19 @@ def save_engine_manifest(manifest: dict[str, Any]) -> None:
 
 def load_engine_manifest() -> dict[str, Any]:
     """Load managed runtime state, defaulting safely before first setup."""
-    if not ENGINE_MANIFEST_FILE.exists():
+    manifest_path = ENGINE_MANIFEST_FILE
+    if not manifest_path.exists() and not getattr(sys, "frozen", False):
+        appdata_manifest = Path(os.environ.get("APPDATA", Path.home())) / "narratible" / "runtime" / "engines-manifest.json"
+        if appdata_manifest.exists():
+            manifest_path = appdata_manifest
+
+    if not manifest_path.exists():
         return {
             "schema_version": 1,
             "active_app_version": None,
             "profiles": {},
         }
-    with open(ENGINE_MANIFEST_FILE, "r", encoding="utf-8") as f:
+    with open(manifest_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return {
         "schema_version": data.get("schema_version", 1),

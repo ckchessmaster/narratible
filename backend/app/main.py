@@ -56,8 +56,10 @@ from .services.layout import (
     LayoutPropagateRequest,
 )
 from .parser import extract_structured_from_pdf, extract_pdf_metadata, extract_pdf_cover
-from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters, llm_extract_book_metadata, list_cleaning_profiles, get_cleaning_profile
+from .cleaner import regex_clean_text, llm_clean_text, llm_review_chapters, llm_extract_book_metadata, list_cleaning_profiles, get_cleaning_profile, fix_soft_hyphenation
 from .parsing_modules import MODERNIZATION_MODULE_ID, list_modules, apply_modules, normalize_module_ids
+from .parsing_modules.prose_reflow import reflow_wrapped_prose, stitch_split_paragraph_blocks
+from .parsing_modules.bible import expand_scripture_references
 from .parsing_modules.modernizer import list_modernization_profiles, llm_modernize_text
 from .tts import synthesize_speech, get_available_voices, compose_tts_text
 from .tts_text import prepare_text_for_tts, segment_text_for_tts
@@ -82,6 +84,7 @@ from .voice_enhancement import (
 )
 from .runtime_engines import (
     RuntimeSetupError,
+    embedded_llm_available,
     install_profile,
     nvidia_preflight,
     remove_profile,
@@ -112,7 +115,7 @@ def _cancel_task_by_id(task_id: str) -> bool:
     if task_id in _tasks:
         _tasks[task_id]["is_cancelled"] = True
         found = True
-    for prefix in ("parse-", "tts-", "modernize-"):
+    for prefix in ("parse-", "tts-", "modernize-", "enhance-"):
         key = f"{prefix}{task_id}"
         if key in _tasks:
             _tasks[key]["is_cancelled"] = True
@@ -170,6 +173,17 @@ def _require_cloud_llm_provider(cfg: AppConfig) -> str:
     if provider is None:
         raise RuntimeError(CLOUD_LLM_CONFIG_ERROR)
     return provider
+
+
+EMBEDDED_LLM_UNAVAILABLE_ERROR = (
+    "Local GPU text processing requires the 'Local LLM Runtime (CUDA)' profile. "
+    "Install it in Settings → Local AI, or add a Gemini or OpenAI API key to use Cloud LLM."
+)
+
+
+def _require_embedded_llm() -> None:
+    if not embedded_llm_available():
+        raise RuntimeError(EMBEDDED_LLM_UNAVAILABLE_ERROR)
 
 # In packaged mode, allow all origins so the local static frontend can fetch from the backend
 cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -230,6 +244,12 @@ async def api_cancel_task(project_id: str):
     modernize_task = _get_task(modernize_task_id)
     if modernize_task:
         modernize_task["is_cancelled"] = True
+        save_task_snapshot(_tasks)
+
+    enhance_task_id = f"enhance-{project_id}"
+    enhance_task = _get_task(enhance_task_id)
+    if enhance_task:
+        enhance_task["is_cancelled"] = True
         save_task_snapshot(_tasks)
 
     return {"message": "Task cancelled"}
@@ -1236,6 +1256,11 @@ async def parse_pdf(
             _require_cloud_llm_provider(load_config())
         except RuntimeError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+    elif cleaner in ("embedded", "llm_chapters_only_embedded"):
+        try:
+            _require_embedded_llm()
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
     task_id = f"parse-{project_id}"
     _set_task(task_id, "running", "Queued…", 0, stage="Queued")
@@ -1541,13 +1566,21 @@ def _build_modernization_commit_text(session: dict) -> tuple[str, list[str]]:
 
 def _resolve_modernization_provider(provider: str | None = None) -> str:
     if provider == "embedded":
+        _require_embedded_llm()
         return "embedded"
     if provider in ("gemini", "openai"):
         return provider
     cfg = load_config()
     if cfg.llm_provider == "local":
+        _require_embedded_llm()
         return "embedded"
-    return _require_cloud_llm_provider(cfg)
+    cloud_provider = _resolve_cloud_llm_provider(cfg)
+    if cloud_provider:
+        return cloud_provider
+    if provider in ("llm", "cloud"):
+        raise HTTPException(status_code=400, detail=CLOUD_LLM_CONFIG_ERROR)
+    _require_embedded_llm()
+    return "embedded"
 
 
 def _upsert_modernization_chapter_eval(evaluation: dict, chapter_eval: dict):
@@ -1650,7 +1683,10 @@ async def modernize_chapter(project_id: str, chapter_index: int, req: Modernizat
         get_project(project_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return _modernize_saved_chapter(project_id, chapter_index, req.modernization_profile, req.provider)
+    try:
+        return _modernize_saved_chapter(project_id, chapter_index, req.modernization_profile, req.provider)
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 def _run_modernize_project(project_id: str, task_id: str, modernization_profile: str, provider: str | None = None):
@@ -1722,7 +1758,10 @@ def _run_modernization_chunk_redo(evaluation: dict, chapter_index: int, chunk_id
     chapter_eval, chunk_eval = _find_modernization_eval_chunk(evaluation, chapter_index, chunk_id)
     session = _ensure_modernization_session(chapter_eval, evaluation)
     chunk_eval = next((chunk for chunk in session.get("chunks") or [] if chunk.get("chunk_id") == chunk_id), chunk_eval)
-    retry_provider = _resolve_modernization_provider(provider or chapter_eval.get("provider") or evaluation.get("provider"))
+    try:
+        retry_provider = _resolve_modernization_provider(provider or chapter_eval.get("provider") or evaluation.get("provider"))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     source_text = chunk_eval.get("source_text") or chunk_eval.get("accepted_text") or ""
     if not source_text.strip():
         raise HTTPException(status_code=400, detail="This chunk has no source text to modernize.")
@@ -2199,6 +2238,449 @@ async def api_save_chapters(project_id: str, chapters: list[dict]):
     return {"message": f"Saved {len(chapters)} chapter(s)."}
 
 
+class ExpandScriptureRequest(BaseModel):
+    chapter_index: int | None = None
+
+
+@app.post("/api/projects/{project_id}/expand-scripture")
+async def api_expand_scripture(project_id: str, req: ExpandScriptureRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    chapters = load_chapters(project_id)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="Project has no chapters to expand.")
+
+    if req.chapter_index is not None:
+        if req.chapter_index < 0 or req.chapter_index >= len(chapters):
+            raise HTTPException(status_code=400, detail=f"Invalid chapter index {req.chapter_index}")
+        target_indices = [req.chapter_index]
+    else:
+        target_indices = list(range(len(chapters)))
+
+    for idx in target_indices:
+        ch = chapters[idx]
+        blocks = ch.get("blocks", [])
+        if blocks:
+            for b in blocks:
+                if b.get("text"):
+                    b["text"] = expand_scripture_references(b["text"])
+            ch["text"] = "\n\n".join(b["text"] for b in blocks if b.get("text"))
+        elif ch.get("text"):
+            ch["text"] = expand_scripture_references(ch["text"])
+        ch["word_count"] = len(ch.get("text", "").split())
+
+    save_chapters(project_id, chapters)
+    update_project(project_id, {"current_step": "edit"})
+    return {
+        "message": f"Expanded scripture references in {len(target_indices)} chapter(s).",
+        "chapters": chapters,
+    }
+
+
+class CleanTextRequest(BaseModel):
+    chapter_index: int | None = None
+    provider: str = "regex"
+    cleaning_profile: str = "safe"
+    modernize: bool = False
+    modernization_profile: str = "standard_modern"
+    background: bool = False
+
+
+class ResolveProposalRequest(BaseModel):
+    action: Literal["accept", "revert"]
+    chapter_index: int | None = None
+    block_id: str | None = None
+
+
+def _clean_text_core(project_id: str, req: CleanTextRequest, task_id: str | None = None) -> dict:
+    meta = get_project(project_id)
+    chapters = load_chapters(project_id)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="Project has no chapters to clean.")
+
+    if req.chapter_index is not None:
+        if req.chapter_index < 0 or req.chapter_index >= len(chapters):
+            raise HTTPException(status_code=400, detail=f"Invalid chapter index {req.chapter_index}")
+        target_indices = [req.chapter_index]
+    else:
+        target_indices = list(range(len(chapters)))
+
+    cfg = load_config()
+    provider = req.provider.lower() if req.provider else "regex"
+    if provider in ("llm", "cloud"):
+        cloud_provider = _resolve_cloud_llm_provider(cfg)
+        if not cloud_provider:
+            raise HTTPException(status_code=400, detail=CLOUD_LLM_CONFIG_ERROR)
+        provider = cloud_provider
+    elif provider == "embedded":
+        pass
+    elif provider != "regex":
+        provider = "regex"
+
+    total_units = 0
+    for idx in target_indices:
+        ch = chapters[idx]
+        blocks = ch.get("blocks", [])
+        if blocks:
+            total_units += sum(1 for b in blocks if (b.get("text") or "").strip())
+        elif (ch.get("text") or "").strip():
+            total_units += 1
+    total_units = max(1, total_units)
+
+    def _cancel_check():
+        if not task_id:
+            return False
+        t = _get_task(task_id)
+        return bool(t and t.get("is_cancelled"))
+
+    def _process_text_chunk(src_text: str, ch_title: str) -> str:
+        if not src_text or not src_text.strip():
+            return src_text
+        if provider == "regex":
+            cleaned = regex_clean_text(src_text, known_titles=[meta.title, ch_title])
+        else:
+            if len(src_text.strip()) > 10:
+                cleaned = llm_clean_text(
+                    src_text,
+                    provider=provider,
+                    cleaning_profile=req.cleaning_profile,
+                    known_titles=[meta.title, ch_title],
+                    cancel_check=_cancel_check if task_id else None,
+                )
+            else:
+                cleaned = src_text
+
+        if req.modernize and cleaned.strip():
+            if _cancel_check():
+                return cleaned
+            mod_provider = _resolve_modernization_provider(req.provider if req.provider not in ("regex", "heuristic") else None)
+            mod_result, _ = llm_modernize_text(
+                cleaned,
+                provider=mod_provider,
+                modernization_profile=req.modernization_profile,
+                cancel_check=_cancel_check if task_id else None,
+            )
+            if mod_result and mod_result.strip():
+                return mod_result
+        return cleaned
+
+    modified_blocks_count = 0
+    processed_units = 0
+
+    if task_id:
+        _set_task(task_id, "running", f"Starting enhancement for {len(target_indices)} chapter(s)…", 2, stage="Enhancing")
+
+    for idx in target_indices:
+        if _cancel_check():
+            break
+        ch = chapters[idx]
+        ch_title = ch.get("title", f"Chapter {idx+1}")
+        blocks = ch.get("blocks", [])
+
+        if blocks:
+            for b in blocks:
+                if _cancel_check():
+                    break
+                orig = b.get("text", "")
+                if not orig.strip():
+                    continue
+                processed_units += 1
+                if task_id:
+                    pct = max(2, min(98, int((processed_units / total_units) * 100)))
+                    _set_task(
+                        task_id,
+                        "running",
+                        f"Enhancing block {processed_units}/{total_units} in \"{ch_title}\"…",
+                        pct,
+                        stage="Enhancing",
+                    )
+
+                is_verse = b.get("format") == "verse"
+                existing_orig = b.get("pending_proposal", {}).get("original_text", orig)
+                new_text = _process_text_chunk(orig, ch_title)
+                if not is_verse and new_text.strip():
+                    new_text = reflow_wrapped_prose(new_text).strip()
+                if new_text.strip() != existing_orig.strip():
+                    b["pending_proposal"] = {
+                        "original_text": existing_orig,
+                        "proposed_text": new_text,
+                    }
+                    modified_blocks_count += 1
+                elif "pending_proposal" in b:
+                    del b["pending_proposal"]
+        elif ch.get("text"):
+            if _cancel_check():
+                break
+            orig = ch["text"]
+            processed_units += 1
+            if task_id:
+                pct = max(2, min(98, int((processed_units / total_units) * 100)))
+                _set_task(
+                    task_id,
+                    "running",
+                    f"Enhancing \"{ch_title}\"…",
+                    pct,
+                    stage="Enhancing",
+                )
+            existing_orig = ch.get("pending_proposal", {}).get("original_text", orig)
+            new_text = _process_text_chunk(orig, ch_title)
+            if new_text.strip():
+                new_text = reflow_wrapped_prose(new_text).strip()
+            if new_text.strip() != existing_orig.strip():
+                ch["pending_proposal"] = {
+                    "original_text": existing_orig,
+                    "proposed_text": new_text,
+                }
+                modified_blocks_count += 1
+            elif "pending_proposal" in ch:
+                del ch["pending_proposal"]
+        ch["word_count"] = len(ch.get("text", "").split())
+
+    if _cancel_check():
+        if task_id:
+            _set_task(task_id, "cancelled", "Text enhancement was cancelled.", 0, stage="Cancelled")
+        return {"cancelled": True}
+
+    save_chapters(project_id, chapters)
+    update_project(project_id, {"current_step": "edit"})
+    verb = "Enhanced" if req.modernize else f"Cleaned ({provider})"
+    msg = f"{verb} {len(target_indices)} chapter(s) with {modified_blocks_count} change proposal(s) ready for review."
+
+    return {
+        "message": msg,
+        "chapters": chapters,
+        "modified_blocks_count": modified_blocks_count,
+    }
+
+
+def _run_clean_text_background(project_id: str, task_id: str, req: CleanTextRequest):
+    try:
+        res = _clean_text_core(project_id, req, task_id=task_id)
+        if res.get("cancelled"):
+            return
+        t = _get_task(task_id) or {}
+        t["chapters"] = res["chapters"]
+        t["modified_blocks_count"] = res["modified_blocks_count"]
+        _tasks[task_id] = t
+        _set_task(task_id, "done", res["message"], 100, stage="Done")
+        save_task_snapshot(_tasks)
+    except Exception as e:
+        logger.exception("Text enhancement background task failed")
+        _set_task(task_id, "error", str(e), 0, stage="Error")
+        save_task_snapshot(_tasks)
+
+
+@app.post("/api/projects/{project_id}/clean-text")
+async def api_clean_text(project_id: str, req: CleanTextRequest, background_tasks: BackgroundTasks = None):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    requested_provider = (req.provider or "regex").lower()
+    try:
+        if requested_provider == "embedded":
+            _require_embedded_llm()
+        if req.modernize:
+            _resolve_modernization_provider(
+                req.provider if requested_provider not in ("regex", "heuristic") else None
+            )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if req.background and background_tasks is not None:
+        task_id = f"enhance-{project_id}"
+        _set_task(task_id, "running", "Queued enhancement…", 0, stage="Queued")
+        background_tasks.add_task(_run_clean_text_background, project_id, task_id, req)
+        return {"task_id": task_id}
+
+    return _clean_text_core(project_id, req)
+
+
+@app.post("/api/projects/{project_id}/enhance-text")
+async def api_enhance_text(project_id: str, req: CleanTextRequest, background_tasks: BackgroundTasks = None):
+    return await api_clean_text(project_id, req, background_tasks=background_tasks)
+
+
+class ReflowProseRequest(BaseModel):
+    chapter_index: int | None = None
+
+
+@app.post("/api/projects/{project_id}/reflow-prose")
+async def api_reflow_prose(project_id: str, req: ReflowProseRequest = ReflowProseRequest()):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    chapters = load_chapters(project_id)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="Project has no chapters.")
+
+    if req.chapter_index is not None:
+        if req.chapter_index < 0 or req.chapter_index >= len(chapters):
+            raise HTTPException(status_code=400, detail=f"Invalid chapter index {req.chapter_index}")
+        target_indices = [req.chapter_index]
+    else:
+        target_indices = list(range(len(chapters)))
+
+    reflowed_blocks_count = 0
+    for idx in target_indices:
+        ch = chapters[idx]
+        blocks = ch.get("blocks", [])
+        if blocks:
+            for b in blocks:
+                if b.get("format") == "verse":
+                    continue
+                orig_text = b.get("text", "")
+                if not orig_text.strip():
+                    continue
+                reflowed = reflow_wrapped_prose(fix_soft_hyphenation(orig_text)).strip()
+                if reflowed != orig_text.strip():
+                    b["text"] = reflowed
+                    reflowed_blocks_count += 1
+            body_paras = [
+                b["text"] for b in blocks
+                if b.get("type", "body") in {"body", "callout"} and (b.get("text") or "").strip()
+            ]
+            ch["text"] = "\n\n".join(body_paras) if body_paras else "\n\n".join(
+                b["text"] for b in blocks if (b.get("text") or "").strip()
+            )
+        elif ch.get("text"):
+            orig_text = ch["text"]
+            reflowed = reflow_wrapped_prose(fix_soft_hyphenation(orig_text)).strip()
+            if reflowed != orig_text.strip():
+                ch["text"] = reflowed
+                reflowed_blocks_count += 1
+        ch["word_count"] = len(ch.get("text", "").split())
+
+    save_chapters(project_id, chapters)
+    return {
+        "message": f"Reflowed wrapped lines and repaired hyphens across {reflowed_blocks_count} block(s).",
+        "chapters": chapters,
+        "reflowed_blocks_count": reflowed_blocks_count,
+    }
+
+
+class StitchParagraphsRequest(BaseModel):
+    chapter_index: int | None = None
+
+
+@app.post("/api/projects/{project_id}/stitch-paragraphs")
+async def api_stitch_paragraphs(project_id: str, req: StitchParagraphsRequest = StitchParagraphsRequest()):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    chapters = load_chapters(project_id)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="Project has no chapters.")
+
+    if req.chapter_index is not None:
+        if req.chapter_index < 0 or req.chapter_index >= len(chapters):
+            raise HTTPException(status_code=400, detail=f"Invalid chapter index {req.chapter_index}")
+        target_indices = [req.chapter_index]
+    else:
+        target_indices = list(range(len(chapters)))
+
+    # Clean state check: ensure no pending review proposals exist
+    for idx in target_indices:
+        ch = chapters[idx]
+        if ch.get("pending_proposal"):
+            raise HTTPException(
+                status_code=400,
+                detail=f'Chapter "{ch.get("title", f"Chapter {idx+1}")}" has pending AI proposals. Please accept or revert them before stitching paragraphs.'
+            )
+        for b in ch.get("blocks", []):
+            if b.get("pending_proposal"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f'Chapter "{ch.get("title", f"Chapter {idx+1}")}" has pending AI proposals. Please accept or revert them before stitching paragraphs.'
+                )
+
+    total_stitched = 0
+    for idx in target_indices:
+        ch = chapters[idx]
+        blocks = ch.get("blocks", [])
+        if blocks:
+            stitched_blocks, count = stitch_split_paragraph_blocks(blocks)
+            if count > 0:
+                ch["blocks"] = stitched_blocks
+                total_stitched += count
+                body_paras = [
+                    b["text"] for b in stitched_blocks
+                    if b.get("type", "body") in {"body", "callout"} and (b.get("text") or "").strip()
+                ]
+                ch["text"] = "\n\n".join(body_paras) if body_paras else "\n\n".join(
+                    b["text"] for b in stitched_blocks if (b.get("text") or "").strip()
+                )
+                ch["word_count"] = len(ch.get("text", "").split())
+
+    save_chapters(project_id, chapters)
+    return {
+        "message": f"Stitched {total_stitched} split paragraph(s) across page breaks.",
+        "chapters": chapters,
+        "stitched_count": total_stitched,
+    }
+
+
+@app.post("/api/projects/{project_id}/resolve-proposal")
+async def api_resolve_proposal(project_id: str, req: ResolveProposalRequest):
+    try:
+        get_project(project_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    chapters = load_chapters(project_id)
+    if not chapters:
+        raise HTTPException(status_code=400, detail="Project has no chapters.")
+
+    if req.chapter_index is not None:
+        if req.chapter_index < 0 or req.chapter_index >= len(chapters):
+            raise HTTPException(status_code=400, detail=f"Invalid chapter index {req.chapter_index}")
+        target_indices = [req.chapter_index]
+    else:
+        target_indices = list(range(len(chapters)))
+
+    resolved_count = 0
+    for idx in target_indices:
+        ch = chapters[idx]
+        blocks = ch.get("blocks", [])
+        if blocks:
+            for b in blocks:
+                if req.block_id is not None and b.get("id") != req.block_id:
+                    continue
+                if "pending_proposal" in b:
+                    if req.action == "accept":
+                        b["text"] = b["pending_proposal"].get("proposed_text", b.get("text", ""))
+                    elif req.action == "revert":
+                        b["text"] = b["pending_proposal"].get("original_text", b.get("text", ""))
+                    del b["pending_proposal"]
+                    resolved_count += 1
+            ch["text"] = "\n\n".join(b.get("text", "") for b in blocks if b.get("text"))
+        elif "pending_proposal" in ch:
+            if req.block_id is None:
+                if req.action == "accept":
+                    ch["text"] = ch["pending_proposal"].get("proposed_text", ch.get("text", ""))
+                elif req.action == "revert":
+                    ch["text"] = ch["pending_proposal"].get("original_text", ch.get("text", ""))
+                del ch["pending_proposal"]
+                resolved_count += 1
+        ch["word_count"] = len(ch.get("text", "").split())
+
+    save_chapters(project_id, chapters)
+    action_label = "Accepted" if req.action == "accept" else "Reverted"
+    return {
+        "message": f"{action_label} {resolved_count} proposal(s).",
+        "chapters": chapters,
+        "resolved_count": resolved_count,
+    }
+
+
 @app.patch("/api/projects/{project_id}/chapters/{chapter_id}")
 async def api_update_chapter(project_id: str, chapter_id: str, req: ChapterPatchRequest):
     try:
@@ -2541,6 +3023,8 @@ class PreviewRequest(BaseModel):
     temperature: float | None = None
     exaggeration: float = 0.5
     cfg_weight: float = 0.3
+    enabled_modules: list[str] | None = None
+    preview_task_id: str | None = None
 
 
 class VoiceLibraryUpdateRequest(BaseModel):
@@ -2563,6 +3047,7 @@ class VoiceLibraryTestRequest(BaseModel):
     temperature: float | None = None
     exaggeration: float | None = None
     cfg_weight: float | None = None
+    preview_task_id: str | None = None
 
 
 class VoiceLibrarySampleRequest(BaseModel):
@@ -2621,12 +3106,21 @@ async def tts_preview(project_id: str, req: PreviewRequest):
         raise HTTPException(status_code=404, detail=str(e))
 
     preview_path = _project_path(project_id) / "preview.mp3"
+    task_id = req.preview_task_id
     try:
+        if task_id:
+            _set_task(task_id, "running", f"Synthesizing with {req.engine}…", 5, stage="Synthesizing")
+
+        def _preview_progress(msg: str, pct: int):
+            if task_id:
+                _set_task(task_id, "running", msg, pct, stage="Synthesizing")
+
         voice_temperature = req.temperature
         effective_voice, voice_sample_path, voice_samples_dir, voice_reference_text, saved_temperature = _resolve_library_voice_selection(
             project_id, req.engine, req.voice
         )
         voice_temperature = voice_temperature if voice_temperature is not None else saved_temperature
+        effective_modules = req.enabled_modules if req.enabled_modules is not None else meta.enabled_modules
         await synthesize_speech(
             text=req.text[:500],
             output_path=preview_path,
@@ -2639,14 +3133,23 @@ async def tts_preview(project_id: str, req: PreviewRequest):
             voice_sample_path=voice_sample_path,
             voice_reference_text=voice_reference_text,
             voice_samples_dir=voice_samples_dir,
-            enabled_modules=meta.enabled_modules,
+            enabled_modules=effective_modules,
+            progress_cb=_preview_progress if task_id else None,
         )
+        if task_id:
+            _set_task(task_id, "done", "Preview ready.", 100, stage="Done")
     except FileNotFoundError as e:
+        if task_id:
+            _set_task(task_id, "error", str(e), 0, stage="Error")
         logger.exception("TTS preview could not load a required file")
         raise HTTPException(status_code=500, detail=str(e))
     except ValueError as e:
+        if task_id:
+            _set_task(task_id, "error", str(e), 0, stage="Error")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        if task_id:
+            _set_task(task_id, "error", str(e), 0, stage="Error")
         logger.exception("TTS preview failed")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -2661,15 +3164,16 @@ async def tts_debug_text(project_id: str, req: PreviewRequest):
         raise HTTPException(status_code=404, detail=str(e))
 
     source_text = req.text[:500]
+    effective_modules = req.enabled_modules if req.enabled_modules is not None else meta.enabled_modules
     prepared_text = prepare_text_for_tts(
         source_text,
         req.engine,
-        enabled_modules=meta.enabled_modules,
+        enabled_modules=effective_modules,
     )
     segments = segment_text_for_tts(prepared_text, req.engine)
     return {
         "engine": req.engine,
-        "enabled_modules": meta.enabled_modules,
+        "enabled_modules": effective_modules,
         "source_text": source_text,
         "prepared_text": prepared_text,
         "segments": [
@@ -2824,6 +3328,7 @@ async def api_test_voice_library_draft(
     temperature: float = Form(0.7),
     exaggeration: float = Form(0.5),
     cfg_weight: float = Form(0.3),
+    preview_task_id: str = Form(""),
     file: UploadFile | None = File(None),
 ):
     is_clone_engine = engine in {"f5-tts", "chatterbox", "qwen3-tts"}
@@ -2834,6 +3339,14 @@ async def api_test_voice_library_draft(
     suffix = Path(file.filename).suffix.lower() if file and file.filename else ".wav"
     if is_clone_engine and suffix not in VOICE_SAMPLE_SUFFIXES:
         raise HTTPException(status_code=400, detail="Reference audio must be WAV, MP3, or FLAC.")
+
+    task_id = preview_task_id.strip() or None
+    if task_id:
+        _set_task(task_id, "running", f"Synthesizing with {engine}…", 5, stage="Synthesizing")
+
+    def _preview_progress(msg: str, pct: int):
+        if task_id:
+            _set_task(task_id, "running", msg, pct, stage="Synthesizing")
 
     temp_dir = Path(tempfile.mkdtemp(prefix="narratible_voice_test_"))
     sample_path = temp_dir / f"reference{suffix}"
@@ -2853,8 +3366,13 @@ async def api_test_voice_library_draft(
             cfg_weight=cfg_weight,
             voice_sample_path=sample_path if is_clone_engine else None,
             voice_reference_text=(reference_text or None) if engine in {"f5-tts", "qwen3-tts"} else None,
+            progress_cb=_preview_progress if task_id else None,
         )
+        if task_id:
+            _set_task(task_id, "done", "Preview ready.", 100, stage="Done")
     except Exception as e:
+        if task_id:
+            _set_task(task_id, "error", str(e), 0, stage="Error")
         shutil.rmtree(temp_dir, ignore_errors=True)
         logger.exception("Draft voice library test failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2868,12 +3386,21 @@ async def api_test_voice_library_draft(
 
 @app.post("/api/voice-library/{voice_id}/test")
 async def api_test_voice_library_item(voice_id: str, req: VoiceLibraryTestRequest):
+    task_id = req.preview_task_id
     try:
         voice = get_library_voice(voice_id)
         if not voice.engine_configured:
             raise ValueError(f"Confirm the engine for library voice '{voice.name}' before testing it.")
         if req.engine is not None and req.engine != voice.engine:
             raise ValueError(f"Library voice '{voice.name}' uses {voice.engine}, not {req.engine}.")
+
+        if task_id:
+            _set_task(task_id, "running", f"Synthesizing with {voice.engine}…", 5, stage="Synthesizing")
+
+        def _preview_progress(msg: str, pct: int):
+            if task_id:
+                _set_task(task_id, "running", msg, pct, stage="Synthesizing")
+
         preview_path = get_library_voice_preview_path(voice_id)
         is_clone_engine = voice.engine in {"f5-tts", "chatterbox", "qwen3-tts"}
         await synthesize_speech(
@@ -2887,12 +3414,21 @@ async def api_test_voice_library_item(voice_id: str, req: VoiceLibraryTestReques
             cfg_weight=req.cfg_weight if req.cfg_weight is not None else voice.cfg_weight,
             voice_sample_path=get_library_voice_sample_path(voice_id) if is_clone_engine else None,
             voice_reference_text=(req.reference_text or voice.reference_text or None) if voice.engine in {"f5-tts", "qwen3-tts"} else None,
+            progress_cb=_preview_progress if task_id else None,
         )
+        if task_id:
+            _set_task(task_id, "done", "Preview ready.", 100, stage="Done")
     except FileNotFoundError as e:
+        if task_id:
+            _set_task(task_id, "error", str(e), 0, stage="Error")
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
+        if task_id:
+            _set_task(task_id, "error", str(e), 0, stage="Error")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        if task_id:
+            _set_task(task_id, "error", str(e), 0, stage="Error")
         logger.exception("Voice library test failed")
         raise HTTPException(status_code=500, detail=str(e))
     return FileResponse(preview_path, media_type="audio/mpeg", filename="voice-preview.mp3")
@@ -3263,7 +3799,7 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 if cover_input_index is not None:
                     cmd += ["-map", f"{cover_input_index}:v",
                             "-c:v", "copy",
-                            f"-disposition:{cover_input_index - 1}:v", "attached_pic"]
+                            "-disposition:v", "attached_pic"]
                 if metadata_input_index is not None:
                     cmd += ["-map_metadata", str(metadata_input_index)]
                 cmd += [*codec_args, str(merged_path)]
@@ -3279,9 +3815,11 @@ async def _run_tts(project_id: str, task_id: str, engine: str, voice: str, speed
                 list_path.unlink(missing_ok=True)
                 metadata_path.unlink(missing_ok=True)
             except subprocess.CalledProcessError as e:
-                logger.warning(f"FFmpeg failed to merge audio: {e}\nstderr: {e.stderr}")
+                logger.error(f"FFmpeg failed to merge audio: {e}\nstderr: {e.stderr}")
+                raise RuntimeError(f"FFmpeg failed to merge audio: {e.stderr.strip() if e.stderr else e}")
             except Exception as e:
-                logger.warning(f"FFmpeg failed to merge audio: {e}")
+                logger.error(f"FFmpeg failed to merge audio: {e}")
+                raise
 
         _set_task(task_id, "done", "Audio synthesis complete.", 100, stage="Done")
         _persist_tts_status(

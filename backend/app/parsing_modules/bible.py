@@ -164,9 +164,6 @@ def transform(text: str) -> str:
 
 def tts_transform(text: str, engine: str = "edge-tts") -> str:
     """Return Bible-reference text phrased for audio synthesis."""
-    if engine not in {"kokoro", "f5-tts"}:
-        return text
-
     text = transform(text)
     return expand_scripture_references(text, explicit_chapter=(engine == "f5-tts"))
 

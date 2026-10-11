@@ -183,7 +183,7 @@ export default function BookDetailsModal({
           </div>
 
           <div className="form-row-2">
-            <div className="form-group">
+            <div className="form-group" data-tip-anchor="metadata-language">
               <label className="form-label" htmlFor="book-language">Language</label>
               <select
                 id="book-language"
@@ -202,7 +202,7 @@ export default function BookDetailsModal({
               </select>
             </div>
 
-            <div className="form-group">
+            <div className="form-group" data-tip-anchor="metadata-isbn">
               <label className="form-label" htmlFor="book-isbn">ISBN</label>
               <input
                 id="book-isbn"
@@ -230,7 +230,7 @@ export default function BookDetailsModal({
               />
             </div>
 
-            <div className="form-group">
+            <div className="form-group" data-tip-anchor="metadata-publisher">
               <label className="form-label" htmlFor="book-publisher">Publisher</label>
               <input
                 id="book-publisher"
@@ -257,7 +257,7 @@ export default function BookDetailsModal({
             />
           </div>
 
-          <div className="form-group">
+          <div className="form-group" data-tip-anchor="metadata-description">
             <label className="form-label" htmlFor="book-desc">Description / Synopsis</label>
             <textarea
               id="book-desc"

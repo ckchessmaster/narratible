@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import {
   addLibraryVoiceSample,
   createLibraryVoice,
@@ -81,6 +82,8 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged, runtimeProf
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [testProgress, setTestProgress] = useState(0)
+  const [testStatusMsg, setTestStatusMsg] = useState('')
   const [sampleBusy, setSampleBusy] = useState('')
   const [enhancementDevice, setEnhancementDevice] = useState('auto')
   const [testText, setTestText] = useState(DEFAULT_TEST_TEXT)
@@ -333,6 +336,8 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged, runtimeProf
       return
     }
     setTesting(true)
+    setTestProgress(5)
+    setTestStatusMsg(`Synthesizing with ${ENGINE_LABELS[draft.engine] || draft.engine}…`)
     try {
       const testOptions = {
         engine: draft.engine,
@@ -343,9 +348,19 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged, runtimeProf
         exaggeration: draft.exaggeration,
         cfg_weight: draft.cfg_weight,
       }
+      const onProgress = (task) => {
+        if (task) {
+          if (typeof task.progress === 'number') {
+            setTestProgress(Math.round(task.progress))
+          }
+          if (task.message) {
+            setTestStatusMsg(task.message)
+          }
+        }
+      }
       const response = isNew
-        ? await testDraftLibraryVoice({ text: testText, file: draft.file, ...testOptions })
-        : await testLibraryVoice(selectedVoice.id, testText, testOptions)
+        ? await testDraftLibraryVoice({ text: testText, file: draft.file, ...testOptions }, onProgress)
+        : await testLibraryVoice(selectedVoice.id, testText, testOptions, onProgress)
       if (!response.ok) throw await responseError(response)
       const blob = await response.blob()
       if (previewUrl) URL.revokeObjectURL(previewUrl)
@@ -359,6 +374,8 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged, runtimeProf
       toast(e.message, 'error')
     } finally {
       setTesting(false)
+      setTestProgress(0)
+      setTestStatusMsg('')
     }
   }
 
@@ -515,7 +532,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged, runtimeProf
                 </div>
               )}
               {!isNew && draftUsesCloneEngine && (
-                <div className="field">
+                <div className="field" data-tip-anchor="voice-samples-manager">
                   <label>Reference audio files</label>
                   <input
                     ref={sampleInputRef}
@@ -568,7 +585,7 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged, runtimeProf
                     >
                       {sampleBusy === 'upload' ? 'Uploading...' : '+ Add reference audio'}
                     </button>
-                    <div className="glass" style={{ padding: 10, borderRadius: 'var(--radius-sm)' }}>
+                    <div className="glass" style={{ padding: 10, borderRadius: 'var(--radius-sm)' }} data-tip-anchor="voice-sample-enhance">
                       <div className="text-xs" style={{ fontWeight: 700 }}>Optional AI cleanup</div>
                       <div className="text-xs text-muted mt-1">
                         Creates a denoised, bandwidth-restored copy. The original is kept.
@@ -706,6 +723,23 @@ export default function VoiceLibraryPage({ onBack, toast, onChanged, runtimeProf
               </button>
               <audio ref={audioRef} style={{ flex: 1 }} controls />
             </div>
+            {testing && (
+              <div className="voice-preview-progress-card">
+                <div className="voice-preview-progress-header">
+                  <div className="voice-preview-progress-status">
+                    <Loader2 size={13} className="spin text-accent" />
+                    <span className="voice-preview-progress-title truncate">{testStatusMsg || 'Synthesizing voice…'}</span>
+                  </div>
+                  <span className="voice-preview-progress-pct">{testProgress}%</span>
+                </div>
+                <div className="voice-preview-progress-track">
+                  <div
+                    className="voice-preview-progress-fill"
+                    style={{ width: `${Math.max(4, Math.min(100, testProgress))}%` }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </form>
       </div>

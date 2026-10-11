@@ -127,6 +127,47 @@ export const applyCleaningVariant = (id, chapterIndex, chunkId, variantId, apply
 export const batchRedoCleaning = (id, chunks, cleaningProfile = 'balanced', provider = null) =>
   request('POST', `/projects/${id}/batch-redo-cleaning`, { chunks, cleaning_profile: cleaningProfile, provider })
 export const getCleaningReport = (id) => request('GET', `/projects/${id}/cleaning-report`)
+export const expandScripture = (id, chapterIndex = null) =>
+  request('POST', `/projects/${id}/expand-scripture`, { chapter_index: chapterIndex })
+export const cleanTextOnDemand = async (
+  id,
+  chapterIndex = null,
+  provider = 'regex',
+  cleaningProfile = 'safe',
+  modernize = false,
+  modernizationProfile = 'standard_modern',
+  onProgress = null
+) => {
+  const res = await request('POST', `/projects/${id}/clean-text`, {
+    chapter_index: chapterIndex,
+    provider,
+    cleaning_profile: cleaningProfile,
+    modernize,
+    modernization_profile: modernizationProfile,
+    background: true,
+  })
+  if (res?.task_id) {
+    const task = await pollTask(res.task_id, (t) => {
+      if (onProgress) {
+        onProgress(t)
+      }
+    })
+    return {
+      message: task.message,
+      chapters: task.chapters,
+      modified_blocks_count: task.modified_blocks_count || 0,
+    }
+  }
+  return res
+}
+export const enhanceText = (id, options = {}) =>
+  request('POST', `/projects/${id}/enhance-text`, options)
+export const reflowProse = (id, chapterIndex = null) =>
+  request('POST', `/projects/${id}/reflow-prose`, { chapter_index: chapterIndex })
+export const stitchParagraphs = (id, chapterIndex = null) =>
+  request('POST', `/projects/${id}/stitch-paragraphs`, { chapter_index: chapterIndex })
+export const resolveProposal = (id, action = 'accept', chapterIndex = null, blockId = null) =>
+  request('POST', `/projects/${id}/resolve-proposal`, { action, chapter_index: chapterIndex, block_id: blockId })
 export const getModernizationEval = (id) => request('GET', `/projects/${id}/modernization-eval`)
 export const saveModernizationEval = (id, evaluation) => request('PUT', `/projects/${id}/modernization-eval`, evaluation)
 export const modernizeChapter = (id, chapterIndex, modernizationProfile = 'standard_modern', provider = null) =>
@@ -159,14 +200,48 @@ export const uploadCover = (projectId, file) => {
 
 // TTS
 export const getVoices = (engine = 'edge-tts') => request('GET', `/tts/voices?engine=${engine}`)
-export const ttsPreview = (projectId, text, engine, voice, speed, chatterbox = {}) =>
-  fetch(`${BASE}/projects/${projectId}/tts/preview`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, engine, voice, speed, ...chatterbox }),
+export const ttsPreview = async (projectId, text, engine, voice, speed, chatterbox = {}, enabledModules = null, onProgress = null) => {
+  const taskId = `preview_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+  let pollInterval = null
+
+  if (onProgress) {
+    onProgress({ progress: 5, message: `Synthesizing with ${engine}…` })
+    pollInterval = setInterval(async () => {
+      try {
+        const t = await getTask(taskId)
+        if (t && onProgress) onProgress(t)
+      } catch (_) {}
+    }, 350)
+  }
+
+  try {
+    const res = await fetch(`${BASE}/projects/${projectId}/tts/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        engine,
+        voice,
+        speed,
+        ...chatterbox,
+        ...(enabledModules ? { enabled_modules: enabledModules } : {}),
+        preview_task_id: taskId,
+      }),
+    })
+    if (onProgress) onProgress({ progress: 100, message: 'Preview ready.' })
+    return res
+  } finally {
+    if (pollInterval) clearInterval(pollInterval)
+  }
+}
+export const ttsDebugText = (projectId, text, engine, voice, speed, enabledModules = null) =>
+  request('POST', `/projects/${projectId}/tts/debug-text`, {
+    text,
+    engine,
+    voice,
+    speed,
+    ...(enabledModules ? { enabled_modules: enabledModules } : {}),
   })
-export const ttsDebugText = (projectId, text, engine, voice, speed) =>
-  request('POST', `/projects/${projectId}/tts/debug-text`, { text, engine, voice, speed })
 export const synthesizeBook = (projectId, engine, voice, speed, singleFile = false, audioFormat = 'm4b', readHeadings = true, force = false) =>
   request('POST', `/projects/${projectId}/tts/synthesize?engine=${encodeURIComponent(engine)}&voice=${encodeURIComponent(voice)}&speed=${speed}&single_file=${singleFile}&audio_format=${encodeURIComponent(audioFormat)}&read_headings=${readHeadings}&force=${force}`)
 export const synthesizeChapter = (projectId, chapterId, force = false) =>
@@ -208,28 +283,71 @@ export const enhanceLibraryVoiceSample = (id, options = {}) =>
   })
 export const deleteLibraryVoiceSample = (id, sampleFilename) =>
   request('DELETE', `/voice-library/${encodeURIComponent(id)}/samples/${encodeURIComponent(sampleFilename)}`)
-export const testDraftLibraryVoice = ({ text, engine, provider_voice_id, reference_text, speed, temperature, exaggeration, cfg_weight, file }) => {
-  const fd = new FormData()
-  fd.append('text', text)
-  fd.append('engine', engine || 'f5-tts')
-  fd.append('provider_voice_id', provider_voice_id || '')
-  fd.append('reference_text', reference_text || '')
-  fd.append('speed', speed ?? 1.0)
-  fd.append('temperature', temperature ?? 0.7)
-  fd.append('exaggeration', exaggeration ?? 0.5)
-  fd.append('cfg_weight', cfg_weight ?? 0.3)
-  if (file) fd.append('file', file)
-  return fetch(`${BASE}/voice-library/test-draft`, {
-    method: 'POST',
-    body: fd,
-  })
+export const testDraftLibraryVoice = async (
+  { text, engine, provider_voice_id, reference_text, speed, temperature, exaggeration, cfg_weight, file },
+  onProgress = null
+) => {
+  const taskId = `preview_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+  let pollInterval = null
+
+  if (onProgress) {
+    onProgress({ progress: 5, message: `Synthesizing with ${engine || 'f5-tts'}…` })
+    pollInterval = setInterval(async () => {
+      try {
+        const t = await getTask(taskId)
+        if (t && onProgress) onProgress(t)
+      } catch (_) {}
+    }, 350)
+  }
+
+  try {
+    const fd = new FormData()
+    fd.append('text', text)
+    fd.append('engine', engine || 'f5-tts')
+    fd.append('provider_voice_id', provider_voice_id || '')
+    fd.append('reference_text', reference_text || '')
+    fd.append('speed', speed ?? 1.0)
+    fd.append('temperature', temperature ?? 0.7)
+    fd.append('exaggeration', exaggeration ?? 0.5)
+    fd.append('cfg_weight', cfg_weight ?? 0.3)
+    fd.append('preview_task_id', taskId)
+    if (file) fd.append('file', file)
+    const res = await fetch(`${BASE}/voice-library/test-draft`, {
+      method: 'POST',
+      body: fd,
+    })
+    if (onProgress) onProgress({ progress: 100, message: 'Preview ready.' })
+    return res
+  } finally {
+    if (pollInterval) clearInterval(pollInterval)
+  }
 }
-export const testLibraryVoice = (id, text, options = {}) =>
-  fetch(`${BASE}/voice-library/${encodeURIComponent(id)}/test`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, ...options }),
-  })
+export const testLibraryVoice = async (id, text, options = {}, onProgress = null) => {
+  const taskId = `preview_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+  let pollInterval = null
+
+  if (onProgress) {
+    onProgress({ progress: 5, message: 'Synthesizing preview…' })
+    pollInterval = setInterval(async () => {
+      try {
+        const t = await getTask(taskId)
+        if (t && onProgress) onProgress(t)
+      } catch (_) {}
+    }, 350)
+  }
+
+  try {
+    const res = await fetch(`${BASE}/voice-library/${encodeURIComponent(id)}/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, ...options, preview_task_id: taskId }),
+    })
+    if (onProgress) onProgress({ progress: 100, message: 'Preview ready.' })
+    return res
+  } finally {
+    if (pollInterval) clearInterval(pollInterval)
+  }
+}
 
 // Voice samples
 export const uploadVoiceSample = (projectId, file) => {

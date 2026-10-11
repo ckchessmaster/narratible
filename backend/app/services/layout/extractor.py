@@ -2,6 +2,8 @@ from typing import Sequence
 import pymupdf as fitz
 from .geometry import denormalize_bbox
 from .models import LayoutBlock
+from ...cleaner import fix_soft_hyphenation
+from ...parsing_modules.prose_reflow import reflow_wrapped_prose, _looks_like_verse_lines
 
 
 def extract_block_text(
@@ -38,13 +40,20 @@ def extract_layout_blocks_text(
 ) -> list[LayoutBlock]:
     """
     Re-extract bounded text for each block in the layout using clip rectangles.
+    Reflows wrapped lines and fixes soft hyphens for prose blocks while preserving verse stanzas.
     """
     updated_blocks: list[LayoutBlock] = []
     for b in blocks:
         txt = extract_block_text(page, b.bbox, width, height)
         # If extraction returned empty, keep previous text if available
-        final_text = txt if txt else b.text
+        raw = txt if txt else b.text
+        if b.format == "verse" or (b.format != "prose" and _looks_like_verse_lines(raw.splitlines())):
+            final_text = raw.strip()
+            fmt = "verse"
+        else:
+            final_text = reflow_wrapped_prose(fix_soft_hyphenation(raw)).strip()
+            fmt = b.format
         updated_blocks.append(
-            b.model_copy(update={"text": final_text})
+            b.model_copy(update={"text": final_text, "format": fmt})
         )
     return updated_blocks

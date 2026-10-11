@@ -189,6 +189,21 @@ def nvidia_preflight(*, force: bool = False) -> dict[str, Any]:
     })
 
 
+def embedded_llm_available() -> bool:
+    """Return True when the managed embedded-llm runtime profile is installed
+    and verified, or when the in-process embedded LLM stack can be imported
+    (e.g. in a development environment).
+    """
+    if installed_profile_state("embedded-llm") is not None:
+        return True
+    import importlib.util
+
+    try:
+        return all(importlib.util.find_spec(name) is not None for name in ("torch", "transformers"))
+    except (ImportError, ValueError):
+        return False
+
+
 def runtime_status() -> dict[str, Any]:
     catalog = load_runtime_catalog()
     manifest = load_engine_manifest()
@@ -222,6 +237,7 @@ def runtime_status() -> dict[str, Any]:
         "python_version": catalog["python_version"],
         "pytorch": catalog["pytorch"],
         "manifest_app_version": manifest.get("active_app_version"),
+        "embedded_llm_available": embedded_llm_available(),
         "profiles": profiles,
     }
 

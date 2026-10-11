@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import {
   getProject,
   getVoices,
@@ -76,8 +77,11 @@ export default function VoiceCatalogStep({
   const [exaggeration, setExaggeration] = useState(0.5)
   const [cfgWeight, setCfgWeight] = useState(0.3)
   const [readHeadings, setReadHeadings] = useState(true)
+  const [expandBible, setExpandBible] = useState(false)
   const [previewText, setPreviewText] = useState('Welcome to narratible. This is a preview of the selected voice.')
   const [previewing, setPreviewing] = useState(false)
+  const [previewProgress, setPreviewProgress] = useState(0)
+  const [previewStatusMsg, setPreviewStatusMsg] = useState('')
   const [debuggingText, setDebuggingText] = useState(false)
   const [ttsDebug, setTtsDebug] = useState(null)
   const audioRef = useRef(null)
@@ -103,6 +107,7 @@ export default function VoiceCatalogStep({
         setExaggeration(project.tts_exaggeration ?? 0.5)
         setCfgWeight(project.tts_cfg_weight ?? 0.3)
         setReadHeadings(project.tts_read_headings ?? true)
+        setExpandBible((project.enabled_modules || []).includes('bible'))
       } else {
         toast(projectResult.reason?.message || 'Could not load project voice settings.', 'error')
       }
@@ -196,7 +201,20 @@ export default function VoiceCatalogStep({
   const handlePreview = async () => {
     if (!previewText.trim() || !selectedVoice) return
     setPreviewing(true)
+    setPreviewProgress(5)
+    setPreviewStatusMsg(`Synthesizing preview with ${ENGINE_LABELS[engine] || engine}…`)
     try {
+      const effectiveModules = expandBible ? ['bible', 'prose_reflow'] : ['prose_reflow']
+      const onProgress = (task) => {
+        if (task) {
+          if (typeof task.progress === 'number') {
+            setPreviewProgress(Math.round(task.progress))
+          }
+          if (task.message) {
+            setPreviewStatusMsg(task.message)
+          }
+        }
+      }
       const response = await ttsPreview(
         projectId,
         previewText,
@@ -204,6 +222,8 @@ export default function VoiceCatalogStep({
         voice,
         speed,
         engine === 'chatterbox' ? { exaggeration, cfg_weight: cfgWeight } : {},
+        effectiveModules,
+        onProgress,
       )
       if (!response.ok) {
         const text = await response.text()
@@ -222,6 +242,8 @@ export default function VoiceCatalogStep({
       toast(error.message, 'error')
     } finally {
       setPreviewing(false)
+      setPreviewProgress(0)
+      setPreviewStatusMsg('')
     }
   }
 
@@ -229,7 +251,8 @@ export default function VoiceCatalogStep({
     if (!previewText.trim() || !selectedVoice) return
     setDebuggingText(true)
     try {
-      setTtsDebug(await ttsDebugText(projectId, previewText, engine, voice, speed))
+      const effectiveModules = expandBible ? ['bible', 'prose_reflow'] : ['prose_reflow']
+      setTtsDebug(await ttsDebugText(projectId, previewText, engine, voice, speed, effectiveModules))
     } catch (error) {
       toast(error.message, 'error')
     } finally {
@@ -254,6 +277,7 @@ export default function VoiceCatalogStep({
         tts_exaggeration: exaggeration,
         tts_cfg_weight: cfgWeight,
         tts_read_headings: readHeadings,
+        enabled_modules: expandBible ? ['bible', 'prose_reflow'] : ['prose_reflow'],
       })
       onNext()
     } catch (error) {
@@ -409,6 +433,24 @@ export default function VoiceCatalogStep({
             </label>
           </div>
 
+          <div className="field" data-tip-anchor="expand-bible-citations">
+            <label className="flex gap-2 items-start" style={{ cursor: 'pointer' }}>
+              <input
+                name="project-expand-bible"
+                type="checkbox"
+                checked={expandBible}
+                onChange={event => setExpandBible(event.target.checked)}
+                style={{ width: 'auto', marginTop: 3 }}
+              />
+              <div>
+                <span>Expand scripture citations for audio</span>
+                <div className="text-xs text-muted" style={{ marginTop: 2 }}>
+                  e.g. Ps 1:4 &rarr; &ldquo;Psalms 1, verse 4&rdquo; for natural speech pronunciation.
+                </div>
+              </div>
+            </label>
+          </div>
+
           <div className="section-title">Preview</div>
           <div className="field">
             <textarea name="voice-preview-text" aria-label="Voice preview text" rows={3} value={previewText} onChange={event => setPreviewText(event.target.value)} placeholder="Type text to preview" />
@@ -421,6 +463,23 @@ export default function VoiceCatalogStep({
               {debuggingText ? 'Inspecting...' : 'Debug Text'}
             </button>
           </div>
+          {previewing && (
+            <div className="voice-preview-progress-card">
+              <div className="voice-preview-progress-header">
+                <div className="voice-preview-progress-status">
+                  <Loader2 size={13} className="spin text-accent" />
+                  <span className="voice-preview-progress-title truncate">{previewStatusMsg || 'Synthesizing preview…'}</span>
+                </div>
+                <span className="voice-preview-progress-pct">{previewProgress}%</span>
+              </div>
+              <div className="voice-preview-progress-track">
+                <div
+                  className="voice-preview-progress-fill"
+                  style={{ width: `${Math.max(4, Math.min(100, previewProgress))}%` }}
+                />
+              </div>
+            </div>
+          )}
           <audio ref={audioRef} className="voice-preview-audio" controls />
         </aside>
       </div>
