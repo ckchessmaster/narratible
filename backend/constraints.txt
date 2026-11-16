@@ -40,7 +40,7 @@ dill==0.4.1
 distro==1.9.0
 dlinfo==2.0.0
 docopt==0.6.2
-edge-tts==7.2.8
+edge-tts==7.3.1
 einops==0.8.2
 einx==0.4.3
 ema-pytorch==0.8.3

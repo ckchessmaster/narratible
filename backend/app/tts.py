@@ -443,11 +443,26 @@ def unload_tts():
         logger.exception("Failed to stop managed TTS workers cleanly.")
 
 
+async def _run_edge_tts(awaitable, action: str, edge_tts_module):
+    """Await an Edge-TTS call and turn HTTP 403 rejections into actionable errors."""
+    try:
+        return await awaitable
+    except Exception as exc:
+        if getattr(exc, "status", None) == 403:
+            version = getattr(edge_tts_module, "__version__", "unknown")
+            raise RuntimeError(
+                f"Edge-TTS {action} failed with HTTP 403 (installed edge-tts {version}). "
+                'Upgrade edge-tts to >=7.3.1 (`pip install -U "edge-tts>=7.3.1"`) '
+                f"and verify your system clock and network access. ({exc})"
+            ) from exc
+        raise
+
+
 async def get_available_voices(engine: str = "edge-tts") -> list[dict]:
     """Return a list of available voices for the given engine."""
     if engine == "edge-tts":
         import edge_tts
-        voices = await edge_tts.list_voices()
+        voices = await _run_edge_tts(edge_tts.list_voices(), "voice lookup", edge_tts)
         return [
             {"id": v["ShortName"], "name": v["FriendlyName"], "locale": v["Locale"]}
             for v in voices
@@ -503,7 +518,7 @@ async def synthesize_speech(
     if engine == "edge-tts":
         import edge_tts
         communicate = edge_tts.Communicate(text, voice, rate=_speed_to_edge_rate(speed))
-        await communicate.save(str(output_path))
+        await _run_edge_tts(communicate.save(str(output_path)), "speech synthesis", edge_tts)
 
     elif engine == "kokoro":
         from .runtime_engines import installed_profile_state

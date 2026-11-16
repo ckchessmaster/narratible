@@ -184,11 +184,33 @@ def _verify_packaged_frontend():
     print("Packaged frontend OK | bundle", bundle_name)
 
 
+def _parse_version_tuple(version_str: str) -> tuple[int, ...]:
+    """Return numeric version segments so packaged dependency floors can be checked."""
+    parts = []
+    for part in str(version_str).split("."):
+        digits = ""
+        for ch in part:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
 def _verify_packaged_tts_imports():
     """Verify the slim base runtime and managed-engine metadata."""
     _verify_packaged_frontend()
     import numpy
     import edge_tts
+
+    edge_version_str = getattr(edge_tts, "__version__", "0")
+    if _parse_version_tuple(edge_version_str) < (7, 3, 1):
+        raise RuntimeError(
+            f"edge-tts {edge_version_str} is too old; >=7.3.1 is required for Edge-TTS v2 handshake."
+        )
 
     from backend.app.runtime_engines import load_runtime_catalog, runtime_python, uv_executable
 

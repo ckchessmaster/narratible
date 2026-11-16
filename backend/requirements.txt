@@ -5,7 +5,7 @@ fastapi
 uvicorn
 PyMuPDF
 pdfplumber
-edge-tts
+edge-tts>=7.3.1
 soundfile
 numpy
 requests

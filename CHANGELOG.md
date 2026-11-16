@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Bugfixes
+- Fixed Edge-TTS HTTP 403 WebSocket handshake errors by upgrading `edge-tts` to `7.3.1` (Sec-MS-GEC v2 support) and adding actionable HTTP 403 diagnostics and build-time version checks.
+
 ## v1.8.0 - 2026-10-10
 
 ### Features
